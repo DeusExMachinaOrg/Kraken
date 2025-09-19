@@ -6,7 +6,7 @@ namespace ai
 {
 	struct ComplexPhysicObj : ai::PhysicObj
 	{
-		std::map<CStr, ai::VehiclePart*> m_vehicleParts;
+		stable_size_map<CStr, ai::VehiclePart*> m_vehicleParts;
 
 		ai::VehiclePart* GetPartByName(const CStr* partName)
 		{

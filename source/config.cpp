@@ -16,6 +16,7 @@ namespace kraken {
         this->handbrake_power  = { "constants", "handbrake_power", 1.0,   true,  0.0,   1.0   };
         this->brake_power      = { "constants", "brake_power",     -1.0,  true,  -1.0,  0.0   };
         this->friend_damage    = { "constants", "friend_damage",   0,     true,  0,     1     };
+		this->auto_brake_angle = { "constants", "auto_brake_angle",50,    true,  0,     180   };
 
         this->Load();
         this->Dump();
@@ -36,6 +37,7 @@ namespace kraken {
         this->LoadValue(&this->handbrake_power);
         this->LoadValue(&this->brake_power);
         this->LoadValue(&this->friend_damage);
+		this->LoadValue(&this->auto_brake_angle);
     };
 
     void Config::Dump() {
@@ -49,6 +51,7 @@ namespace kraken {
         this->DumpValue(&this->handbrake_power);
         this->DumpValue(&this->brake_power);
         this->DumpValue(&this->friend_damage);
+		this->DumpValue(&this->auto_brake_angle);
     };
 
     template<typename T>
