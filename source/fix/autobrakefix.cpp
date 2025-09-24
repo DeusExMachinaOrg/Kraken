@@ -8,7 +8,7 @@ namespace kraken::fix::autobrakefix {
 
 	void __fastcall SetThrottle(ai::Vehicle* vehicle, int, float throttle, bool autobrake)
 	{
-		if (!vehicle->m_pPath || throttle < 0) {
+		if (!vehicle->m_pPath || throttle < 0 || vehicle->m_turningBackStatus == ai::Vehicle::TURN_BACK_ENABLED_BRAKING) {
 			// Стандартное поведение
 			vehicle->SetThrottle(throttle, autobrake);
 			return;

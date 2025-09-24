@@ -12,6 +12,14 @@ namespace ai
 {
 	struct Vehicle : ComplexPhysicObj
 	{
+		enum TurningBackStatus : __int32
+		{                                       // XREF: ai::Vehicle/r
+			 TURN_BACK_NONE = 0x0,
+			 TURN_BACK_ENABLED_ACCELERATING = 0x1,
+			 TURN_BACK_ENABLED_BRAKING = 0x2,
+			 TURN_BACK_DISABLED = 0x3,
+		};
+
 		BYTE _offset[0x100];
 		float m_throttle;
 		float m_brake;
@@ -22,13 +30,16 @@ namespace ai
 		float m_averageWheelAVel;
 		bool m_bAutoBrake;
 		bool m_bHandBrake;
-		BYTE _offset2[0xB6];
+		BYTE _offset2[0x16];
+		float m_steerRadians;
+		ai::Vehicle::TurningBackStatus m_turningBackStatus;
+		BYTE _offset3[0x98];
 		ai::Path* m_pPath;
 		int m_pathNum;
-		BYTE _offset3[0x44];
+		BYTE _offset4[0x44];
 		IzvratRepository* Repository;
 		void* m_groundRepository;
-		std::vector<ActionType> m_effectActions;
+		stable_size_vector<ActionType> m_effectActions;
 
 		float GetHealth()
 		{
@@ -101,5 +112,12 @@ namespace ai
 			FUNC(0x005CB9A0, ai::Chassis*, __thiscall, _GetChassis, Vehicle*);
 			return _GetChassis(this);
 		}
+
+		CVector* _CalcSteeringForceToPathPoint(CVector* result, const CVector* point, const CVector* nextPoint)
+		{
+			FUNC(0x005D62E0, CVector*, __thiscall, __CalcSteeringForceToPathPoint, Vehicle*, CVector*, const CVector*, const CVector*);
+			return __CalcSteeringForceToPathPoint(this, result, point, nextPoint);
+		}
 	}; 
 }
+ASSERT_SIZE(ai::Vehicle, 0x364);
