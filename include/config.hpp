@@ -2,6 +2,7 @@
 #define __KRAKEN_CONFIG_HPP__
 
 #include "stdafx.hpp"
+#include <vector>
 
 namespace kraken {
     template <typename T>
@@ -14,6 +15,16 @@ namespace kraken {
         T           max;
     };
 
+    template<>
+    struct ConfigValue<std::vector<std::string>> {
+        const char* section;
+        const char* keyPrefix; // e.g. "Script_"
+        std::vector<std::string> value;
+        bool limited = false;
+        int min = 0;
+        int max = 0;
+    };
+
     class Config {
     public:
         // Graphics
@@ -22,14 +33,16 @@ namespace kraken {
         ConfigValue<uint32_t> view_resolution;
 
         // Constants
-        ConfigValue<float>    gravity;
-        ConfigValue<uint32_t> price_fuel;
-        ConfigValue<uint32_t> price_paint;
-        ConfigValue<float>    keep_throttle;
-        ConfigValue<float>    handbrake_power;
-        ConfigValue<float>    brake_power;
-        ConfigValue<uint32_t> friend_damage;
-        ConfigValue<uint32_t> auto_brake_angle; // If angle to the next path point is bigger than this value (in degrees), autobrake will be applied
+        ConfigValue<float>                    gravity;
+        ConfigValue<uint32_t>                 price_fuel;
+        ConfigValue<uint32_t>                 price_paint;
+        ConfigValue<float>                    keep_throttle;
+        ConfigValue<float>                    handbrake_power;
+        ConfigValue<float>                    brake_power;
+        ConfigValue<uint32_t>                 friend_damage;
+        ConfigValue<uint32_t>                 auto_brake_angle; // If angle to the next path point is bigger than this value (in degrees), autobrake will be applied
+        ConfigValue<std::vector<std::string>> lua_scripts;
+        ConfigValue<int32_t>                  lua_enabled;
 
     public:
          Config();

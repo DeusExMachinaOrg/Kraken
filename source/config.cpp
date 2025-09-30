@@ -17,6 +17,8 @@ namespace kraken {
         this->brake_power      = { "constants", "brake_power",     -1.0,  true,  -1.0,  0.0   };
         this->friend_damage    = { "constants", "friend_damage",   0,     true,  0,     1     };
 		this->auto_brake_angle = { "constants", "auto_brake_angle",50,    true,  0,     180   };
+        this->lua_enabled      = { "lua_binds", "Enabled"         ,0,     true,  0,     1     };
+        this->lua_scripts      = { "lua_binds", "Script_" };
 
         this->Load();
         this->Dump();
@@ -38,6 +40,8 @@ namespace kraken {
         this->LoadValue(&this->brake_power);
         this->LoadValue(&this->friend_damage);
 		this->LoadValue(&this->auto_brake_angle);
+        this->LoadValue(&this->lua_enabled);
+		this->LoadValue(&this->lua_scripts);
     };
 
     void Config::Dump() {
@@ -52,36 +56,62 @@ namespace kraken {
         this->DumpValue(&this->brake_power);
         this->DumpValue(&this->friend_damage);
 		this->DumpValue(&this->auto_brake_angle);
+		this->DumpValue(&this->lua_enabled);
+		this->DumpValue(&this->lua_scripts);
     };
 
     template<typename T>
     void Config::LoadValue(ConfigValue<T>* value) {
         char buffer[1024] = {0};
 
-        GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
-
-        if (strnlen_s(buffer, sizeof(buffer)) == 0)
-            return;
-
         if constexpr (std::is_same_v<int32_t, T>) {
-            value->value = std::strtol(buffer, 0, 10);
-            if (value->limited)
-                value->value = clamp<int32_t>(value->value, value->min, value->max);
+            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
+            if (strnlen_s(buffer, sizeof(buffer)) > 0) {
+                value->value = std::strtol(buffer, nullptr, 10);
+                if (value->limited)
+                    value->value = clamp<int32_t>(value->value, value->min, value->max);
+            }
         }
         else if constexpr (std::is_same_v<uint32_t, T>) {
-            value->value = std::strtoul(buffer, 0, 10);
-            if (value->limited)
-                value->value = clamp<uint32_t>(value->value, value->min, value->max);
+            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
+            if (strnlen_s(buffer, sizeof(buffer)) > 0) {
+                value->value = std::strtoul(buffer, nullptr, 10);
+                if (value->limited)
+                    value->value = clamp<uint32_t>(value->value, value->min, value->max);
+            }
         }
         else if constexpr (std::is_same_v<float, T>) {
-            value->value = std::strtof(buffer, 0);
-            if (value->limited)
-                value->value = clamp<float>(value->value, value->min, value->max);
+            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
+            if (strnlen_s(buffer, sizeof(buffer)) > 0) {
+                value->value = std::strtof(buffer, nullptr);
+                if (value->limited)
+                    value->value = clamp<float>(value->value, value->min, value->max);
+            }
         }
         else if constexpr (std::is_same_v<double, T>) {
-            value->value = std::strtod(buffer, 0);
-            if (value->limited)
-                value->value = clamp<double>(value->value, value->min, value->max);
+            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
+            if (strnlen_s(buffer, sizeof(buffer)) > 0) {
+                value->value = std::strtod(buffer, nullptr);
+                if (value->limited)
+                    value->value = clamp<double>(value->value, value->min, value->max);
+            }
+        }
+        else if constexpr (std::is_same_v<std::string, T>) {
+            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
+            if (strnlen_s(buffer, sizeof(buffer)) > 0)
+                value->value = buffer;
+        }
+        else if constexpr (std::is_same_v<std::vector<std::string>, T>) {
+            value->value.clear();
+            for (int i = 1;; ++i) {
+                char key[128];
+                std::snprintf(key, sizeof(key), "%s%d", value->keyPrefix, i);
+
+                GetPrivateProfileStringA(value->section, key, "", buffer, sizeof(buffer), CONFIG_PATH);
+                if (strnlen_s(buffer, sizeof(buffer)) == 0)
+                    break;
+                value->value.emplace_back(buffer);
+            }
         }
         else {
             throw "Unsupported type";
@@ -94,26 +124,36 @@ namespace kraken {
 
         if constexpr (std::is_same_v<int32_t, T>) {
             std::snprintf(buffer, sizeof(buffer), "%d", value->value);
+            WritePrivateProfileStringA(value->section, value->key, buffer, CONFIG_PATH);
         }
         else if constexpr (std::is_same_v<uint32_t, T>) {
-            std::snprintf(buffer, sizeof(buffer), "%d", value->value);
+            std::snprintf(buffer, sizeof(buffer), "%u", value->value);
+            WritePrivateProfileStringA(value->section, value->key, buffer, CONFIG_PATH);
         }
         else if constexpr (std::is_same_v<float, T>) {
             std::snprintf(buffer, sizeof(buffer), "%.03f", value->value);
+            WritePrivateProfileStringA(value->section, value->key, buffer, CONFIG_PATH);
         }
         else if constexpr (std::is_same_v<double, T>) {
-            std::snprintf(buffer, sizeof(buffer), "%.06f", value->value); 
+            std::snprintf(buffer, sizeof(buffer), "%.06f", value->value);
+            WritePrivateProfileStringA(value->section, value->key, buffer, CONFIG_PATH);
         }
         else if constexpr (std::is_same_v<bool, T>) {
             std::snprintf(buffer, sizeof(buffer), "%s", value->value ? "true" : "false");
+            WritePrivateProfileStringA(value->section, value->key, buffer, CONFIG_PATH);
+        }
+        else if constexpr (std::is_same_v<std::string, T>) {
+            WritePrivateProfileStringA(value->section, value->key, value->value.c_str(), CONFIG_PATH);
+        }
+        else if constexpr (std::is_same_v<std::vector<std::string>, T>) {
+            for (size_t i = 0; i < value->value.size(); ++i) {
+                char key[128];
+                std::snprintf(key, sizeof(key), "%s%zu", value->keyPrefix, i + 1);
+                WritePrivateProfileStringA(value->section, key, value->value[i].c_str(), CONFIG_PATH);
+            }
         }
         else {
             throw "Unsupported type";
         }
-
-        if (strnlen_s(buffer, sizeof(buffer)) == 0)
-            return;
-
-        WritePrivateProfileStringA(value->section, value->key, buffer, CONFIG_PATH);
     };
 };

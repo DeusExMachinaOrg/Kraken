@@ -17,6 +17,7 @@ set(SOURCES
     source/fix/physic.cpp
     source/fix/autobrakefix.cpp
     source/fix/objcontupgrade.cpp
+    source/fix/luabinds.cpp
 )
 
 # Header files
@@ -29,6 +30,7 @@ set(HEADERS
     include/fix/physic.hpp
     include/fix/autobrakefix.hpp
     include/fix/objcontupgrade.hpp
+    include/fix/luabinds.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
@@ -74,6 +76,13 @@ set(HEADERS
     include/hta/ai/DrivingValues.h
     include/hta/m3d/Object.h
     include/hta/m3d/RefCountedBase.h
+    include/hta/m3d/Application.h
+    include/hta/m3d/CMiracle3d.h
+    include/hta/m3d/IRenderer.h
+    include/hta/m3d/GameImpulse.h
+    include/hta/m3d/Kernel.h
+    include/hta/m3d/TruxxUiManager.h
+    include/hta/m3d/WeaponGroupManager.h
 )
 
 # Resource files

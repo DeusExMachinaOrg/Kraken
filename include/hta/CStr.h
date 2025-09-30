@@ -31,7 +31,7 @@ struct CStr
 	}
 };
 
-bool operator<(const CStr& lhs, const CStr& rhs)
+inline bool operator<(const CStr& lhs, const CStr& rhs)
 {
 	FUNC(0x00425D80, bool, __fastcall, _operator, const CStr*, const CStr*);
 	return _operator(&lhs, &rhs);

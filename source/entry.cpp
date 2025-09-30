@@ -5,6 +5,7 @@
 #include "fix/physic.hpp"
 #include "fix/autobrakefix.hpp"
 #include "fix/objcontupgrade.hpp"
+#include "fix/luabinds.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -35,5 +36,6 @@ namespace kraken {
         fix::physic::Apply();
         fix::autobrakefix::Apply(G_CONFIG->auto_brake_angle.value);
         fix::objcontupgrade::Apply();
+        fix::luabinds::Apply(G_CONFIG);
     };
 };

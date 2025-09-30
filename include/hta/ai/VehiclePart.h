@@ -1,5 +1,4 @@
 #pragma once
-#include <set>
 
 #include "PhysicBody.h"
 #include "SgNode.h"
@@ -27,17 +26,17 @@ namespace ai
 
 		int m_SplashEffect;
 		bool m_MakeSplash;
-		std::map<int, m3d::SgNode*> m_decals;
+		stable_size_map<int, m3d::SgNode*> m_decals;
 		ai::Numeric<float> m_price;
 		ai::NumericInRangeRegenerating<float> m_durability;
 		CStr m_partName;
 		int m_durabilityCoeffsForDamageTypes[4];
 		CStr m_blowEffectName;
-		std::set<int> m_suppressedLPs;
-		std::vector<ai::VehiclePart::ModelPart> m_modelParts;
+		stable_size_set<int> m_suppressedLPs;
+		stable_size_vector<ai::VehiclePart::ModelPart> m_modelParts;
 		CVector m_lastHitPos;
 		int m_passToAnotherMapData;
-		std::vector<ai::VehiclePart::LoadDecalData> m_loadDecalsData;
+		stable_size_vector<ai::VehiclePart::LoadDecalData> m_loadDecalsData;
 		int m_ownerCompoundPart;
 	};
 }
