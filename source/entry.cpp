@@ -6,6 +6,7 @@
 #include "fix/autobrakefix.hpp"
 #include "fix/objcontupgrade.hpp"
 #include "fix/luabinds.hpp"
+#include "fix/posteffectreload.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -37,5 +38,6 @@ namespace kraken {
         fix::autobrakefix::Apply(G_CONFIG->auto_brake_angle.value);
         fix::objcontupgrade::Apply();
         fix::luabinds::Apply(G_CONFIG);
+		fix::posteffectreload::Apply(G_CONFIG);
     };
 };

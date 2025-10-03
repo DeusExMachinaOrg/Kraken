@@ -18,6 +18,7 @@ set(SOURCES
     source/fix/autobrakefix.cpp
     source/fix/objcontupgrade.cpp
     source/fix/luabinds.cpp
+    source/fix/posteffectreload.cpp
 )
 
 # Header files
@@ -31,6 +32,7 @@ set(HEADERS
     include/fix/autobrakefix.hpp
     include/fix/objcontupgrade.hpp
     include/fix/luabinds.hpp
+    include/fix/posteffectreload.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
@@ -83,6 +85,9 @@ set(HEADERS
     include/hta/m3d/Kernel.h
     include/hta/m3d/TruxxUiManager.h
     include/hta/m3d/WeaponGroupManager.h
+    include/hta/m3d/CWorld.h
+    include/hta/m3d/WeatherManager.h
+    include/hta/m3d/CClient.h
 )
 
 # Resource files
