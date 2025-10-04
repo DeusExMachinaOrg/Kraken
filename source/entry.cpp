@@ -33,7 +33,7 @@ namespace kraken {
         G_MODULE = module;
         ConstantHotfix();
         fix::physic::Apply();
-        fix::autobrakefix::Apply(G_CONFIG->auto_brake_angle.value);
+        fix::autobrakefix::Apply();
         fix::objcontupgrade::Apply();
     };
 };
