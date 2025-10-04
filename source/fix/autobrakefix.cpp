@@ -1,6 +1,7 @@
 ﻿#include "hta/ai/Vehicle.h"
 #include "hta/ai/DrivingValues.h"
 #include "fix/autobrakefix.hpp"
+#include "config.hpp"
 #include "routines.hpp"
 
 namespace kraken::fix::autobrakefix {
@@ -37,20 +38,16 @@ namespace kraken::fix::autobrakefix {
 		if (fabsf(nextAngle - 3.1415) < 0.01) {
 			nextAngle = 3.1415;
 		}
-
-		const int grad = g_auto_brake_angle;
-
-		const float dead_angle = grad * (3.1415 / 180.0f); // угол, меньше которого торможение не происходит
-
+		
+		
+		float dead_angle = Config::Get().auto_brake_angle.value * (3.1415 / 180.0f); // угол, меньше которого торможение не происходит
 		if (nextAngle < dead_angle && vehicle->m_pathNum < vehicle->m_pPath->m_size - 1)
 			autobrake = false;
 
         vehicle->SetThrottle(throttle, autobrake);
     }
 
-    void Apply(int auto_brake_angle)
-    {
-		g_auto_brake_angle = auto_brake_angle;
+    void Apply() {
         kraken::routines::MakeCall((void*)0x005D3137, (void*)&SetThrottle);
     }
 }
