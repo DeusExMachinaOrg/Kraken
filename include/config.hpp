@@ -15,6 +15,10 @@ namespace kraken {
     };
 
     class Config {
+    private:
+        static Config* INSTANCE;
+    public:
+        static Config& Get(void) { return *Config::INSTANCE; };
     public:
         // Graphics
         ConfigValue<uint32_t> save_width;
@@ -29,6 +33,7 @@ namespace kraken {
         ConfigValue<float>    handbrake_power;
         ConfigValue<float>    brake_power;
         ConfigValue<uint32_t> friend_damage;
+        ConfigValue<uint32_t> auto_brake_angle; // If angle to the next path point is bigger than this value (in degrees), autobrake will be applied
 
     public:
          Config();

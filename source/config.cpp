@@ -1,10 +1,15 @@
 #include "utils.hpp"
 #include "config.hpp"
+#include <assert.h>
 
 namespace kraken {
     const char* CONFIG_PATH = "./data/kraken.ini";
 
+    Config* Config::INSTANCE = nullptr;
+
     Config::Config() {
+        assert(Config::INSTANCE == nullptr && "Config already created!");
+
         //                         section      key                base   limit  min    max
         this->save_width       = { "graphics",  "save_width",      512,   true,  256,   2048  };
         this->save_height      = { "graphics",  "save_height",     256,   true,  128,   1024  };
@@ -16,13 +21,18 @@ namespace kraken {
         this->handbrake_power  = { "constants", "handbrake_power", 1.0,   true,  0.0,   1.0   };
         this->brake_power      = { "constants", "brake_power",     -1.0,  true,  -1.0,  0.0   };
         this->friend_damage    = { "constants", "friend_damage",   0,     true,  0,     1     };
+		this->auto_brake_angle = { "constants", "auto_brake_angle",50,    true,  0,     180   };
+
+        Config::INSTANCE = this;
 
         this->Load();
         this->Dump();
     };
 
-    Config::~Config() {
+    Config::~Config() {        
         this->Dump();
+
+        Config::INSTANCE = nullptr;
     };
 
     void Config::Load() {
@@ -36,6 +46,7 @@ namespace kraken {
         this->LoadValue(&this->handbrake_power);
         this->LoadValue(&this->brake_power);
         this->LoadValue(&this->friend_damage);
+		this->LoadValue(&this->auto_brake_angle);
     };
 
     void Config::Dump() {
@@ -49,6 +60,7 @@ namespace kraken {
         this->DumpValue(&this->handbrake_power);
         this->DumpValue(&this->brake_power);
         this->DumpValue(&this->friend_damage);
+		this->DumpValue(&this->auto_brake_angle);
     };
 
     template<typename T>

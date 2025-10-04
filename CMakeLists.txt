@@ -69,7 +69,9 @@ set(HEADERS
     include/hta/ai/SimplePhysicObjPrototypeInfo.h
     include/hta/ai/Vehicle.h
     include/hta/ai/VehiclePart.h
+    include/hta/ai/FlatLine.h
     include/hta/ai/VehiclePrototypeInfo.h
+    include/hta/ai/DrivingValues.h
     include/hta/m3d/Object.h
     include/hta/m3d/RefCountedBase.h
 )

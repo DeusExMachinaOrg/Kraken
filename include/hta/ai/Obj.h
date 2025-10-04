@@ -1,6 +1,5 @@
 #pragma once
-#include <map>
-#include <vector>
+#include <utils.hpp>
 
 #include "hta/m3d/Object.h"
 #include "Modifier.h"
@@ -14,7 +13,7 @@ namespace ai
 		struct EventRecipientInfo
 		{
 			int m_eventId;
-			std::vector<int> m_objIds;
+			stable_size_vector<int> m_objIds;
 		};
 
 		int objId;
@@ -35,11 +34,11 @@ namespace ai
 		bool m_bIsAlreadySaved;
 		int m_hierarchyType;
 		int PrototypeId;
-		std::map<int, ai::Obj*> m_allChildren;
-		std::vector<int> m_appliedPrefixIds;
-		std::vector<int> m_appliedSuffixIds;
+		stable_size_map<int, ai::Obj*> m_allChildren;
+		stable_size_vector<int> m_appliedPrefixIds;
+		stable_size_vector<int> m_appliedSuffixIds;
 		bool m_bAffixesWasApplied;
-		std::vector<ai::Modifier> m_modifiers;
-		std::vector<ai::Obj::EventRecipientInfo> m_eventRecipients;
+		stable_size_vector<ai::Modifier> m_modifiers;
+		stable_size_vector<ai::Obj::EventRecipientInfo> m_eventRecipients;
 	};
 }
