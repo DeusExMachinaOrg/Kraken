@@ -19,6 +19,7 @@ set(SOURCES
     source/fix/objcontupgrade.cpp
     source/fix/luabinds.cpp
     source/fix/posteffectreload.cpp
+    source/fix/fileserver.cpp
 )
 
 # Header files
@@ -88,6 +89,9 @@ set(HEADERS
     include/hta/m3d/CWorld.h
     include/hta/m3d/WeatherManager.h
     include/hta/m3d/CClient.h
+
+    include/ext/runtime.hpp
+    source/ext/runtime.cpp
 )
 
 # Resource files
