@@ -17,6 +17,7 @@ set(SOURCES
     source/fix/physic.cpp
     source/fix/autobrakefix.cpp
     source/fix/objcontupgrade.cpp
+    source/fix/fileserver.cpp
     source/fix/luabinds.cpp
 )
 
@@ -83,6 +84,9 @@ set(HEADERS
     include/hta/m3d/Kernel.h
     include/hta/m3d/TruxxUiManager.h
     include/hta/m3d/WeaponGroupManager.h
+
+    include/ext/runtime.hpp
+    source/ext/runtime.cpp
 )
 
 # Resource files

@@ -2,6 +2,9 @@
 #include "config.hpp"
 #include "routines.hpp"
 
+#include "ext/runtime.hpp"
+
+#include "fix/fileserver.hpp"
 #include "fix/physic.hpp"
 #include "fix/autobrakefix.hpp"
 #include "fix/objcontupgrade.hpp"
@@ -32,7 +35,11 @@ namespace kraken {
 
     API void EntryPoint(HANDLE module) {
         G_MODULE = module;
+
+        runtime::Init();
+
         ConstantHotfix();
+        fix::fileserver::Apply();
         fix::physic::Apply();
         fix::autobrakefix::Apply();
         fix::objcontupgrade::Apply();
