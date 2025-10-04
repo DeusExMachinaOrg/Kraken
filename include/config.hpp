@@ -15,6 +15,10 @@ namespace kraken {
     };
 
     class Config {
+    private:
+        static Config* INSTANCE;
+    public:
+        static Config& Get(void) { return *Config::INSTANCE; };
     public:
         // Graphics
         ConfigValue<uint32_t> save_width;
