@@ -25,6 +25,178 @@ namespace kraken::impulse {
         eImpulseINVALID,
     };
 
+    enum eKey {
+        eKeySpace,
+        eKeyApostrophe,
+        eKeyComma,
+        eKeyMinus,
+        eKeyPeriod,
+        eKeySlash,
+        eKey0,
+        eKey1,
+        eKey2,
+        eKey3,
+        eKey4,
+        eKey5,
+        eKey6,
+        eKey7,
+        eKey8,
+        eKey9,
+        eKeySemicolon,
+        eKeyEqual,
+        eKeyA,
+        eKeyB,
+        eKeyC,
+        eKeyD,
+        eKeyE,
+        eKeyF,
+        eKeyG,
+        eKeyH,
+        eKeyI,
+        eKeyK,
+        eKeyL,
+        eKeyM,
+        eKeyN,
+        eKeyO,
+        eKeyP,
+        eKeyQ,
+        eKeyR,
+        eKeyS,
+        eKeyT,
+        eKeyU,
+        eKeyV,
+        eKeyW,
+        eKeyX,
+        eKeyY,
+        eKeyZ,
+        eKeyLeftBracket,
+        eKeyRightBracket,
+        eKeyBackslash,
+        eKeyGraveAccent,
+        eKeyWorld1,
+        eKeyWorld2,
+        eKeyEscape,
+        eKeyEnter,
+        eKeyTab,
+        eKeyBackspace,
+        eKeyInsert,
+        eKeyDelete,
+        eKeyRight,
+        eKeyLeft,
+        eKeyDown,
+        eKeyUp,
+        eKeyPageUp,
+        eKeyPageDown,
+        eKeyHome,
+        eKeyEnd,
+        eKeyCapsLock,
+        eKeyScrollLock,
+        eKeyNumLock,
+        eKeyPrintScreen,
+        eKeyPause,
+        eKeyF1,
+        eKeyF2,
+        eKeyF3,
+        eKeyF4,
+        eKeyF5,
+        eKeyF6,
+        eKeyF7,
+        eKeyF8,
+        eKeyF9,
+        eKeyF10,
+        eKeyF11,
+        eKeyF12,
+        eKeyF13,
+        eKeyF14,
+        eKeyF15,
+        eKeyF16,
+        eKeyF17,
+        eKeyF18,
+        eKeyF19,
+        eKeyF20,
+        eKeyF21,
+        eKeyF22,
+        eKeyF23,
+        eKeyF24,
+        eKeyF25,
+        eKeyNum0,
+        eKeyNum1,
+        eKeyNum2,
+        eKeyNum3,
+        eKeyNum4,
+        eKeyNum5,
+        eKeyNum6,
+        eKeyNum7,
+        eKeyNum8,
+        eKeyNum9,
+        eKeyNumDecimal,
+        eKeyNumDivide,
+        eKeyNumMultiply,
+        eKeyNumSubstract,
+        eKeyNumAdd,
+        eKeyNumEnter,
+        eKeyNumEqual,
+        eKeyLeftShift,
+        eKeyLeftControl,
+        eKeyLeftAlt,
+        eKeyLeftSuper,
+        eKeyRightShift,
+        eKeyRightControl,
+        eKeyRightAlt,
+        eKeyRightSuper,
+        eKeyMenu,
+        eKeyMouse0,
+        eKeyMouse1,
+        eKeyMouse2,
+        eKeyMouse3,
+        eKeyMouse4,
+        eKeyMouse5,
+        eKeyMouse6,
+        eKeyMouse7,
+        eKeyJoyKey0,
+        eKeyJoyKey1,
+        eKeyJoyKey2,
+        eKeyJoyKey3,
+        eKeyJoyKey4,
+        eKeyJoyKey5,
+        eKeyJoyKey6,
+        eKeyJoyKey7,
+        eKeyJoyKey8,
+        eKeyJoyKey9,
+        eKeyJoyKey10,
+        eKeyJoyKey11,
+        eKeyJoyKey12,
+        eKeyJoyKey13,
+        eKeyJoyKey14,
+        eKeyJoyKey15,
+        eKeyJoyAxis0,
+        eKeyJoyAxis1,
+        eKeyJoyAxis2,
+        eKeyJoyAxis3,
+        eKeyJoyAxis4,
+        eKeyJoyAxis5,
+        eKeyCOUNT,
+        eKeyMouseLeft   = eKeyMouse0,
+        eKeyMouseRight  = eKeyMouse1,
+        eKeyMouseMiddle = eKeyMouse2,
+    };
+
+    enum eJoyAxis {
+        eJoyAxis0,
+        eJoyAxis1,
+        eJoyAxis2,
+        eJoyAxis3,
+        eJoyAxis4,
+        eJoyAxis5,
+        eJoyAxisCOUNT,
+    };
+
+    enum eJoyStatus {
+        eJoyStatusConnected,
+        eJoyStatusDisconnected,
+        eJoyStatusCOUNT,
+    };
+
     struct Quit {
         int32_t code;
     };
@@ -48,7 +220,7 @@ namespace kraken::impulse {
     };
 
     struct Key {
-        eKeyCode code;
+        eKey code;
         bool     repeat;
         bool     down;
         float    position_x;
@@ -60,7 +232,7 @@ namespace kraken::impulse {
     };
 
     struct MouseKey {
-        eKeyCode code;
+        eKey code;
         bool     repeat;
         bool     down;
         float    position_x;
@@ -90,7 +262,7 @@ namespace kraken::impulse {
     };
 
     struct JoyButton {
-        eKeyCode key;
+        eKey key;
         bool     repeat;
         bool     down;
     };
@@ -99,7 +271,7 @@ namespace kraken::impulse {
         uint32_t action;
         bool     repeat;
         bool     down;
-        eKeyCode code;
+        eKey code;
         float    value;
         float    position_x;
         float    position_y;
