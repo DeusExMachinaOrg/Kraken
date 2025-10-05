@@ -2,7 +2,7 @@
 #include "PhysicObjPrototypeInfo.h"
 #include "ComplexPhysicObjPartDescription.h"
 #include "hta/CVector.h"
-#include <windows.h>
+#include "stdafx.hpp"
 
 namespace ai
 {

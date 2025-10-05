@@ -1,5 +1,5 @@
 #pragma once
-#include <Windows.h>
+#include "stdafx.hpp"
 #include "EngineConfig.h"
 #include "ScriptServer.h"
 

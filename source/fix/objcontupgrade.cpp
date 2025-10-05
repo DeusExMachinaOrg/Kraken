@@ -3,43 +3,38 @@
 #include "routines.hpp"
 #include <vector>
 
-template <typename T>
-void OverrideValue(void* address, T value) {
-    kraken::routines::Override(sizeof(T), address, reinterpret_cast<char*>(&value));
-}
-
 namespace kraken::fix::objcontupgrade {
     void Apply()
     {
         // ai::ObjContainer::InnerContainer::InnerContainer
         //0063086D                 push    4000h
-        OverrideValue(reinterpret_cast<void*>(0x0063086D + 1), uint32_t(0x8000));
+        kraken::routines::OverrideValue(reinterpret_cast<void*>(0x0063086D + 1), uint32_t(0x8000));
         //0063087F                 push    4000h
-        OverrideValue(reinterpret_cast<void*>(0x0063087F + 1), uint32_t(0x8000));
+        kraken::routines::OverrideValue(reinterpret_cast<void*>(0x0063087F + 1), uint32_t(0x8000));
 
         // ai::ObjContainer::InnerContainer::Clear
         //0063098F                 push    4000h
-        OverrideValue(reinterpret_cast<void*>(0x0063098F + 1), uint32_t(0x8000));
+        kraken::routines::OverrideValue(reinterpret_cast<void*>(0x0063098F + 1), uint32_t(0x8000));
         //006309A1                 push    4000h
-        OverrideValue(reinterpret_cast<void*>(0x006309A1 + 1), uint32_t(0x8000));
+        kraken::routines::OverrideValue(reinterpret_cast<void*>(0x006309A1 + 1), uint32_t(0x8000));
 
         // ai::ObjContainer::InnerContainer::Add
         // 0063044A                 shl     eax, 0Eh
-        OverrideValue(reinterpret_cast<void*>(0x0063044A + 2), uint8_t(0x0F));
+        kraken::routines::OverrideValue(reinterpret_cast<void*>(0x0063044A + 2), uint8_t(0x0F));
         // 0062FFDD                 push    4000h
-        OverrideValue(reinterpret_cast<void*>(0x0062FFDD + 1), uint32_t(0x8000));
+        kraken::routines::OverrideValue(reinterpret_cast<void*>(0x0062FFDD + 1), uint32_t(0x8000));
 
         //ai::ObjContainer::LoadNodeStatesFromXml
         //0062E4D9                 cmp     eax, 4000h
-        OverrideValue(reinterpret_cast<void*>(0x0062E4D9 + 1), uint32_t(0x8000));
+        kraken::routines::OverrideValue(reinterpret_cast<void*>(0x0062E4D9 + 1), uint32_t(0x8000));
 
         //ai::_export_ObjContainer_GetEntityByObjId
         //0062E800                 sar     eax, 0Eh
-        OverrideValue(reinterpret_cast<void*>(0x0062E800 + 2), uint8_t(0x0F));
+        kraken::routines::OverrideValue(reinterpret_cast<void*>(0x0062E800 + 2), uint8_t(0x0F));
 
         //ai::ObjContainer::Clear
         //00631387                 shl     eax, 0Eh
-        OverrideValue(reinterpret_cast<void*>(0x00631387 + 2), uint8_t(0x0F));
+        kraken::routines::OverrideValue(reinterpret_cast<void*>(0x00631387 + 2), uint8_t(0x0F));
 
         // sar eax 0x0E
         std::vector<uint32_t> sar_addresses{
@@ -530,7 +525,7 @@ namespace kraken::fix::objcontupgrade {
 
         for (auto adr : sar_addresses)
         {
-            OverrideValue(reinterpret_cast<void*>(adr + 2), uint8_t(0x0F));
+            kraken::routines::OverrideValue(reinterpret_cast<void*>(adr + 2), uint8_t(0x0F));
         }
 
         // and ecx 3FFF
@@ -904,7 +899,7 @@ namespace kraken::fix::objcontupgrade {
 
         for (auto address : and_ecx_addresses)
         {
-            OverrideValue(reinterpret_cast<void*>(address + 2), uint32_t(0x7FFF));
+            kraken::routines::OverrideValue(reinterpret_cast<void*>(address + 2), uint32_t(0x7FFF));
         }
 
         // and eax 3FFFh
@@ -1039,7 +1034,7 @@ namespace kraken::fix::objcontupgrade {
 
         for (auto address : and_eax_addresses)
         {
-            OverrideValue(reinterpret_cast<void*>(address + 1), uint32_t(0x7FFF));
+            kraken::routines::OverrideValue(reinterpret_cast<void*>(address + 1), uint32_t(0x7FFF));
         }
     }
 }

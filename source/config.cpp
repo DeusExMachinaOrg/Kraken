@@ -53,6 +53,7 @@ namespace kraken {
         this->LoadValue(&this->lua_enabled);
 		this->LoadValue(&this->lua_scripts);
 		this->LoadValue(&this->posteffectreload);
+		this->LoadValue(&this->ware_units);
     };
 
     void Config::Dump() {
@@ -70,6 +71,7 @@ namespace kraken {
 		this->DumpValue(&this->lua_enabled);
 		this->DumpValue(&this->lua_scripts);
 		this->DumpValue(&this->posteffectreload);
+		this->DumpValue(&this->ware_units);
     };
 
     template<typename T>
@@ -115,7 +117,7 @@ namespace kraken {
         }
         else if constexpr (std::is_same_v<std::vector<std::string>, T>) {
             value->value.clear();
-            for (int i = 1;; ++i) {
+            for (int i = 1; i < 128; ++i) {
                 char key[128];
                 std::snprintf(key, sizeof(key), "%s%d", value->keyPrefix, i);
 
@@ -123,6 +125,29 @@ namespace kraken {
                 if (strnlen_s(buffer, sizeof(buffer)) == 0)
                     break;
                 value->value.emplace_back(buffer);
+            }
+        }
+        else if constexpr (std::is_same_v<std::vector<configstructs::WareUnits>, T>) {
+            value->value.clear();
+            for (int i = 1; i < 128; ++i) {
+                char key[128];
+                for (const auto& prefix : { configstructs::REPAIR, configstructs::REFUEL }) {
+                    std::snprintf(key, sizeof(key), "%s%d", prefix, i);
+
+                    GetPrivateProfileStringA(key, "Units", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    if (strnlen_s(buffer, sizeof(buffer)) == 0)
+                        continue;
+                    float units = std::strtof(buffer, nullptr);
+
+                    GetPrivateProfileStringA(key, "Ware", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    if (strnlen_s(buffer, sizeof(buffer)) == 0)
+                        continue;
+                    std::string ware = buffer;
+
+                    configstructs::WareType type = (strcmp(prefix, configstructs::REPAIR) == 0) ? configstructs::WareType::REPAIR : configstructs::WareType::REFUEL;
+
+                    value->value.emplace_back(units, ware, type);
+                }
             }
         }
         else {
@@ -164,6 +189,22 @@ namespace kraken {
                 WritePrivateProfileStringA(value->section, key, value->value[i].c_str(), CONFIG_PATH);
             }
         }
+        else if constexpr (std::is_same_v<std::vector<configstructs::WareUnits>, T>) {
+            int repairIndex = 1;
+            int refuelIndex = 1;
+            for (const auto& wareUnit : value->value) {
+                char key[128];
+                if (wareUnit.Type == configstructs::WareType::REPAIR) {
+                    std::snprintf(key, sizeof(key), "%s%d", configstructs::REPAIR, repairIndex++);
+                }
+                else {
+                    std::snprintf(key, sizeof(key), "%s%d", configstructs::REFUEL, refuelIndex++);
+                }
+                std::snprintf(buffer, sizeof(buffer), "%.03f", wareUnit.Units);
+                WritePrivateProfileStringA(key, "Units", buffer, CONFIG_PATH);
+                WritePrivateProfileStringA(key, "Ware", wareUnit.Ware.c_str(), CONFIG_PATH);
+            }
+		}
         else {
             throw "Unsupported type";
         }
