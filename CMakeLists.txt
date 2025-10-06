@@ -20,6 +20,7 @@ set(SOURCES
     source/fix/luabinds.cpp
     source/fix/posteffectreload.cpp
     source/fix/fileserver.cpp
+    source/fix/luabinds.cpp
     source/fix/wareuse.cpp
 )
 
@@ -94,6 +95,9 @@ set(HEADERS
     include/hta/m3d/CWorld.h
     include/hta/m3d/WeatherManager.h
     include/hta/m3d/CClient.h
+
+    include/ext/impulse.hpp
+    source/ext/impulse.cpp
 
     include/ext/runtime.hpp
     source/ext/runtime.cpp
