@@ -18,11 +18,11 @@ namespace ai
 
 		CStr m_modelname;
 		dMass mass;
-		std::vector<ai::GeomTransform*> m_pGeoms;
+		stable_size_vector<ai::GeomTransform*> m_pGeoms;
 		int m_mU;
 		m3d::SgNode* Node;
 		int m_cfgNum;
-		std::vector<ai::CollisionInfo> m_collisionInfos;
+		stable_size_vector<ai::CollisionInfo> m_collisionInfos;
 		bool m_bCollisionTrimeshAllowed;
 		PhysicObj* OwnerPhysicObj;
 		bool m_bNeedToRelinkNode;
@@ -43,9 +43,9 @@ namespace ai
 			_GetNodeRelativeRotation(this, result);
 		}
 
-		void SetEffectActions(std::vector<ActionType>* Actions)
+		void SetEffectActions(stable_size_vector<ActionType>* Actions)
 		{
-			FUNC(0x0061D180, void, __thiscall, _SetEffectActions, ai::PhysicBody*, std::vector<ActionType>*);
+			FUNC(0x0061D180, void, __thiscall, _SetEffectActions, ai::PhysicBody*, stable_size_vector<ActionType>*);
 			_SetEffectActions(this, Actions);
 		}
 

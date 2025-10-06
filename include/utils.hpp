@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <map>
+#include <set>
 
 template <typename T>
 inline T clamp(T v, T min, T max) {
@@ -20,6 +21,13 @@ struct stable_size_vector : public std::vector<T> {
 
 template<typename K, typename T>
 struct stable_size_map : public std::map<K, T> {
+#if !defined(_DEBUG)
+    char pad[4];
+#endif
+};
+
+template<typename K>
+struct stable_size_set : public std::set<K> {
 #if !defined(_DEBUG)
     char pad[4];
 #endif
