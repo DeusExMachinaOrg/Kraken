@@ -47,6 +47,7 @@ namespace kraken {
         ConfigValue<uint32_t>                 auto_brake_angle; // If angle to the next path point is bigger than this value (in degrees), autobrake will be applied
         ConfigValue<std::vector<std::string>> lua_scripts;
         ConfigValue<int32_t>                  lua_enabled;
+		ConfigValue<int32_t>                  posteffectreload;
 
     public:
          Config();

@@ -24,6 +24,7 @@ namespace kraken {
 		this->auto_brake_angle = { "constants", "auto_brake_angle",50,    true,  0,     180   };
         this->lua_enabled      = { "lua_binds", "Enabled"         ,0,     true,  0,     1     };
         this->lua_scripts      = { "lua_binds", "Script_" };
+        this->posteffectreload = { "constants", "posteffectreload",0,     true,  0,     1     };
 
         Config::INSTANCE = this;
 
@@ -51,6 +52,7 @@ namespace kraken {
 		this->LoadValue(&this->auto_brake_angle);
         this->LoadValue(&this->lua_enabled);
 		this->LoadValue(&this->lua_scripts);
+		this->LoadValue(&this->posteffectreload);
     };
 
     void Config::Dump() {
@@ -67,6 +69,7 @@ namespace kraken {
 		this->DumpValue(&this->auto_brake_angle);
 		this->DumpValue(&this->lua_enabled);
 		this->DumpValue(&this->lua_scripts);
+		this->DumpValue(&this->posteffectreload);
     };
 
     template<typename T>
