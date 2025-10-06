@@ -301,15 +301,12 @@ namespace kraken::impulse {
     using Listener = void(*)(const Impulse&);
 
     void Init(void);
-    void Free(void);
-    void Poll(void);
     void Clear(void);
     void Reset(eImpulse type);
     void Attach(eImpulse type, Listener listener);
     void Detach(eImpulse type, Listener listener);
-    void Supress(void);
-    void Dispatch(const Impulse& impulse);
-    void Immediate(const Impulse& impulse);
+    void Suppress(void);
+    bool Immediate(const Impulse& impulse);
 };
 
 #endif
