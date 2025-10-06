@@ -3,6 +3,7 @@
 #include "routines.hpp"
 
 #include "ext/runtime.hpp"
+#include "ext/impulse.hpp"
 
 #include "fix/fileserver.hpp"
 #include "fix/physic.hpp"
@@ -36,6 +37,7 @@ namespace kraken {
         G_MODULE = module;
 
         runtime::Init();
+        impulse::Init();
 
         ConstantHotfix();
         fix::fileserver::Apply();

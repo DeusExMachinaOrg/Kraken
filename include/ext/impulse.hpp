@@ -1,5 +1,5 @@
-#ifndef KRAKEN_EXT_RUNTIME
-#define KRAKEN_EXT_RUNTIME
+#ifndef KRAKEN_EXT_IMPULSE
+#define KRAKEN_EXT_IMPULSE
 
 #include <stdint.h>
 #include <functional>
@@ -53,6 +53,7 @@ namespace kraken::impulse {
         eKeyG,
         eKeyH,
         eKeyI,
+        eKeyJ,
         eKeyK,
         eKeyL,
         eKeyM,
@@ -176,6 +177,7 @@ namespace kraken::impulse {
         eKeyJoyAxis4,
         eKeyJoyAxis5,
         eKeyCOUNT,
+        eKeyINVALID,
         eKeyMouseLeft   = eKeyMouse0,
         eKeyMouseRight  = eKeyMouse1,
         eKeyMouseMiddle = eKeyMouse2,
@@ -222,19 +224,21 @@ namespace kraken::impulse {
     struct Key {
         eKey code;
         bool     repeat;
-        bool     down;
+        bool     pressed;
         float    position_x;
         float    position_y;
     };
 
     struct Text {
-        char text[5];
+        uint32_t symbol;
+        char     text[5];
+        size_t   size;
     };
 
     struct MouseKey {
         eKey code;
         bool     repeat;
-        bool     down;
+        bool     pressed;
         float    position_x;
         float    position_y;
     };
@@ -264,14 +268,14 @@ namespace kraken::impulse {
     struct JoyButton {
         eKey key;
         bool     repeat;
-        bool     down;
+        bool     pressed;
     };
 
     struct Action {
         uint32_t action;
         bool     repeat;
-        bool     down;
-        eKey code;
+        bool     pressed;
+        eKey     code;
         float    value;
         float    position_x;
         float    position_y;

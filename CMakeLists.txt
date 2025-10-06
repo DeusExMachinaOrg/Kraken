@@ -76,6 +76,9 @@ set(HEADERS
     include/hta/m3d/Object.h
     include/hta/m3d/RefCountedBase.h
 
+    include/ext/impulse.hpp
+    source/ext/impulse.cpp
+
     include/ext/runtime.hpp
     source/ext/runtime.cpp
 )
