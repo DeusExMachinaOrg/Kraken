@@ -17,6 +17,7 @@ set(SOURCES
     source/fix/physic.cpp
     source/fix/autobrakefix.cpp
     source/fix/objcontupgrade.cpp
+    source/fix/fileserver.cpp
 )
 
 # Header files
@@ -74,6 +75,12 @@ set(HEADERS
     include/hta/ai/DrivingValues.h
     include/hta/m3d/Object.h
     include/hta/m3d/RefCountedBase.h
+
+    include/ext/impulse.hpp
+    source/ext/impulse.cpp
+
+    include/ext/runtime.hpp
+    source/ext/runtime.cpp
 )
 
 # Resource files
