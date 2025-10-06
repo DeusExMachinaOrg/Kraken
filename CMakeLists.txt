@@ -85,6 +85,9 @@ set(HEADERS
     include/hta/m3d/TruxxUiManager.h
     include/hta/m3d/WeaponGroupManager.h
 
+    include/ext/impulse.hpp
+    source/ext/impulse.cpp
+
     include/ext/runtime.hpp
     source/ext/runtime.cpp
 )
