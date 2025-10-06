@@ -1,6 +1,6 @@
 #pragma once
 #include "hta/Func.h"
-#include <Windows.h>
+#include "stdafx.hpp"
 
 namespace m3d
 {

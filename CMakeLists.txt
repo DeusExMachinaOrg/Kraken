@@ -21,6 +21,7 @@ set(SOURCES
     source/fix/posteffectreload.cpp
     source/fix/fileserver.cpp
     source/fix/luabinds.cpp
+    source/fix/wareuse.cpp
 )
 
 # Header files
@@ -28,6 +29,7 @@ set(HEADERS
     include/stdafx.hpp
     include/bridge.hpp
     include/config.hpp
+    include/configstructs.hpp
     include/routines.hpp
     include/utils.hpp
     include/fix/physic.hpp
@@ -41,6 +43,7 @@ set(HEADERS
     include/hta/Func.h
     include/hta/Game.h
     include/hta/Quaternion.h
+    include/hta/DragDropItemsWnd.h
     include/hta/ai/ActionType.h
     include/hta/ai/AIParam.h
     include/hta/ai/AIParam.h
@@ -78,6 +81,8 @@ set(HEADERS
     include/hta/ai/FlatLine.h
     include/hta/ai/VehiclePrototypeInfo.h
     include/hta/ai/DrivingValues.h
+    include/hta/ai/PrototypeManager.h
+    include/hta/ai/Player.h
     include/hta/m3d/Object.h
     include/hta/m3d/RefCountedBase.h
     include/hta/m3d/Application.h

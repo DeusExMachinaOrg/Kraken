@@ -1,5 +1,5 @@
 #pragma once
-#include <Windows.h>
+#include "stdafx.hpp"
 #include "CWorld.h"
 
 namespace m3d

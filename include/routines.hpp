@@ -39,6 +39,12 @@ namespace kraken::routines {
         VirtualProtect(src, size, protection, &protection);
     };
 
+    template <typename T>
+    void OverrideValue(void* address, T value)
+    {
+        Override(sizeof(T), address, reinterpret_cast<char*>(&value));
+    }
+
     inline void RemapPtr(void* src, void* tar) {
         DWORD protection;
         size_t temp = (size_t) tar;

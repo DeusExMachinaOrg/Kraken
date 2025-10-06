@@ -3,8 +3,11 @@
 
 #include "stdafx.hpp"
 #include <vector>
+#include "configstructs.hpp"
 
 namespace kraken {
+    typedef std::vector<configstructs::WareUnits> WareUnitsList;
+
     template <typename T>
     struct ConfigValue {
         const char* section;
@@ -20,9 +23,11 @@ namespace kraken {
         const char* section;
         const char* keyPrefix; // e.g. "Script_"
         std::vector<std::string> value;
-        bool limited = false;
-        int min = 0;
-        int max = 0;
+    };
+
+    template<>
+    struct ConfigValue<WareUnitsList> {
+        WareUnitsList value;
     };
 
     class Config {
@@ -48,6 +53,7 @@ namespace kraken {
         ConfigValue<std::vector<std::string>> lua_scripts;
         ConfigValue<int32_t>                  lua_enabled;
 		ConfigValue<int32_t>                  posteffectreload;
+        ConfigValue<WareUnitsList>            ware_units;
 
     public:
          Config();
