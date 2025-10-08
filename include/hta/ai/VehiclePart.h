@@ -5,6 +5,7 @@
 #include "Numeric.h"
 #include "NumericInRangeRegenerating.h"
 #include "DecalData.h"
+#include "IPriceCoeffProvider.h"
 
 namespace ai
 {
@@ -38,5 +39,12 @@ namespace ai
 		int m_passToAnotherMapData;
 		stable_size_vector<ai::VehiclePart::LoadDecalData> m_loadDecalsData;
 		int m_ownerCompoundPart;
+
+		__int32 GetPrice(const ai::IPriceCoeffProvider* provider)
+		{
+			FUNC(0x006CF0C0, __int32, __thiscall, _GetPrice, VehiclePart*, const ai::IPriceCoeffProvider*);
+			return _GetPrice(this, provider);
+		}
+
 	};
 }

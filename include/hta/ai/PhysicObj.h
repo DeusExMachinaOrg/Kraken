@@ -11,18 +11,18 @@ namespace ai
 		CVector m_postPosition;
 		int m_physicBehaviorFlags;
 		CVector m_massCenter;
-		int m_spaceId;
+		void* m_spaceId;
 		bool m_bIsSpaceOwner;
 		void* m_body;
 		void* m_intersectionObstacle;
-		int m_lookSphere;
-		int m_boundSphere;
+		void* m_lookSphere;
+		void* m_boundSphere;
 		int m_physicState;
 		int m_bIsUpdatingByODE;
 		int m_enabledCellsCount;
 		bool m_bBodyEnabledLastFrame;
 		int SkinNumber;
-		int m_timeFromLastCollisionEffect;
+		float m_timeFromLastCollisionEffect;
 
 		CVector* GetDirection(CVector* result)
 		{
@@ -30,4 +30,5 @@ namespace ai
 			return _GetDirection(this, result);
 		}
 	};
+	ASSERT_SIZE(ai::PhysicObj, 0x120);
 }

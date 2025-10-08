@@ -22,6 +22,7 @@ set(SOURCES
     source/fix/fileserver.cpp
     source/fix/luabinds.cpp
     source/fix/wareuse.cpp
+    source/fix/schwarzfix.cpp
 )
 
 # Header files
@@ -37,6 +38,7 @@ set(HEADERS
     include/fix/objcontupgrade.hpp
     include/fix/luabinds.hpp
     include/fix/posteffectreload.hpp
+    include/fix/schwarzfix.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
@@ -44,6 +46,8 @@ set(HEADERS
     include/hta/Game.h
     include/hta/Quaternion.h
     include/hta/DragDropItemsWnd.h
+    include/hta/ref_ptr.h
+    include/hta/scoped_ptr.h
     include/hta/ai/ActionType.h
     include/hta/ai/AIParam.h
     include/hta/ai/AIParam.h
@@ -62,6 +66,7 @@ set(HEADERS
     include/hta/ai/GeomRepository.h
     include/hta/ai/GeomRepositoryItem.h
     include/hta/ai/GeomTransform.h
+    include/hta/ai/IPriceCoeffProvider.h
     include/hta/ai/IzvratRepository.h
     include/hta/ai/Modifier.h
     include/hta/ai/Numeric.h
@@ -112,7 +117,7 @@ set(RESOURCES
 add_library(kraken SHARED ${SOURCES} ${HEADERS} ${RESOURCES})
 
 # Include directories
-target_include_directories(kraken PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(kraken PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/include/hta)
 
 # Windows-specific settings
 if(MSVC)

@@ -31,4 +31,6 @@ namespace m3d
 			return _IsKindOf(this, cls);
 		}
 	};
+
+	ASSERT_SIZE(m3d::Object, 0x34);
 }

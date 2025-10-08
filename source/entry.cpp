@@ -8,6 +8,7 @@
 #include "fix/fileserver.hpp"
 #include "fix/physic.hpp"
 #include "fix/autobrakefix.hpp"
+#include "fix/schwarzfix.hpp"
 #include "fix/objcontupgrade.hpp"
 #include "fix/luabinds.hpp"
 #include "fix/posteffectreload.hpp"
@@ -46,6 +47,7 @@ namespace kraken {
         fix::fileserver::Apply();
         fix::physic::Apply();
         fix::autobrakefix::Apply();
+        fix::schwarzfix::Apply();
         fix::objcontupgrade::Apply();
         fix::luabinds::Apply(G_CONFIG);
 		fix::posteffectreload::Apply(G_CONFIG);
