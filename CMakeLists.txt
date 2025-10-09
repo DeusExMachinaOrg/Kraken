@@ -101,6 +101,9 @@ set(HEADERS
     include/hta/m3d/WeatherManager.h
     include/hta/m3d/CClient.h
 
+    include/ext/logger.hpp
+    source/ext/logger.cpp
+
     include/ext/impulse.hpp
     source/ext/impulse.cpp
 

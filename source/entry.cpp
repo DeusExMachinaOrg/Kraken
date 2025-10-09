@@ -1,7 +1,10 @@
+#define LOGGER "ENTRY"
+
 #include "stdafx.hpp"
 #include "config.hpp"
 #include "routines.hpp"
 
+#include "ext/logger.hpp"
 #include "ext/runtime.hpp"
 #include "ext/impulse.hpp"
 
@@ -40,9 +43,12 @@ namespace kraken {
     API void EntryPoint(HANDLE module) {
         G_MODULE = module;
 
+        
+        logger::Init();
         runtime::Init();
         impulse::Init();
 
+        LOG_INFO("Prepare patches");
         ConstantHotfix();
         fix::fileserver::Apply();
         fix::physic::Apply();
