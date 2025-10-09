@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Object.h"
+#include "utils.hpp"
 
 struct WeaponGroup : m3d::Object
 {

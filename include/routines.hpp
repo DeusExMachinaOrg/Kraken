@@ -66,6 +66,14 @@ namespace kraken::routines {
         else if (opcode->marker[0] == 0xFF && opcode->marker[1] == 0x15) {
             opcode->indirect.location = reinterpret_cast<intptr_t>(tar);
         }
+        else if (opcode->marker[0] == 0xFF && opcode->marker[1] == 0x96 || opcode->marker[1] == 0x92) {
+            unsigned char* p = reinterpret_cast<unsigned char*>(src);
+            int32_t rel = static_cast<int32_t>((uintptr_t)tar - (uintptr_t)p - 5);
+
+            p[0] = 0xE8;
+            memcpy(p + 1, &rel, 4);
+            p[5] = 0x90;
+        }
         else {
             throw std::runtime_error("Invalid operator!");
         }
