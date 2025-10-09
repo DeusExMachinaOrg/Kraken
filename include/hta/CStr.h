@@ -20,12 +20,12 @@ struct CStr
 		strcpy(charPtr, str);
 	}
 
-	bool Equal(char* str)
+	bool Equal(char* str) const
 	{
 		return this->allocSz && !strcmp(this->charPtr, str);
 	}
 
-	bool Equal(const char* str)
+	bool Equal(const char* str) const
 	{
 		return this->allocSz && !strcmp(this->charPtr, str);
 	}
