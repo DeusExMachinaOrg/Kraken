@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <chrono>
+#include <io.h>
 
 #include <windows.h>
 
@@ -39,6 +40,29 @@ namespace kraken::logger {
             }
         }
 
+        SetConsoleCP(CP_UTF8);
+        SetConsoleOutputCP(CP_UTF8);
+
+        // Enable ANSI BEFORE freopen
+        HANDLE hOut = CreateFileW(
+            L"CONOUT$",
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            NULL,
+            OPEN_EXISTING,
+            0,
+            NULL
+        );
+
+        if (hOut != INVALID_HANDLE_VALUE) {
+            DWORD dwMode = 0;
+            GetConsoleMode(hOut, &dwMode);
+            dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+            SetConsoleMode(hOut, dwMode);
+            CloseHandle(hOut);
+        }
+
+        // Now reopen streams
         FILE* dummy;
         freopen_s(&dummy, "CONOUT$", "w", stdout);
         freopen_s(&dummy, "CONIN$", "r", stdin);
@@ -60,12 +84,12 @@ namespace kraken::logger {
 
     const char* _LevelColor(Log level) {
         switch (level) {
-            case eLogDebug:   return "\e[0;90m";
-            case eLogInfo:    return "\e[0;0m";
-            case eLogWarning: return "\e[0;93m";
-            case eLogError:   return "\e[0;91m";
-            case eLogPanic:   return "\e[0;95m";
-            default:          return "\e[0;0m";
+            case eLogDebug:   return "\033[90m";
+            case eLogInfo:    return "\033[0m";
+            case eLogWarning: return "\033[93m";
+            case eLogError:   return "\033[91m";
+            case eLogPanic:   return "\033[95m";
+            default:          return "\033[0m";
         };
     };
 
@@ -108,7 +132,7 @@ namespace kraken::logger {
 
         if (self.is_stream) {
             const char* clr_s = _LevelColor(level);
-            const char* clr_e = "\e[0m";
+            const char* clr_e = "\033[0m";
             std::printf("%s%-8s %s %s - %s%s\n", clr_s, lname, self.stamp, alias, self.message, clr_e);
         }
     };
