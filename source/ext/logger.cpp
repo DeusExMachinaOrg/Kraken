@@ -58,6 +58,17 @@ namespace kraken::logger {
         }
     };
 
+    const char* _LevelColor(Log level) {
+        switch (level) {
+            case eLogDebug:   return "\e[0;90m";
+            case eLogInfo:    return "\e[0;0m";
+            case eLogWarning: return "\e[0;93m";
+            case eLogError:   return "\e[0;91m";
+            case eLogPanic:   return "\e[0;95m";
+            default:          return "\e[0;0m";
+        };
+    };
+
     void Init(void) {
         if (self.is_ready)
             return;
@@ -96,7 +107,9 @@ namespace kraken::logger {
         }
 
         if (self.is_stream) {
-            std::printf("%-8s %s %s - %s\n", lname, self.stamp, alias, self.message);
+            const char* clr_s = _LevelColor(level);
+            const char* clr_e = "\e[0m";
+            std::printf("%s%-8s %s %s - %s%s\n", clr_s, lname, self.stamp, alias, self.message, clr_e);
         }
     };
 
