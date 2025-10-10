@@ -16,6 +16,8 @@
 #include "fix/posteffectreload.hpp"
 #include "fix/wareuse.hpp"
 #include "hta/pointers.hpp"
+#include "fix/aicombatlock.hpp"
+
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
@@ -34,7 +36,7 @@ namespace kraken {
         routines::Override(sizeof(bool),  (void*) 0x007DFADC, (char*) &G_CONFIG->friend_damage.value);
 
         // TODO: [Invesigation] Repaint Price
-        // That's not work. Need to more deep research for fix it.
+        // That's not working. Need a more deep research to fix it.
         // Look here [0x00474312] void __thiscall SkinsWnd::BuySkin(SkinsWnd *this)
         // routines::Override(sizeof(uint32_t), (void*) 0x00474641, (char*) &G_CONFIG->price_paint.value);
     };
@@ -52,6 +54,7 @@ namespace kraken {
         fix::fileserver::Apply();
         fix::physic::Apply();
         fix::autobrakefix::Apply();
+        fix::aicombatlockfix::Apply();
         fix::objcontupgrade::Apply();
         fix::luabinds::Apply(G_CONFIG);
 		fix::posteffectreload::Apply(G_CONFIG);
