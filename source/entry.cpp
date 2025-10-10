@@ -15,6 +15,7 @@
 #include "fix/luabinds.hpp"
 #include "fix/posteffectreload.hpp"
 #include "fix/wareuse.hpp"
+#include "fix/recollectionfix.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -56,5 +57,6 @@ namespace kraken {
         fix::luabinds::Apply(G_CONFIG);
 		fix::posteffectreload::Apply(G_CONFIG);
 		fix::wareuse::Apply();
+        fix::recollection::Apply();
     };
 };
