@@ -25,6 +25,6 @@ namespace kraken::fix::fastloading
 
     void Apply()
     {
-        routines::MakeCall((void*)0x004C8BBE, SkipLoadingPresentScene);
+        routines::ReplaceCall((void*)0x004C8BBE, SkipLoadingPresentScene);
     }
 }
