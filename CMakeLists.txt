@@ -22,6 +22,7 @@ set(SOURCES
     source/fix/fileserver.cpp
     source/fix/luabinds.cpp
     source/fix/wareuse.cpp
+    source/fix/ultrawide.cpp
 )
 
 # Header files
@@ -37,6 +38,7 @@ set(HEADERS
     include/fix/objcontupgrade.hpp
     include/fix/luabinds.hpp
     include/fix/posteffectreload.hpp
+    include/fix/ultrawide.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
