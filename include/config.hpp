@@ -54,6 +54,7 @@ namespace kraken {
         ConfigValue<int32_t>                  lua_enabled;
 		ConfigValue<int32_t>                  posteffectreload;
         ConfigValue<WareUnitsList>            ware_units;
+        ConfigValue<uint32_t>                 objcontupgrade;
 
     public:
          Config();
