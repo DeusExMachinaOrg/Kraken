@@ -1,0 +1,186 @@
+// ============================================================================
+//  AICombatLock.cpp  -  final version (all RVAs filled) (by Rakap)
+// ============================================================================
+
+#include <unordered_map>
+#include <cstdint>
+#include "routines.hpp"            // kraken::routines::Redirect
+
+// ============================================================================
+//  Minimal shells (only the members we touch)
+// ============================================================================
+namespace ai {
+    struct Event {
+        uint32_t m_eventId;
+        int      m_recipientObjId;
+        int      m_senderObjId;
+        float    m_timeOut;
+        int      m_framesToPass;
+        float    m_timeStamp;
+        int      m_debugNum;
+        struct { float x, y, z, w; int id; float value; int Type; } m_param1;
+    };
+    class Team {
+    public:
+        void*  m_formation;             /* 0x0138 */
+        void*  m_pPath;                 /* 0x0140 */
+        bool   m_needAdjustBehaviour;   /* 0x0150 */
+        int    m_TeamTacticId;          /* 0x0160 */
+        void _AdjustBehaviour();        // RVA 00658D50
+    };
+} // namespace ai
+
+namespace m3d {
+    struct AIParam {
+        float x, y, z, w;  int id;  float value;
+        void* m_NameList, * m_NumList, * m_Str;
+        int   Type;     void* NameFromNum, * NumFromName;
+    };
+}
+using AIParam = m3d::AIParam;
+
+// ============================================================================
+//  RVAs from your last message
+// ============================================================================
+static constexpr uintptr_t RVA_DoUnderAttack = 0x00659030;      // ai::Team::_DoUnderAttack
+static constexpr uintptr_t RVA_TeamAIStartAttack = 0x00659500;  // ai::Team::TeamAIOnStartAttack
+static constexpr uintptr_t RVA_TeamOnEvent = 0x00657FF0;        // ai::Team::OnEvent
+static constexpr uintptr_t RVA_AdjustBehaviour = 0x00658D50;    // ai::Team::_AdjustBehaviour
+static constexpr uintptr_t RVA_OnSomeoneSight = 0x0085AFA0;     // ai::RadioManager::_OnSomeoneAtSight
+static constexpr uintptr_t RVA_GetGameTimeInt64 = 0x0062D220;   // returns ms counter
+static constexpr uintptr_t RVA_GlobalObjContainer = 0x00A12E98; // pointer to singleton
+
+// ============================================================================
+//  Typedefs for originals (we call them directly by RVA)
+// ============================================================================
+using Fn_DoUnderAttack = void(__thiscall*)(ai::Team*, int);
+using Fn_StartAttack = AIParam * (__fastcall*)(AIParam*, void*, ai::Team*);
+using Fn_TeamOnEvent = int(__fastcall*)(char*, void*, char*);
+using Fn_OnSomeoneSight = void(__fastcall*)(ai::Team*, void*, ai::Event*);
+
+static const Fn_DoUnderAttack  Orig_DoUnderAttack =
+    reinterpret_cast<Fn_DoUnderAttack>(RVA_DoUnderAttack);
+static const Fn_StartAttack    Orig_StartAttack =
+    reinterpret_cast<Fn_StartAttack>(RVA_TeamAIStartAttack);
+static const Fn_TeamOnEvent    Orig_TeamOnEvent =
+    reinterpret_cast<Fn_TeamOnEvent>(RVA_TeamOnEvent);
+static const Fn_OnSomeoneSight Orig_OnSomeoneSight =
+    reinterpret_cast<Fn_OnSomeoneSight>(RVA_OnSomeoneSight);
+static const auto AdjustBehaviour =
+    reinterpret_cast<void(__thiscall*)(ai::Team*)>(RVA_AdjustBehaviour);
+
+// ============================================================================
+//  Timer helper - calls ObjContainer::GetGameTimeInt64 (ms counter)
+// ============================================================================
+inline uint32_t GameTimeMs()
+{
+    using Fn_GetTime = __int64(__thiscall*)(void*);
+    static const Fn_GetTime GetTime =
+        reinterpret_cast<Fn_GetTime>(RVA_GetGameTimeInt64);
+
+    void* const objContainer =
+        *reinterpret_cast<void* const*>(RVA_GlobalObjContainer);
+
+    return static_cast<uint32_t>(GetTime(objContainer));
+}
+
+// ============================================================================
+//  Combat-lock bookkeeping
+// ============================================================================
+struct CombatLock { int tgt = 0; uint32_t last = 0; };
+static std::unordered_map<ai::Team*, CombatLock> g_lock;
+static CombatLock& L(ai::Team* t) { return g_lock[t]; }
+static void clear(ai::Team* t) { g_lock.erase(t); }
+
+// ============================================================================
+//  Hooks
+// ============================================================================
+void __fastcall hk_DoUnderAttack(ai::Team* self, void*, int attackerId)
+{
+    if (attackerId <= 0) return;
+    auto& lk = L(self);
+    if (lk.tgt == 0) {
+        lk.tgt = attackerId;
+        lk.last = GameTimeMs();
+        Orig_DoUnderAttack(self, attackerId);      // call vanilla once
+    }
+    else {
+        lk.last = GameTimeMs();                    // refresh only
+    }
+}
+
+AIParam* __fastcall hk_StartAttack(AIParam* ret, void*, ai::Team* team)
+{
+    auto it = g_lock.find(team);
+    if (it != g_lock.end() && it->second.tgt) {
+        ret->x = ret->y = ret->z = ret->w = 0.f;
+        ret->id = it->second.tgt;
+        ret->value = 0.f;
+        ret->Type = 3;
+        ret->m_NameList = ret->m_NumList = ret->m_Str = nullptr;
+        ret->NameFromNum = ret->NumFromName = nullptr;
+        return ret;                                  // skip tactic change
+    }
+    return Orig_StartAttack(ret, nullptr, team);
+}
+
+int __fastcall hk_TeamOnEvent(char* self, void*, char* raw)
+{
+    int rv = Orig_TeamOnEvent(self, nullptr, raw);
+    auto* team = reinterpret_cast<ai::Team*>(self);
+    auto* ev = reinterpret_cast<ai::Event*>(raw);
+    auto& lk = L(team);
+
+    switch (ev->m_eventId) {
+    case 0x0009: case 0x0011:                    // OBJECT_DIE / ENEMY_DESTROYED 
+        if (ev->m_senderObjId == lk.tgt) clear(team);
+        break;
+    case 0x0032:                                // NOTICE_ENEMY
+        if (lk.tgt == 0) AdjustBehaviour(team);
+        break;
+    default: break;
+    }
+    return rv;
+}
+
+void __fastcall hk_OnSomeoneSight(ai::Team* self, void*, ai::Event* ev)
+{
+    if (ev && L(self).tgt == 0 && ev->m_param1.id > 0) {
+        L(self).tgt = ev->m_param1.id;
+        AdjustBehaviour(self);                      // wake squad
+    }
+    Orig_OnSomeoneSight(self, nullptr, ev);
+}
+
+// ============================================================================
+//  Patch installers - call these once during DLL init
+// ============================================================================
+namespace kraken::fix::aicombatlockfix {
+    void Patch_DoUnderAttack() {
+        kraken::routines::Redirect(0x00C9, (void*)RVA_DoUnderAttack, (void*)&hk_DoUnderAttack);
+    }
+    void Patch_TeamAI_OnStartAttack() {
+        kraken::routines::Redirect(0x00C9, (void*)RVA_TeamAIStartAttack, (void*)&hk_StartAttack);
+    }
+    void Patch_Team_OnEvent() {
+        kraken::routines::Redirect(0x00C9, (void*)RVA_TeamOnEvent, (void*)&hk_TeamOnEvent);
+    }
+    void Patch_OnSomeoneAtSight() {
+        kraken::routines::Redirect(0x00C9, (void*)RVA_OnSomeoneSight, (void*)&hk_OnSomeoneSight);
+    }
+
+    void Apply()
+    {
+        Patch_DoUnderAttack();
+        Patch_TeamAI_OnStartAttack();
+        Patch_Team_OnEvent();
+        Patch_OnSomeoneAtSight();
+    }
+}
+
+// ============================================================================
+//  END
+//
+//  Squads now stick to one tactic per firefight and wake instantly
+//  when the next threat appears.
+// ============================================================================

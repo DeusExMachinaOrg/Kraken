@@ -16,6 +16,7 @@ set(SOURCES
     source/config.cpp
     source/fix/physic.cpp
     source/fix/autobrakefix.cpp
+    source/fix/aicombatlock.cpp
     source/fix/objcontupgrade.cpp
     source/fix/luabinds.cpp
     source/fix/posteffectreload.cpp
@@ -37,6 +38,7 @@ set(HEADERS
     include/utils.hpp
     include/fix/physic.hpp
     include/fix/autobrakefix.hpp
+    include/fix/aicombatlock.hpp
     include/fix/objcontupgrade.hpp
     include/fix/luabinds.hpp
     include/fix/posteffectreload.hpp
