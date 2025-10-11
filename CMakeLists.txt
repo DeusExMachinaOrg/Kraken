@@ -22,6 +22,7 @@ set(SOURCES
     source/fix/fileserver.cpp
     source/fix/luabinds.cpp
     source/fix/wareuse.cpp
+    source/fix/ultrawide.cpp
     source/fix/fastloading.cpp
 )
 
@@ -38,6 +39,7 @@ set(HEADERS
     include/fix/objcontupgrade.hpp
     include/fix/luabinds.hpp
     include/fix/posteffectreload.hpp
+    include/fix/ultrawide.hpp
     include/fix/fastloading.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
