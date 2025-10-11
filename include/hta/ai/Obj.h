@@ -47,4 +47,5 @@ namespace ai
 		stable_size_vector<ai::Modifier> m_modifiers;
 		stable_size_vector<ai::Obj::EventRecipientInfo> m_eventRecipients;
 	};
+	ASSERT_SIZE(ai::Obj, 0xC0);
 }

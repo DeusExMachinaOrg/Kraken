@@ -1,6 +1,6 @@
 #pragma once
 #include "hta/CStr.h"
-#include "AIParam.h"
+#include "hta/m3d/AIParam.h"
 
 namespace ai
 {

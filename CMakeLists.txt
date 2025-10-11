@@ -47,13 +47,12 @@ set(HEADERS
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
+    include/hta/CVector2.h
     include/hta/Func.h
     include/hta/Game.h
     include/hta/Quaternion.h
     include/hta/DragDropItemsWnd.h
     include/hta/ai/ActionType.h
-    include/hta/ai/AIParam.h
-    include/hta/ai/AIParam.h
     include/hta/ai/Basket.h
     include/hta/ai/Cabin.h
     include/hta/ai/Chassis.h
@@ -92,6 +91,11 @@ set(HEADERS
     include/hta/ai/VehiclePrototypeInfo.h
     include/hta/ai/DrivingValues.h
     include/hta/ai/PrototypeManager.h
+    include/hta/ai/AIMessage.h
+    include/hta/ai/Team.h
+    include/hta/ai/Formation.h
+    include/hta/ai/AI.h
+    include/hta/ai/AIPassageState.h
     include/hta/ai/Player.h
     include/hta/m3d/Object.h
     include/hta/m3d/RefCountedBase.h
@@ -105,6 +109,7 @@ set(HEADERS
     include/hta/m3d/CWorld.h
     include/hta/m3d/WeatherManager.h
     include/hta/m3d/CClient.h
+    include/hta/m3d/AIParam.h
 
     include/ext/logger.hpp
     source/ext/logger.cpp

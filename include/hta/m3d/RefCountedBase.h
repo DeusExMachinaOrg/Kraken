@@ -1,4 +1,5 @@
 #pragma once
+#include "hta/Func.h"
 
 namespace m3d
 {
@@ -8,4 +9,5 @@ namespace m3d
 
 		int refCount;
 	};
+	ASSERT_SIZE(m3d::RefCountedBase, 0x8);
 }

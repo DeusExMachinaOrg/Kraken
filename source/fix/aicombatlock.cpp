@@ -5,6 +5,10 @@
 #include <unordered_map>
 #include <cstdint>
 #include "routines.hpp"            // kraken::routines::Redirect
+#include "hta/ai/Team.h"
+#include "hta/ai/Formation.h"
+#include "hta/m3d/Kernel.h"
+#include "hta/m3d/AIParam.h"
 
 // ============================================================================
 //  Minimal shells (only the members we touch)
@@ -20,24 +24,7 @@ namespace ai {
         int      m_debugNum;
         struct { float x, y, z, w; int id; float value; int Type; } m_param1;
     };
-    class Team {
-    public:
-        void*  m_formation;             /* 0x0138 */
-        void*  m_pPath;                 /* 0x0140 */
-        bool   m_needAdjustBehaviour;   /* 0x0150 */
-        int    m_TeamTacticId;          /* 0x0160 */
-        void _AdjustBehaviour();        // RVA 00658D50
-    };
-} // namespace ai
-
-namespace m3d {
-    struct AIParam {
-        float x, y, z, w;  int id;  float value;
-        void* m_NameList, * m_NumList, * m_Str;
-        int   Type;     void* NameFromNum, * NumFromName;
-    };
 }
-using AIParam = m3d::AIParam;
 
 // ============================================================================
 //  RVAs from your last message
@@ -54,7 +41,7 @@ static constexpr uintptr_t RVA_GlobalObjContainer = 0x00A12E98; // pointer to si
 //  Typedefs for originals (we call them directly by RVA)
 // ============================================================================
 using Fn_DoUnderAttack = void(__thiscall*)(ai::Team*, int);
-using Fn_StartAttack = AIParam * (__fastcall*)(AIParam*, void*, ai::Team*);
+using Fn_StartAttack = m3d::AIParam* (__fastcall*)(m3d::AIParam*, void*, ai::Team*);
 using Fn_TeamOnEvent = int(__fastcall*)(char*, void*, char*);
 using Fn_OnSomeoneSight = void(__fastcall*)(ai::Team*, void*, ai::Event*);
 
@@ -102,26 +89,47 @@ void __fastcall hk_DoUnderAttack(ai::Team* self, void*, int attackerId)
     if (lk.tgt == 0) {
         lk.tgt = attackerId;
         lk.last = GameTimeMs();
-        Orig_DoUnderAttack(self, attackerId);      // call vanilla once
+        self->AttackNow(attackerId); // call vanilla once
     }
     else {
         lk.last = GameTimeMs();                    // refresh only
     }
 }
 
-AIParam* __fastcall hk_StartAttack(AIParam* ret, void*, ai::Team* team)
+m3d::AIParam* __fastcall hk_StartAttack(m3d::AIParam* ret, void*, ai::Team* team)
 {
-    auto it = g_lock.find(team);
-    if (it != g_lock.end() && it->second.tgt) {
-        ret->x = ret->y = ret->z = ret->w = 0.f;
-        ret->id = it->second.tgt;
-        ret->value = 0.f;
-        ret->Type = 3;
-        ret->m_NameList = ret->m_NumList = ret->m_Str = nullptr;
-        ret->NameFromNum = ret->NumFromName = nullptr;
-        return ret;                                  // skip tactic change
+    //auto it = g_lock.find(team);
+    //if (it != g_lock.end() && it->second.tgt) {
+    //    ret->x = ret->y = ret->z = ret->w = 0.f;
+    //    ret->value.id = it->second.tgt;
+    //    ret->Type = m3d::AIPARAM_ID;
+    //    ret->NameFromNum = nullptr;
+    //    ret->NumFromName = nullptr;
+    //    return ret;                                  // skip tactic change
+    //}
+    ai::Formation* m_formation; // ecx
+    ai::Path* m_pPath; // ebx
+
+    m_formation = team->m_formation;
+    if (m_formation)
+        m_formation->SetPath(0, 1);
+    m_pPath = team->m_pPath;
+    if ( m_pPath )
+    {
+        m_pPath->PathDtor();
+        m3d::Kernel::Instance->g_mar.FreeMem(m_pPath, 0, 0);
     }
-    return Orig_StartAttack(ret, nullptr, team);
+    team->m_pPath = 0;
+    team->_AdjustBehaviour();
+
+    ret->value.id = 0;
+    ret->y = 0;
+    ret->w = 0;
+    ret->Type = m3d::AIPARAM_ID;
+    ret->NameFromNum = 0;
+    ret->NumFromName = 0;
+    ret->value.id = 1;
+    return ret;
 }
 
 int __fastcall hk_TeamOnEvent(char* self, void*, char* raw)
@@ -157,10 +165,10 @@ void __fastcall hk_OnSomeoneSight(ai::Team* self, void*, ai::Event* ev)
 // ============================================================================
 namespace kraken::fix::aicombatlockfix {
     void Patch_DoUnderAttack() {
-        kraken::routines::Redirect(0x00C9, (void*)RVA_DoUnderAttack, (void*)&hk_DoUnderAttack);
+        kraken::routines::Redirect(0x5, (void*)RVA_DoUnderAttack, (void*)&hk_DoUnderAttack);
     }
     void Patch_TeamAI_OnStartAttack() {
-        kraken::routines::Redirect(0x00C9, (void*)RVA_TeamAIStartAttack, (void*)&hk_StartAttack);
+        kraken::routines::Redirect(0x81, (void*)RVA_TeamAIStartAttack, (void*)&hk_StartAttack);
     }
     void Patch_Team_OnEvent() {
         kraken::routines::Redirect(0x00C9, (void*)RVA_TeamOnEvent, (void*)&hk_TeamOnEvent);
@@ -171,10 +179,10 @@ namespace kraken::fix::aicombatlockfix {
 
     void Apply()
     {
-        Patch_DoUnderAttack();
+        Patch_DoUnderAttack(); // 0x00657EA2
         Patch_TeamAI_OnStartAttack();
-        Patch_Team_OnEvent();
-        Patch_OnSomeoneAtSight();
+        // Patch_Team_OnEvent();
+        // Patch_OnSomeoneAtSight();
     }
 }
 
