@@ -23,7 +23,7 @@ namespace kraken::runtime {
     };
 
     void Init(void) {
-        routines::MakeCall((void*) 0x0058C645, _Wrapper);
+        routines::ChangeCall((void*) 0x0058C645, _Wrapper);
         for (auto init : self.mOnInit)
             init();
     };

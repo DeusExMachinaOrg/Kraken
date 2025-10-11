@@ -8,4 +8,10 @@ struct CMiracle3d : m3d::Application
 
 	char _offset[0x2A8];
 	TruxxUiManager* UiManager;
+
+	void PutSplash(int proc, const char* text)
+	{
+		FUNC(0x004039D0, void, __thiscall, _PutSplash, CMiracle3d*, int, const char*);
+		_PutSplash(this, proc, text);
+	}
 };
