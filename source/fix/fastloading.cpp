@@ -1,16 +1,18 @@
 #include "fix/fastloading.hpp"
 #include "hta/m3d/Application.h"
 #include "routines.hpp"
+#include "config.hpp"
 
 using PresentScene_t = int (__thiscall *)(m3d::rend::IRenderer *); 
 
 namespace kraken::fix::fastloading
 {
+    static int limit;
     void SkipLoadingPresentScene()
     {
         static int counter = 0;
         counter++;
-        if (counter < 100)
+        if (counter < limit)
             return;
 
         counter = 0;
@@ -25,6 +27,10 @@ namespace kraken::fix::fastloading
 
     void Apply()
     {
+        const kraken::Config& config = kraken::Config::Get();
+        if (config.fastloading_enable.value == 0)
+            return;
+        limit = config.fastloading_speed.value;
         routines::ReplaceCall((void*)0x004C8BBE, SkipLoadingPresentScene);
     }
 }
