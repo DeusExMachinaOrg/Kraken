@@ -54,7 +54,7 @@ namespace kraken::routines {
         VirtualProtect(src, sizeof(size_t), protection, &protection);
     };
 
-    inline void MakeCall(void* src, void* tar) {
+    inline void ChangeCall(void* src, void* tar) {
         DWORD protection;
 
 
@@ -71,6 +71,23 @@ namespace kraken::routines {
         }
         VirtualProtect(src, sizeof(_Call), protection, &protection);
     };
+
+    inline void ReplaceCall(void* src, void* tar)
+    {
+        DWORD protection;
+
+
+        VirtualProtect(src, sizeof(_Call), PAGE_EXECUTE_READWRITE, &protection);
+
+        unsigned char* p = reinterpret_cast<unsigned char*>(src);
+        uintptr_t rel = reinterpret_cast<uintptr_t>(tar) - reinterpret_cast<uintptr_t>(src) - 5;
+
+        p[0] = 0xE8;
+        memcpy(p + 1, &rel, 4);
+        p[5] = 0x90;
+
+        VirtualProtect(src, sizeof(_Call), protection, &protection);
+    }
 };
 
 #endif

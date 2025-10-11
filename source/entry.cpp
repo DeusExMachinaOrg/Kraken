@@ -16,6 +16,9 @@
 #include "fix/luabinds.hpp"
 #include "fix/posteffectreload.hpp"
 #include "fix/wareuse.hpp"
+#include "fix/recollectionfix.hpp"
+#include "fix/ultrawide.hpp"
+#include "fix/fastloading.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -43,7 +46,6 @@ namespace kraken {
     API void EntryPoint(HANDLE module) {
         G_MODULE = module;
 
-        
         logger::Init();
         runtime::Init();
         impulse::Init();
@@ -56,7 +58,10 @@ namespace kraken {
         fix::schwarzfix::Apply();
         fix::objcontupgrade::Apply();
         fix::luabinds::Apply(G_CONFIG);
-		fix::posteffectreload::Apply(G_CONFIG);
-		fix::wareuse::Apply();
+        fix::posteffectreload::Apply(G_CONFIG);
+        fix::wareuse::Apply();
+        fix::recollection::Apply();
+        fix::ultrawide::Apply();
+        fix::fastloading::Apply();
     };
 };

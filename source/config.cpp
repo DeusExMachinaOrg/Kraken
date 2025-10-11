@@ -21,10 +21,13 @@ namespace kraken {
         this->handbrake_power  = { "constants", "handbrake_power", 1.0,   true,  0.0,   1.0   };
         this->brake_power      = { "constants", "brake_power",     -1.0,  true,  -1.0,  0.0   };
         this->friend_damage    = { "constants", "friend_damage",   0,     true,  0,     1     };
-		this->auto_brake_angle = { "constants", "auto_brake_angle",50,    true,  0,     180   };
+        this->auto_brake_angle = { "constants", "auto_brake_angle",50,    true,  0,     180   };
         this->lua_enabled      = { "lua_binds", "Enabled"         ,0,     true,  0,     1     };
         this->lua_scripts      = { "lua_binds", "Script_" };
         this->posteffectreload = { "constants", "posteffectreload",0,     true,  0,     1     };
+        this->ultrawide        = { "constants", "ultrawide",       0,     true,  0,     1     };
+        this->objcontupgrade   = { "constants", "obj_cont_upgrade",1,     true,  0,     1     };
+        this->show_load_every  = { "constants", "show_load_every", 100,   true,  0,     uint32_t(-1)};
 
         Config::INSTANCE = this;
 
@@ -32,7 +35,7 @@ namespace kraken {
         this->Dump();
     };
 
-    Config::~Config() {        
+    Config::~Config() {
         this->Dump();
 
         Config::INSTANCE = nullptr;
@@ -49,11 +52,14 @@ namespace kraken {
         this->LoadValue(&this->handbrake_power);
         this->LoadValue(&this->brake_power);
         this->LoadValue(&this->friend_damage);
-		this->LoadValue(&this->auto_brake_angle);
+        this->LoadValue(&this->auto_brake_angle);
         this->LoadValue(&this->lua_enabled);
-		this->LoadValue(&this->lua_scripts);
-		this->LoadValue(&this->posteffectreload);
-		this->LoadValue(&this->ware_units);
+        this->LoadValue(&this->lua_scripts);
+        this->LoadValue(&this->posteffectreload);
+        this->LoadValue(&this->ware_units);
+        this->LoadValue(&this->ultrawide);
+        this->LoadValue(&this->objcontupgrade);
+        this->LoadValue(&this->show_load_every);
     };
 
     void Config::Dump() {
@@ -67,11 +73,14 @@ namespace kraken {
         this->DumpValue(&this->handbrake_power);
         this->DumpValue(&this->brake_power);
         this->DumpValue(&this->friend_damage);
-		this->DumpValue(&this->auto_brake_angle);
-		this->DumpValue(&this->lua_enabled);
-		this->DumpValue(&this->lua_scripts);
-		this->DumpValue(&this->posteffectreload);
-		this->DumpValue(&this->ware_units);
+        this->DumpValue(&this->auto_brake_angle);
+        this->DumpValue(&this->lua_enabled);
+        this->DumpValue(&this->lua_scripts);
+        this->DumpValue(&this->posteffectreload);
+        this->DumpValue(&this->ware_units);
+        this->DumpValue(&this->ultrawide);
+        this->DumpValue(&this->objcontupgrade);
+        this->DumpValue(&this->show_load_every);
     };
 
     template<typename T>
@@ -204,7 +213,7 @@ namespace kraken {
                 WritePrivateProfileStringA(key, "Units", buffer, CONFIG_PATH);
                 WritePrivateProfileStringA(key, "Ware", wareUnit.Ware.c_str(), CONFIG_PATH);
             }
-		}
+        }
         else {
             throw "Unsupported type";
         }
