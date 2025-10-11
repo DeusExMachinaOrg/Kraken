@@ -48,6 +48,6 @@ namespace kraken::fix::autobrakefix {
     }
 
     void Apply() {
-        kraken::routines::MakeCall((void*)0x005D3137, (void*)&SetThrottle);
+        kraken::routines::ChangeCall((void*)0x005D3137, (void*)&SetThrottle);
     }
 }
