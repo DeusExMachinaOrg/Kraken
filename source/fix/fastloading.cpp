@@ -7,7 +7,7 @@ using PresentScene_t = int (__thiscall *)(m3d::rend::IRenderer *);
 
 namespace kraken::fix::fastloading
 {
-    static int limit;
+    static uint32_t limit;
     void SkipLoadingPresentScene()
     {
         static int counter = 0;
@@ -28,9 +28,7 @@ namespace kraken::fix::fastloading
     void Apply()
     {
         const kraken::Config& config = kraken::Config::Get();
-        if (config.fastloading_enable.value == 0)
-            return;
-        limit = config.fastloading_speed.value;
+        limit = config.show_load_every.value;
         routines::ReplaceCall((void*)0x004C8BBE, SkipLoadingPresentScene);
     }
 }
