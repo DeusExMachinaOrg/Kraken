@@ -1,11 +1,16 @@
 #include "fix/objcontupgrade.hpp"
 #include <stdint.h>
 #include "routines.hpp"
+#include "config.hpp"
 #include <vector>
 
 namespace kraken::fix::objcontupgrade {
     void Apply()
     {
+        const kraken::Config& config = kraken::Config::Get();
+        if (config.objcontupgrade.value == 0)
+            return;
+
         // ai::ObjContainer::InnerContainer::InnerContainer
         //0063086D                 push    4000h
         kraken::routines::OverrideValue(reinterpret_cast<void*>(0x0063086D + 1), uint32_t(0x8000));

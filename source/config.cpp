@@ -25,6 +25,9 @@ namespace kraken {
         this->lua_enabled      = { "lua_binds", "Enabled"         ,0,     true,  0,     1     };
         this->lua_scripts      = { "lua_binds", "Script_" };
         this->posteffectreload = { "constants", "posteffectreload",0,     true,  0,     1     };
+        this->ultrawide        = { "constants", "ultrawide",       0,     true,  0,     1     };
+        this->objcontupgrade   = { "constants", "obj_cont_upgrade",1,     true,  0,     1     };
+        this->show_load_every  = { "constants", "show_load_every", 100,   true,  0,     uint32_t(-1)};
 
         Config::INSTANCE = this;
 
@@ -54,6 +57,9 @@ namespace kraken {
 		this->LoadValue(&this->lua_scripts);
 		this->LoadValue(&this->posteffectreload);
 		this->LoadValue(&this->ware_units);
+        this->LoadValue(&this->ultrawide);
+        this->LoadValue(&this->objcontupgrade);
+        this->LoadValue(&this->show_load_every);
     };
 
     void Config::Dump() {
@@ -72,6 +78,9 @@ namespace kraken {
 		this->DumpValue(&this->lua_scripts);
 		this->DumpValue(&this->posteffectreload);
 		this->DumpValue(&this->ware_units);
+        this->DumpValue(&this->ultrawide);
+        this->DumpValue(&this->objcontupgrade);
+        this->DumpValue(&this->show_load_every);
     };
 
     template<typename T>

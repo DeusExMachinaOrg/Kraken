@@ -16,6 +16,8 @@
 #include "fix/posteffectreload.hpp"
 #include "fix/wareuse.hpp"
 #include "fix/recollectionfix.hpp"
+#include "fix/ultrawide.hpp"
+#include "fix/fastloading.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -58,5 +60,7 @@ namespace kraken {
 		fix::posteffectreload::Apply(G_CONFIG);
 		fix::wareuse::Apply();
         fix::recollection::Apply();
+        fix::ultrawide::Apply();
+        fix::fastloading::Apply();
     };
 };
