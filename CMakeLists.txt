@@ -22,6 +22,7 @@ set(SOURCES
     source/fix/fileserver.cpp
     source/fix/luabinds.cpp
     source/fix/wareuse.cpp
+    source/fix/recollectionfix.cpp
     source/fix/ultrawide.cpp
     source/fix/fastloading.cpp
 )
@@ -66,12 +67,14 @@ set(HEADERS
     include/hta/ai/GeomRepository.h
     include/hta/ai/GeomRepositoryItem.h
     include/hta/ai/GeomTransform.h
+    include/hta/ai/GlobalProperties.h
     include/hta/ai/IzvratRepository.h
     include/hta/ai/Modifier.h
     include/hta/ai/Numeric.h
     include/hta/ai/NumericInRange.h
     include/hta/ai/NumericInRangeRegenerating.h
     include/hta/ai/Obj.h
+    include/hta/ai/ObjContainer.h
     include/hta/ai/Path.h
     include/hta/ai/PhysicBody.h
     include/hta/ai/PhysicObj.h
@@ -82,6 +85,7 @@ set(HEADERS
     include/hta/ai/SimplePhysicObjPrototypeInfo.h
     include/hta/ai/Vehicle.h
     include/hta/ai/VehiclePart.h
+    include/hta/ai/VehicleRecollection.h
     include/hta/ai/FlatLine.h
     include/hta/ai/VehiclePrototypeInfo.h
     include/hta/ai/DrivingValues.h

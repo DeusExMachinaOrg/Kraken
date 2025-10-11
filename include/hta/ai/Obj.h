@@ -10,6 +10,12 @@ namespace ai
 	{
 		virtual void Dtor() = 0;
 
+		void Remove()
+		{
+			FUNC(0x00692880, void, __thiscall, _Remove, Obj*);
+			return _Remove(this);
+		}
+
 		struct EventRecipientInfo
 		{
 			int m_eventId;

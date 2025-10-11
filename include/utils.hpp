@@ -33,4 +33,14 @@ struct stable_size_set : public std::set<K> {
 #endif
 };
 
+template <class Out, class In>
+Out unsafe_cast(In x) {
+    union {
+        In a;
+        Out b;
+    };
+    a = x;
+    return b;
+};
+
 #endif
