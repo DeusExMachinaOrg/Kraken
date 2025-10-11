@@ -45,7 +45,6 @@ namespace kraken {
     API void EntryPoint(HANDLE module) {
         G_MODULE = module;
 
-        
         logger::Init();
         runtime::Init();
         impulse::Init();
@@ -57,8 +56,8 @@ namespace kraken {
         fix::autobrakefix::Apply();
         fix::objcontupgrade::Apply();
         fix::luabinds::Apply(G_CONFIG);
-		fix::posteffectreload::Apply(G_CONFIG);
-		fix::wareuse::Apply();
+        fix::posteffectreload::Apply(G_CONFIG);
+        fix::wareuse::Apply();
         fix::recollection::Apply();
         fix::ultrawide::Apply();
         fix::fastloading::Apply();

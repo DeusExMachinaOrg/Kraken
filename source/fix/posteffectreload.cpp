@@ -14,7 +14,7 @@ namespace kraken::fix::posteffectreload {
     void Apply(const Config* config)
     {
         if (!config->posteffectreload.value)
-			return;
+            return;
 
         kraken::routines::Redirect(9, (void*)0x0041F433, (void*)&UpdateWeather_Hook);
     }
