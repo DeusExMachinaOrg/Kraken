@@ -71,6 +71,8 @@ set(HEADERS
     include/hta/ai/GeomRepository.h
     include/hta/ai/GeomRepositoryItem.h
     include/hta/ai/GeomTransform.h
+    include/hta/ai/GlobalProperties.h
+    include/hta/ai/IPriceCoeffProvider.h
     include/hta/ai/IzvratRepository.h
     include/hta/ai/Modifier.h
     include/hta/ai/Numeric.h
