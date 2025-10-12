@@ -1,5 +1,6 @@
 #include "float.h"
 
+#include <stdint.h>
 #include <smmintrin.h>
 #include <immintrin.h>
 
@@ -1362,20 +1363,9 @@ namespace kraken::fix::physic {
     }
 
     float __fastcall dDot (const float *a, const float *b, int n) {
-        size_t tail = n % 4;
-        size_t base = n - tail;
+        size_t base = 0;
 
-        float sum = 0;
-        for (size_t i = 0; i < base; i+=4) {
-            __m256d x = _mm256_set_pd(a[i], a[i+1], a[i+2], a[i+3]);
-            __m256d y = _mm256_set_pd(b[i], b[i+1], b[i+2], b[i+3]);
-            __m256d s = _mm256_mul_pd(x, y);
-            __m128d l = _mm256_extractf128_pd(s, 0);
-            __m128d h = _mm256_extractf128_pd(s, 1);
-            __m128d d = _mm_add_pd(l, h);
-            sum += _mm_cvtsd_f64(d);
-        };
-
+        float sum = 0.0f;
         for (; base < n; base++) {
             sum += a[base] * b[base];
         };
@@ -2644,10 +2634,64 @@ namespace kraken::fix::physic {
 
         done:
         lcp.unpermute();
+    };
+
+    struct dMass;
+    struct dJointFeedback;
+    struct dxBody;
+    struct dObject;
+    struct dxWorld;
+    struct dxGeom;
+    struct dxSpace;
+    struct dxJointNode;
+    struct dxJoint;
+    struct dxJointBreakInfo;
+
+    struct dContactGeom { /* Size=0x2c */
+    /* 0x0000 */ public: float pos[4];
+    /* 0x0010 */ public: float normal[4];
+    /* 0x0020 */ public: float depth;
+    /* 0x0024 */ public: dxGeom* g1;
+    /* 0x0028 */ public: dxGeom* g2;
+    };
+
+    struct dSurfaceParameters { /* Size=0x2c */
+    /* 0x0000 */ public: int32_t mode;
+    /* 0x0004 */ public: float mu;
+    /* 0x0008 */ public: float mu2;
+    /* 0x000c */ public: float bounce;
+    /* 0x0010 */ public: float bounce_vel;
+    /* 0x0014 */ public: float soft_erp;
+    /* 0x0018 */ public: float soft_cfm;
+    /* 0x001c */ public: float motion1;
+    /* 0x0020 */ public: float motion2;
+    /* 0x0024 */ public: float slip1;
+    /* 0x0028 */ public: float slip2;
+    };
+
+    struct dContact { /* Size=0x68 */
+    /* 0x0000 */ public: dSurfaceParameters surface;
+    /* 0x002c */ public: dContactGeom geom;
+    /* 0x0058 */ public: float fdir1[4];
+    };
+
+    int __fastcall FillDefaultContactParameters(dContact *contact, uint32_t numContacts) {
+        for (;numContacts>0;contact++,numContacts--) {
+            contact->surface.mode       = 12312;
+            contact->surface.mu         = 3.0f;
+            contact->surface.slip1      = 1e-5f;
+            contact->surface.slip2      = 1e-5f;
+            contact->surface.soft_erp   = 0.8f;
+            contact->surface.soft_cfm   = 1e-5f;
+            contact->surface.bounce     = 1e-3f;
+            contact->surface.bounce_vel = 1e-3f;
         }
+        return 1;
+    };
 
 
     void Apply() {
+        routines::Redirect(0x0073, (void*) 0x0088D360, (void*) &FillDefaultContactParameters);
         routines::Redirect(0x2350, (void*) 0x008FF580, (void*) &dInternalStepIsland_x2);
         routines::Redirect(0x07B0, (void*) 0x00921A10, (void*) &dSolveL1);
         routines::Redirect(0x05B0, (void*) 0x00921460, (void*) &dSolveL1T);

@@ -128,7 +128,11 @@ target_include_directories(kraken PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # Windows-specific settings
 if(MSVC)
     # Disable specific warnings if needed
-    target_compile_options(kraken PRIVATE /W3)
+    target_compile_options(kraken PRIVATE 
+        /W3
+        /arch:AVX2    # AVX2 поддержка
+        /fp:fast      # Быстрая float арифметика
+    )
     
     # Set runtime library
     set_property(TARGET kraken PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
