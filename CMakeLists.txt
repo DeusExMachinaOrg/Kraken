@@ -97,6 +97,7 @@ set(HEADERS
     include/hta/ai/AI.h
     include/hta/ai/AIPassageState.h
     include/hta/ai/Player.h
+    include/hta/ai/Event.h
     include/hta/m3d/Object.h
     include/hta/m3d/RefCountedBase.h
     include/hta/m3d/Application.h

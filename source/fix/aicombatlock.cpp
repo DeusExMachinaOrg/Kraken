@@ -13,18 +13,6 @@
 // ============================================================================
 //  Minimal shells (only the members we touch)
 // ============================================================================
-namespace ai {
-    struct Event {
-        uint32_t m_eventId;
-        int      m_recipientObjId;
-        int      m_senderObjId;
-        float    m_timeOut;
-        int      m_framesToPass;
-        float    m_timeStamp;
-        int      m_debugNum;
-        struct { float x, y, z, w; int id; float value; int Type; } m_param1;
-    };
-}
 
 // ============================================================================
 //  RVAs from your last message
@@ -49,8 +37,6 @@ static const Fn_DoUnderAttack  Orig_DoUnderAttack =
     reinterpret_cast<Fn_DoUnderAttack>(RVA_DoUnderAttack);
 static const Fn_StartAttack    Orig_StartAttack =
     reinterpret_cast<Fn_StartAttack>(RVA_TeamAIStartAttack);
-static const Fn_TeamOnEvent    Orig_TeamOnEvent =
-    reinterpret_cast<Fn_TeamOnEvent>(RVA_TeamOnEvent);
 static const Fn_OnSomeoneSight Orig_OnSomeoneSight =
     reinterpret_cast<Fn_OnSomeoneSight>(RVA_OnSomeoneSight);
 static const auto AdjustBehaviour =
@@ -96,11 +82,11 @@ void __fastcall hk_DoUnderAttack(ai::Team* self, void*, int attackerId)
     }
 }
 
-m3d::AIParam* __fastcall hk_StartAttack(m3d::AIParam* ret, void*, ai::Team* team)
+m3d::AIParam* __fastcall hk_StartAttack(m3d::AIParam* ret, ai::Team* team)
 {
     //auto it = g_lock.find(team);
     //if (it != g_lock.end() && it->second.tgt) {
-    //    ret->x = ret->y = ret->z = ret->w = 0.f;
+    //    ret->y = ret->z = ret->w = 0.f;
     //    ret->value.id = it->second.tgt;
     //    ret->Type = m3d::AIPARAM_ID;
     //    ret->NameFromNum = nullptr;
@@ -132,11 +118,42 @@ m3d::AIParam* __fastcall hk_StartAttack(m3d::AIParam* ret, void*, ai::Team* team
     return ret;
 }
 
-int __fastcall hk_TeamOnEvent(char* self, void*, char* raw)
+int __fastcall Orig_TeamOnEvent(ai::Team* team, void*, const ai::Event* evn)
+{
+  int result; // eax
+  int AsID; // eax
+
+  result = ((ai::Obj*)team)->OnEvent(evn);
+  switch ( evn->m_eventId )
+  {
+    case ai::GE_OBJECT_DIE:
+      team->_OnObjectDie(evn);
+      result = 1;
+      break;
+    case ai::GE_UNDER_ATTACK:
+      team->_OnUnderAttack(evn);
+      result = 1;
+      break;
+    case ai::GE_NOTICE_ENEMY:
+      AsID = evn->m_param1.GetAsID();
+      team->_DoNoticeEnemy(AsID);
+      result = 1;
+      break;
+    case ai::GE_PLAYER_VEHICLE_CHANGED:
+      result = 1;
+      team->m_needAdjustBehaviour = 1;
+      break;
+    default:
+      return result;
+  }
+  return result;
+}
+
+int __fastcall hk_TeamOnEvent(ai::Team* self, void*, const ai::Event* raw)
 {
     int rv = Orig_TeamOnEvent(self, nullptr, raw);
     auto* team = reinterpret_cast<ai::Team*>(self);
-    auto* ev = reinterpret_cast<ai::Event*>(raw);
+    auto* ev = raw;
     auto& lk = L(team);
 
     switch (ev->m_eventId) {
@@ -153,9 +170,11 @@ int __fastcall hk_TeamOnEvent(char* self, void*, char* raw)
 
 void __fastcall hk_OnSomeoneSight(ai::Team* self, void*, ai::Event* ev)
 {
-    if (ev && L(self).tgt == 0 && ev->m_param1.id > 0) {
-        L(self).tgt = ev->m_param1.id;
-        AdjustBehaviour(self);                      // wake squad
+    if (ev && L(self).tgt == 0 &&
+        ev->m_param1.Type == m3d::eAIParamType::AIPARAM_ID &&
+        ev->m_param1.value.id > 0) {
+        L(self).tgt = ev->m_param1.value.id;
+        self->_AdjustBehaviour();                      // wake squad
     }
     Orig_OnSomeoneSight(self, nullptr, ev);
 }
@@ -171,18 +190,20 @@ namespace kraken::fix::aicombatlockfix {
         kraken::routines::Redirect(0x81, (void*)RVA_TeamAIStartAttack, (void*)&hk_StartAttack);
     }
     void Patch_Team_OnEvent() {
-        kraken::routines::Redirect(0x00C9, (void*)RVA_TeamOnEvent, (void*)&hk_TeamOnEvent);
+        kraken::routines::Redirect(0x79, (void*)RVA_TeamOnEvent, (void*)&hk_TeamOnEvent);
     }
     void Patch_OnSomeoneAtSight() {
-        kraken::routines::Redirect(0x00C9, (void*)RVA_OnSomeoneSight, (void*)&hk_OnSomeoneSight);
+        //kraken::routines::Redirect(0x145, (void*)RVA_OnSomeoneSight, (void*)&hk_OnSomeoneSight);
+        //0x0085B1BB
+        kraken::routines::MakeCall((void*)0x0085B1BB, (void*)hk_OnSomeoneSight);
     }
 
     void Apply()
     {
         Patch_DoUnderAttack(); // 0x00657EA2
         Patch_TeamAI_OnStartAttack();
-        // Patch_Team_OnEvent();
-        // Patch_OnSomeoneAtSight();
+        Patch_Team_OnEvent();
+        //Patch_OnSomeoneAtSight();
     }
 }
 

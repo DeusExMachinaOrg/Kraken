@@ -34,5 +34,11 @@ namespace m3d
         eAIParamType Type;
         CStr *(__fastcall *NameFromNum)(CStr *result, const m3d::AIParam *, int);
         int (__fastcall *NumFromName)(const m3d::AIParam *, CStr *);
+
+        int GetAsID() const
+        {
+            FUNC(0x00613D00, int, __thiscall, _GetAsID, const m3d::AIParam*);
+            return _GetAsID(this);
+        }
     };
 }
