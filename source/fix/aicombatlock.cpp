@@ -21,7 +21,7 @@ static constexpr uintptr_t RVA_DoUnderAttack = 0x00659030;      // ai::Team::_Do
 static constexpr uintptr_t RVA_TeamAIStartAttack = 0x00659500;  // ai::Team::TeamAIOnStartAttack
 static constexpr uintptr_t RVA_TeamOnEvent = 0x00657FF0;        // ai::Team::OnEvent
 static constexpr uintptr_t RVA_AdjustBehaviour = 0x00658D50;    // ai::Team::_AdjustBehaviour
-static constexpr uintptr_t RVA_OnSomeoneSight = 0x0085AFA0;     // ai::RadioManager::_OnSomeoneAtSight
+static constexpr uintptr_t RVA_OnNoticeEnemy = 0x00655C10;     // ai::Team::_OnNoticeEnemy
 static constexpr uintptr_t RVA_GetGameTimeInt64 = 0x0062D220;   // returns ms counter
 static constexpr uintptr_t RVA_GlobalObjContainer = 0x00A12E98; // pointer to singleton
 
@@ -38,7 +38,7 @@ static const Fn_DoUnderAttack  Orig_DoUnderAttack =
 static const Fn_StartAttack    Orig_StartAttack =
     reinterpret_cast<Fn_StartAttack>(RVA_TeamAIStartAttack);
 static const Fn_OnSomeoneSight Orig_OnSomeoneSight =
-    reinterpret_cast<Fn_OnSomeoneSight>(RVA_OnSomeoneSight);
+    reinterpret_cast<Fn_OnSomeoneSight>(RVA_OnNoticeEnemy);
 static const auto AdjustBehaviour =
     reinterpret_cast<void(__thiscall*)(ai::Team*)>(RVA_AdjustBehaviour);
 
@@ -86,12 +86,14 @@ m3d::AIParam* __fastcall hk_StartAttack(m3d::AIParam* ret, ai::Team* team)
 {
     //auto it = g_lock.find(team);
     //if (it != g_lock.end() && it->second.tgt) {
-    //    ret->y = ret->z = ret->w = 0.f;
-    //    ret->value.id = it->second.tgt;
+    //    ret->value.id = 0;
+    //    ret->y = 0;
+    //    ret->w = 0;
     //    ret->Type = m3d::AIPARAM_ID;
-    //    ret->NameFromNum = nullptr;
-    //    ret->NumFromName = nullptr;
-    //    return ret;                                  // skip tactic change
+    //    ret->NameFromNum = 0;
+    //    ret->NumFromName = 0;
+    //    ret->value.id = it->second.tgt;
+    //   return ret;                                  // skip tactic change
     //}
     ai::Formation* m_formation; // ecx
     ai::Path* m_pPath; // ebx
@@ -118,42 +120,56 @@ m3d::AIParam* __fastcall hk_StartAttack(m3d::AIParam* ret, ai::Team* team)
     return ret;
 }
 
-int __fastcall Orig_TeamOnEvent(ai::Team* team, void*, const ai::Event* evn)
+void __fastcall hk_OnNoticeEnemy(ai::Team* self, void*, const ai::Event* evn)
 {
-  int result; // eax
-  int AsID; // eax
+    if (!evn)
+        return;
 
-  result = ((ai::Obj*)team)->OnEvent(evn);
-  switch ( evn->m_eventId )
-  {
-    case ai::GE_OBJECT_DIE:
-      team->_OnObjectDie(evn);
-      result = 1;
-      break;
-    case ai::GE_UNDER_ATTACK:
-      team->_OnUnderAttack(evn);
-      result = 1;
-      break;
-    case ai::GE_NOTICE_ENEMY:
-      AsID = evn->m_param1.GetAsID();
-      team->_DoNoticeEnemy(AsID);
-      result = 1;
-      break;
-    case ai::GE_PLAYER_VEHICLE_CHANGED:
-      result = 1;
-      team->m_needAdjustBehaviour = 1;
-      break;
-    default:
-      return result;
-  }
-  return result;
+    if (L(self).tgt == 0 &&
+        evn->m_param1.Type == m3d::eAIParamType::AIPARAM_ID &&
+        evn->m_param1.value.id > 0) {
+        L(self).tgt = evn->m_param1.value.id;
+        self->_AdjustBehaviour();                      // wake squad
+    }
+    int AsID;
+    AsID = evn->m_param1.GetAsID();
+    self->_DoNoticeEnemy(AsID);
 }
 
-int __fastcall hk_TeamOnEvent(ai::Team* self, void*, const ai::Event* raw)
+int __fastcall Orig_TeamOnEvent(ai::Team* team, void*, const ai::Event* evn)
 {
-    int rv = Orig_TeamOnEvent(self, nullptr, raw);
+    int result; // eax
+    int AsID; // eax
+
+    result = ((ai::Obj*)team)->OnEvent(evn);
+    switch (evn->m_eventId) {
+    case ai::GE_OBJECT_DIE:
+        team->_OnObjectDie(evn);
+        result = 1;
+        break;
+    case ai::GE_UNDER_ATTACK:
+        team->_OnUnderAttack(evn);
+        result = 1;
+        break;
+    case ai::GE_NOTICE_ENEMY:
+        hk_OnNoticeEnemy(team, nullptr, evn);
+        result = 1;
+        break;
+    case ai::GE_PLAYER_VEHICLE_CHANGED:
+        result = 1;
+        team->m_needAdjustBehaviour = 1;
+        break;
+    default:
+        return result;
+    }
+    return result;
+}
+
+int __fastcall hk_TeamOnEvent(ai::Team* self, void*, const ai::Event* evn)
+{
+    int rv = Orig_TeamOnEvent(self, nullptr, evn);
     auto* team = reinterpret_cast<ai::Team*>(self);
-    auto* ev = raw;
+    auto* ev = evn;
     auto& lk = L(team);
 
     switch (ev->m_eventId) {
@@ -166,17 +182,6 @@ int __fastcall hk_TeamOnEvent(ai::Team* self, void*, const ai::Event* raw)
     default: break;
     }
     return rv;
-}
-
-void __fastcall hk_OnSomeoneSight(ai::Team* self, void*, ai::Event* ev)
-{
-    if (ev && L(self).tgt == 0 &&
-        ev->m_param1.Type == m3d::eAIParamType::AIPARAM_ID &&
-        ev->m_param1.value.id > 0) {
-        L(self).tgt = ev->m_param1.value.id;
-        self->_AdjustBehaviour();                      // wake squad
-    }
-    Orig_OnSomeoneSight(self, nullptr, ev);
 }
 
 // ============================================================================
@@ -192,18 +197,16 @@ namespace kraken::fix::aicombatlockfix {
     void Patch_Team_OnEvent() {
         kraken::routines::Redirect(0x79, (void*)RVA_TeamOnEvent, (void*)&hk_TeamOnEvent);
     }
-    void Patch_OnSomeoneAtSight() {
-        //kraken::routines::Redirect(0x145, (void*)RVA_OnSomeoneSight, (void*)&hk_OnSomeoneSight);
-        //0x0085B1BB
-        kraken::routines::MakeCall((void*)0x0085B1BB, (void*)hk_OnSomeoneSight);
+    void Patch_OnNoticeEnemy() {
+        kraken::routines::Redirect(0xDD, (void*)RVA_OnNoticeEnemy, (void*)&hk_OnNoticeEnemy);
     }
 
     void Apply()
     {
-        Patch_DoUnderAttack(); // 0x00657EA2
+        Patch_DoUnderAttack();
         Patch_TeamAI_OnStartAttack();
         Patch_Team_OnEvent();
-        //Patch_OnSomeoneAtSight();
+        Patch_OnNoticeEnemy();
     }
 }
 
