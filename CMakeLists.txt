@@ -47,6 +47,7 @@ set(HEADERS
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
+    include/hta/CVector2.h
     include/hta/Func.h
     include/hta/Game.h
     include/hta/Quaternion.h
@@ -90,9 +91,11 @@ set(HEADERS
     include/hta/ai/SimplePhysicObjPrototypeInfo.h
     include/hta/ai/Vehicle.h
     include/hta/ai/VehiclePart.h
+    include/hta/ai/Wheel.h
     include/hta/ai/VehicleRecollection.h
     include/hta/ai/FlatLine.h
     include/hta/ai/VehiclePrototypeInfo.h
+    include/hta/ai/VehicleUpdater.h
     include/hta/ai/DrivingValues.h
     include/hta/ai/PrototypeManager.h
     include/hta/ai/Player.h

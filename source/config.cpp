@@ -14,7 +14,7 @@ namespace kraken {
         this->save_width       = { "graphics",  "save_width",      512,   true,  256,   2048  };
         this->save_height      = { "graphics",  "save_height",     256,   true,  128,   1024  };
         this->view_resolution  = { "graphics",  "view_resolution", 2048,  true,  128,   4096  };
-        this->gravity          = { "constants", "gravity",         -9.81, true,  -100,  0     };
+        this->gravity          = { "constants", "gravity",         -19.62, true,  -100,  0     };
         this->price_fuel       = { "constants", "price_fuel",      50,    true,  1,     10000 };
         this->price_paint      = { "constants", "price_paint",     50,    true,  1,     10000 };
         this->keep_throttle    = { "constants", "keep_throttle",   1.0,   true,  0.0,   1.0   };

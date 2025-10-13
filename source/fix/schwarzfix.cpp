@@ -19,63 +19,82 @@ namespace kraken::fix::schwarzfix {
         
         float hp_coeff = vehicle->GetHealth() / vehicle->GetMaxHealth();
 
-        float max_durability;
-        float cur_durability;
-        
-        float durability_coeff;
-
         float base_schwarz_part = 0.5f;
         float armor_schwarz_part = 1.0f - base_schwarz_part;
-        
-        max_durability = vehicle->GetMaxFullDurability();
-        cur_durability = vehicle->GetFullDurability();
-        durability_coeff = cur_durability / max_durability * 100;
-        
+
         float totalPrice = 0.0f;
         
         for (const auto& [part_name, veh_part] : vehicle->m_vehicleParts) {
             LOG_DEBUG("--- %s ---", veh_part->m_modelname);
 
-            float dur_price_coeff;
+            float part_condition_price_coeff = 1.0f;
+            float part_durability = veh_part->m_durability.m_value.m_value;
+            float part_max_durability = veh_part->m_durability.m_maxValue.m_value;
+
             if (part_name.Equal("CHASSIS"))
             {
-                dur_price_coeff = hp_coeff;
+                part_condition_price_coeff = hp_coeff;
                 LOG_DEBUG("Skipping dur check for chassis");
+            }
+            else if (part_max_durability >= 0.001)
+            {
+                if (part_name.Equal("CABIN") || part_name.Equal("BASKET"))
+                {
+                    part_condition_price_coeff = part_durability / part_max_durability;
+                    LOG_DEBUG("Dur: %.2f, MaxDur: %.2f, PriceCoeff: %.2f",
+                        part_durability,
+                        part_max_durability,
+                        part_condition_price_coeff);
+                }
+                else if (part_max_durability >= 0.001)
+                {
+                    // should always be guns? (or gadgets also here?)
+                    part_condition_price_coeff = part_durability / part_max_durability;
+                    if (part_condition_price_coeff >= 0.05) // let's try to only apply coeff to guns that are almost broken
+                    {
+                        part_condition_price_coeff = 1.0;
+                    }
+                    LOG_DEBUG("Dur: %.2f, MaxDur: %.2f, Gun PriceCoeff: %.2f",
+                        part_durability,
+                        part_max_durability,
+                        part_condition_price_coeff);
+
+                }
+                else
+                    part_condition_price_coeff = 0.0;
             }
             else
             {
-                float part_durability = veh_part->m_durability.m_value.m_value;
-                float part_max_durability = veh_part->m_durability.m_maxValue.m_value;
-                if (part_max_durability >= 0.001)
-                    dur_price_coeff = part_durability / part_max_durability;
-                else
-                    dur_price_coeff = 0.0;
-                LOG_DEBUG("Dur: %.2f, MaxDur: %.2f, PriceCoeff: %.2f",
-                    part_durability,
-                    part_max_durability,
-                    dur_price_coeff);
+                LOG_WARNING(
+                    "Part '%s' has ~0 max durability and will not be correctly processed",
+                    part_name.charPtr);
+                continue;
             }
 
             float price_coeff = 1.0; // veh_part->GetPriceCoeff(0) will always == 1.0
 
             float part_price = veh_part->m_price.m_value;
-            float price_by_game_calc = price_coeff * dur_price_coeff * part_price;
-            int recalculated_price;
-            if (price_by_game_calc >= 1.0)
-                recalculated_price = (int)price_by_game_calc;
+            float schwarz_recalculated_float = price_coeff * part_condition_price_coeff * part_price;
+            int schwarz_recalculated;
+            if (schwarz_recalculated_float >= 1.0)
+                schwarz_recalculated = (int)schwarz_recalculated_float;
             else
-                recalculated_price = 1;
+                schwarz_recalculated = 1;
             float price_by_game_actual = veh_part->GetPrice(0);
 
-            LOG_DEBUG("Vanilla GetPrice of '%s' is %d (raw price is %.2f, recalculated Price is %d)",
+            LOG_DEBUG("Vanilla GetPrice of '%s' is %d (raw price is %.2f, recalculated schwarz is %d)",
                 part_name.charPtr, // TODO: Plain said this is very naughty
                 veh_part->GetPrice(0),
                 part_price,
-                recalculated_price);
+                schwarz_recalculated);
 
             total_price_by_game += veh_part->GetPrice(0);
-            new_schwarz += recalculated_price;
+            new_schwarz += schwarz_recalculated;
         }
+
+        // for (const auto& [gadget_id, gadget] : vehicle->m_gadgets){
+        //     LOG_DEBUG("--- %s ---", gadget->m_);
+        // }
 
         uint32_t vanilla_schwarz;
         uint32_t vanilla_base_price;

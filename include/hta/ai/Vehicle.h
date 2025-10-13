@@ -5,12 +5,15 @@
 #include "ActionType.h"
 #include "VehiclePrototypeInfo.h"
 #include "Basket.h"
+#include "Wheel.h"
 #include "Cabin.h"
 #include "Chassis.h"
 #include "Path.h"
 #include "ref_ptr.h"
 #include "scoped_ptr.h"
 #include "Geom.h"
+#include "hta/m3d/Object.h"
+#include "SgNode.h"
 
 class dxGeom;
 class dxJoint;
@@ -22,8 +25,6 @@ namespace m3d
 		class XmlFile;
 		class XmlNode;
 	}
-
-	class Class;
 
 	class SgSoundSourceNode;
 }
@@ -47,11 +48,11 @@ namespace ai
 
 	class Obstacle
 	{
-  		LONG m_refCount;
-  		BOOLEAN m_bIsEnabled;
+  		int32_t m_refCount;
+  		bool m_bIsEnabled;
   		void* m_intersectionSphere;
   		void* m_intersectionBox;
-  		LONG m_ownerPhysicObjId;
+  		int32_t m_ownerPhysicObjId;
   		m3d::SgNode* m_ownerSgNode;
 	};
 
@@ -132,15 +133,15 @@ namespace ai
 			bool m_CommandStackOpen;
 	};
 
-	struct Wheel;
-	struct Gadget;
-	struct Vehicle : ComplexPhysicObj
+	class Gadget;
+
+	class Vehicle : ComplexPhysicObj
 	{
 		struct WheelRuntimeInfo
 		{
 		  CVector m_initialPos;
 		  Quaternion m_initialRot;
-		  BOOLEAN m_bWheelPresent;
+		  bool m_bWheelPresent;
 		  ai::Wheel* m_wheel;
 		};
 
@@ -174,34 +175,34 @@ namespace ai
 
 		std::vector<ai::Vehicle::WheelRuntimeInfo> m_wheels;
 		ai::AI m_AI;
-		BOOLEAN m_bHorn;
-		BOOLEAN m_bGodMode;
-		BOOLEAN m_bImmortalMode;
-		LONG m_stoppageMode;
-		LONG m_onOilMode;
-		LONG m_inSmokeScreenMode;
-		FLOAT m_turboThrottleTime;
-		FLOAT m_turboThrottleValue;
-		FLOAT m_timeAfterDeath;
-		ULONG m_numBlownParts;
-		FLOAT m_timeAfterLastBlow;
-		ULONG m_shootTypeChangeTime;
-		ULONG m_shootTimeToWait;
-		BOOLEAN m_bIsShooting;
+		bool m_bHorn;
+		bool m_bGodMode;
+		bool m_bImmortalMode;
+		int32_t m_stoppageMode;
+		int32_t m_onOilMode;
+		int32_t m_inSmokeScreenMode;
+		float m_turboThrottleTime;
+		float m_turboThrottleValue;
+		float m_timeAfterDeath;
+		uint32_t m_numBlownParts;
+		float m_timeAfterLastBlow;
+		uint32_t m_shootTypeChangeTime;
+		uint32_t m_shootTimeToWait;
+		bool m_bIsShooting;
 		stable_size_map<int,ai::Gadget*> m_gadgets;
-		FLOAT m_antiMissileGadgetSavingRadius;
-		FLOAT m_diffRatio;
-		FLOAT m_maxEngineRpm;
-		FLOAT m_lowGearShiftLimit;
-		FLOAT m_highGearShiftLimit;
-		FLOAT m_steeringSpeed;
-		BOOLEAN m_bIsTrailer;
-		FLOAT m_cruisingSpeed;
-		BOOLEAN m_maxSpeedLimited;
-		FLOAT m_maxSpeedLimit;
-		BOOLEAN m_maxTorqueForced;
-		FLOAT m_maxTorqueForcedValue;
-		LONG m_currentGear;
+		float m_antiMissileGadgetSavingRadius;
+		float m_diffRatio;
+		float m_maxEngineRpm;
+		float m_lowGearShiftLimit;
+		float m_highGearShiftLimit;
+		float m_steeringSpeed;
+		bool m_bIsTrailer;
+		float m_cruisingSpeed;
+		bool m_maxSpeedLimited;
+		float m_maxSpeedLimit;
+		bool m_maxTorqueForced;
+		float m_maxTorqueForcedValue;
+		int32_t m_currentGear;
 		float m_throttle;
 		float m_brake;
 		float m_realThrottle;
@@ -212,39 +213,39 @@ namespace ai
 		bool m_bAutoBrake;
 		bool m_bHandBrake;
 		std::deque<float> m_recentEngineRpms;
-		FLOAT m_steerRadians;
+		float m_steerRadians;
 		ai::Vehicle::TurningBackStatus m_turningBackStatus;
-		LONG m_seenObjId;
+		int32_t m_seenObjId;
 		CVector m_curLookAt;
-		LONG m_npcMotionControllerId;
+		int32_t m_npcMotionControllerId;
 		std::set<ref_ptr<ai::Obstacle>> m_currentNearbyObstacles;
 		std::set<ref_ptr<ai::Obstacle>> m_pastNearbyObstacles;
 		CVector m_pastTakingSpherePosition;
-		BOOLEAN m_bAllowPickUpMessage;
-		LONG m_pastNumNearbyChests;
-		LONG m_currentNumNearbyChests;
+		bool m_bAllowPickUpMessage;
+		int32_t m_pastNumNearbyChests;
+		int32_t m_currentNumNearbyChests;
 		scoped_ptr<ai::Box> m_lookBox;
 		scoped_ptr<ai::Box> m_targetBox;
 		std::set<m3d::Class *,std::less<m3d::Class *>,std::allocator<m3d::Class *> > m_targetClasses;
 		CVector m_externalDestination;
-		LONG m_numOfDrivenWheels;
+		int32_t m_numOfDrivenWheels;
 		CVector m_bumperPoint;
-		BOOLEAN m_bIsControlledByPlayer;
-		BOOLEAN m_bIsMovingAlongExternalPath;
-		LONG m_pathIndex;
-		BOOLEAN m_bCanBeDistractedFromMoving;
+		bool m_bIsControlledByPlayer;
+		bool m_bIsMovingAlongExternalPath;
+		int32_t m_pathIndex;
+		bool m_bCanBeDistractedFromMoving;
 		CVector m_size;
 		CVector m_currentDestination;
 		ai::Path* m_pPath;
 		int m_pathNum;
 		UCHAR m_priority;
-		BOOLEAN m_bCustomControl;
+		bool m_bCustomControl;
 		ai::Vehicle::CustomWeaponControlType m_customControlWeapons;
 		CVector m_customControlWeaponsTarget;
-		LONG m_customControlWeaponsTargetObjId;
+		int32_t m_customControlWeaponsTargetObjId;
 		std::map<int,bool,std::less<int>,std::allocator<std::pair<int const ,bool> > > m_gunsPointed;
-		BOOLEAN m_bRocketLaunchersPresent;
-		LONG m_indexInTeam;
+		bool m_bRocketLaunchersPresent;
+		int32_t m_indexInTeam;
 		ai::Vehicle::VehicleMoveStatus m_moveStatus;
 		ai::Vehicle::VehicleAttackStatus m_attackStatus;
 		ai::DamageType m_lastDamage;
@@ -259,28 +260,34 @@ namespace ai
 		m3d::SgSoundSourceNode* m_engineHighSoundNode;
 		m3d::SgSoundSourceNode* m_engineLowSoundNode;
 		m3d::SgNode* m_hornSoundNode;
-		FLOAT m_cameraHeight;
-		FLOAT m_cameraMaxDist;
-		LONG m_trailerObjId;
+		float m_cameraHeight;
+		float m_cameraMaxDist;
+		int32_t m_trailerObjId;
 		dxJoint* m_trailerJoint;
 		CVector m_relTrailerJointPosOnMe;
 		CVector m_relTrailerJointPosOnTrailer;
-		LONG m_recollectionId;
+		int32_t m_recollectionId;
 		ai::VehicleUpdater* m_ownUpdater;
-		LONG m_roleId;
+		int32_t m_roleId;
 		ai::NumericInRangeRegenerating<float> m_timeOutForNextIntersectionWithWorld;
-		LONG m_numWheelsTouchingGround;
-		BOOLEAN m_bHidden;
-		LONG m_lockedObjId;
-		LONG m_toBeLockedObjId;
-		FLOAT m_timeToLockTarget;
-		BOOLEAN m_bMustGetOutOfDifficultPlace;
-		BOOLEAN m_bWasStuck;
+		int32_t m_numWheelsTouchingGround;
+		bool m_bHidden;
+		int32_t m_lockedObjId;
+		int32_t m_toBeLockedObjId;
+		float m_timeToLockTarget;
+		bool m_bMustGetOutOfDifficultPlace;
+		bool m_bWasStuck;
 		CVector m_prevPosToCheckStuck;
-		FLOAT m_timeOutToCheckStuck;
+		float m_timeOutToCheckStuck;
 		CVector m_curSteeringForce;
-		BOOLEAN m_bCurSteeringForceValid;
-		LONG m_soundRechargeChannelId;
+		bool m_bCurSteeringForceValid;
+		int32_t m_soundRechargeChannelId;
+
+		void SetGamePositionOnGround(CVector pos, bool bWithCollisions, bool bWithWater)
+		{
+			FUNC(0x005E09D0, void, __thiscall, _SetGamePositionOnGround, Vehicle*, CVector, bool, bool);
+			return _SetGamePositionOnGround(this, pos, bWithCollisions, bWithWater);
+		}
 
 		float GetHealth()
 		{
@@ -370,6 +377,42 @@ namespace ai
 		{
 			FUNC(0x005D62E0, CVector*, __thiscall, __CalcSteeringForceToPathPoint, Vehicle*, CVector*, const CVector*, const CVector*);
 			return __CalcSteeringForceToPathPoint(this, result, point, nextPoint);
+		}
+
+		bool bIsBraking()
+		{
+			FUNC(0x005CC250, bool, __thiscall, _bIsBraking, Vehicle*);
+			return _bIsBraking(this);
+		}
+
+		float GetMass()
+		{
+			FUNC(0x005D5BD0, float, __thiscall, _GetMass, Vehicle*);
+			return _GetMass(this);
+		}
+
+		float GetMaxTorque()
+		{
+			FUNC(0x005CBD10, float, __thiscall, _GetMaxTorque, Vehicle*);
+			return _GetMaxTorque(this);
+		}
+
+		float GetMaxSpeed()
+		{
+			FUNC(0x005D1370, float, __thiscall, _GetMaxSpeed, Vehicle*);
+			return _GetMaxSpeed(this);
+		}
+
+		float GetCruisingSpeed()
+		{
+			FUNC(0x005CC360, float, __thiscall, _GetCruisingSpeed, Vehicle*);
+			return _GetCruisingSpeed(this);
+		}
+
+		ai::Wheel* GetFirstExistingWheel()
+		{
+			FUNC(0x005D5C60, ai::Wheel*, __thiscall, _GetFirstExistingWheel, Vehicle*);
+			return _GetFirstExistingWheel(this);
 		}
 	}; 
 }
