@@ -84,17 +84,17 @@ void __fastcall hk_DoUnderAttack(ai::Team* self, void*, int attackerId)
 
 m3d::AIParam* __fastcall hk_StartAttack(m3d::AIParam* ret, ai::Team* team)
 {
-    //auto it = g_lock.find(team);
-    //if (it != g_lock.end() && it->second.tgt) {
-    //    ret->value.id = 0;
-    //    ret->y = 0;
-    //    ret->w = 0;
-    //    ret->Type = m3d::AIPARAM_ID;
-    //    ret->NameFromNum = 0;
-    //    ret->NumFromName = 0;
-    //    ret->value.id = it->second.tgt;
-    //   return ret;                                  // skip tactic change
-    //}
+    auto it = g_lock.find(team);
+    if (it != g_lock.end() && it->second.tgt) {
+        ret->value.id = 0;
+        ret->y = 0;
+        ret->w = 0;
+        ret->Type = m3d::AIPARAM_ID;
+        ret->NameFromNum = 0;
+        ret->NumFromName = 0;
+        ret->value.id = it->second.tgt;
+       return ret;                                  // skip tactic change
+    }
     ai::Formation* m_formation; // ecx
     ai::Path* m_pPath; // ebx
 

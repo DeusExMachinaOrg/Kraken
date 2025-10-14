@@ -10,19 +10,20 @@ namespace ai {
 
     struct AI {
         stable_size_vector<ai::AIPassageState> m_StateStack2;
-        std::vector<ai::AIPassageState> m_StateStack1;
+        stable_size_vector<ai::AIPassageState> m_StateStack1;
         ai::DecisionMatrix* m_pDM;
         bool m_fStateStack2Changed;
         // padding byte
         // padding byte
         // padding byte
-        std::vector<ai::AIMessage> m_Messages2;
-        std::vector<ai::AIMessage> m_Messages1;
-        std::vector<ai::AIMessage> m_Commands;
+        stable_size_vector<ai::AIMessage> m_Messages2;
+        stable_size_vector<ai::AIMessage> m_Messages1;
+        stable_size_vector<ai::AIMessage> m_Commands;
         int m_numCurCommand;
         bool m_CommandProcessed;
         bool m_CommandStackOpen;
         // padding byte
         // padding byte
     };
+    ASSERT_SIZE(ai::AI, 0x60);
 }
