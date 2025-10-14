@@ -21,9 +21,9 @@ namespace ai
 			return _GetPartByName(this, partName);
 		}
 
-		int GetPrice(const ai::IPriceCoeffProvider* provider)
+		unsigned int GetPrice(const ai::IPriceCoeffProvider* provider)
 		{
-			FUNC(0x006BFA30, int, __thiscall, _GetPrice, ComplexPhysicObj*, const ai::IPriceCoeffProvider*);
+			FUNC(0x006BFA30, unsigned int, __thiscall, _GetPrice, ComplexPhysicObj*, const ai::IPriceCoeffProvider*);
 			return _GetPrice(this, provider);
 		}
 	};

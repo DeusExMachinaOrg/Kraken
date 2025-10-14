@@ -1,7 +1,7 @@
 #pragma once
 
 namespace m3d {
-    class FileServer;
+    struct FileServer;
 }
 
 namespace kraken::fix::fileserver {

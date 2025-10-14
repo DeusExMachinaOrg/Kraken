@@ -16,10 +16,10 @@ namespace m3d
 
 namespace ai
 {
-    class SphericBody;
-    class Vehicle;
+    struct SphericBody;
+    struct Vehicle;
 
-    class WheelPrototypeInfo : public SimplePhysicObjPrototypeInfo
+    struct WheelPrototypeInfo : SimplePhysicObjPrototypeInfo
     {
     public:
         WheelPrototypeInfo();
@@ -37,7 +37,7 @@ namespace ai
 
     };
 
-    class Wheel : public SimplePhysicObj
+    struct Wheel : SimplePhysicObj
     {
     public:
         enum WheelSteering

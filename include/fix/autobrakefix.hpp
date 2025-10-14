@@ -1,7 +1,7 @@
 #pragma once
 
 namespace ai {
-    class Vehicle;
+    struct Vehicle;
 }
 
 namespace kraken::fix::autobrakefix {

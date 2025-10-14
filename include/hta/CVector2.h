@@ -1,6 +1,6 @@
 #pragma once
 
-class CVector2
+struct CVector2
 {
 public:
     CVector2(float, float);

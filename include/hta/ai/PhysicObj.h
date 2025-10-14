@@ -4,7 +4,7 @@
 
 namespace ai
 {
-	struct PhysicObj : ai::Obj
+	struct PhysicObj : Obj
 	{
 		int m_postActionFlags;
 		Quaternion m_postRotation;

@@ -4,7 +4,7 @@
 
 namespace m3d
 {
-    class Aabb { /* Size=0x18 */
+    struct Aabb { /* Size=0x18 */
 		float m_box[6];
         // public
         void Create(const CVector&, const CVector&);
@@ -25,17 +25,16 @@ namespace m3d
         void Draw(long);
         };
 
-    class Obb { /* Size=0x48 */
-        public:
-            void Create(Aabb const&, CMatrix const&, bool);
-            void Create(CVector const&, CVector const&, CMatrix const&, bool);
-            void Draw(unsigned int);
-            int IsPtInside2(CVector const&) const;
-            Aabb GetBounds() const;
-            CVector toLocalRotate(CVector const&) const;
-            float IntersectRay(CVector const&, CVector const&) const;
-            CVector toWorld(CVector const&) const;
-            int IsPtInside(CVector const&) const;
+    struct Obb { /* Size=0x48 */
+        void Create(Aabb const&, CMatrix const&, bool);
+        void Create(CVector const&, CVector const&, CMatrix const&, bool);
+        void Draw(unsigned int);
+        int IsPtInside2(CVector const&) const;
+        Aabb GetBounds() const;
+        CVector toLocalRotate(CVector const&) const;
+        float IntersectRay(CVector const&, CVector const&) const;
+        CVector toWorld(CVector const&) const;
+        int IsPtInside(CVector const&) const;
 
         // private
         CVector m_origin;
@@ -67,11 +66,11 @@ namespace m3d
         NRF_NO_LIGHTING = 0x4,
     };
 
-	class GraphItemsForSgNode;
-	class SceneGraph;
-	class DataServer;
+	struct GraphItemsForSgNode;
+	struct SceneGraph;
+	struct DataServer;
 
-	class SgNode : Object
+	struct SgNode : Object
 	{
         enum Ritual
         {
@@ -177,13 +176,13 @@ namespace m3d
   		int GetServerHandle() const;
   		uint32_t GetContourColor();
   		float GetContourWidth();
-  		protected: virtual void UpdateOwnBoundingBox();
-  		protected: CMatrix MatrixFromFlags(m3d::SgNodeRenderFlags, void*) const;
-  		protected: void RitualInConstructor(m3d::SgNode::Ritual);
-  		protected: void RitualInDestructor();
-  		protected: void InternalInit();
-  		public: void __local_vftable_ctor_closure();
-  		protected: virtual void* __vecDelDtor(uint32_t);
+
+  		// protected:
+		virtual void UpdateOwnBoundingBox();
+  		CMatrix MatrixFromFlags(m3d::SgNodeRenderFlags, void*) const;
+  		void RitualInConstructor(m3d::SgNode::Ritual);
+  		void RitualInDestructor();
+  		void InternalInit();
 
   		public: static m3d::Object* CreateObject();
   		public: static m3d::Class* GetBaseClass();

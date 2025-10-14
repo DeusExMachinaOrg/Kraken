@@ -8,6 +8,7 @@
 #include "Wheel.h"
 #include "Cabin.h"
 #include "Chassis.h"
+#include "Gadget.h"
 #include "Path.h"
 #include "ref_ptr.h"
 #include "scoped_ptr.h"
@@ -15,38 +16,29 @@
 #include "hta/m3d/Object.h"
 #include "SgNode.h"
 
-class dxGeom;
-class dxJoint;
+struct dxGeom;
+struct dxJoint;
 
 namespace m3d
 {
 	namespace cmn
 	{
-		class XmlFile;
-		class XmlNode;
+		struct XmlFile;
+		struct XmlNode;
 	}
 
-	class SgSoundSourceNode;
+	struct SgSoundSourceNode;
 }
 
 namespace ai
 {
-	class VehicleUpdater;
+	struct VehicleUpdater;
 
-	enum DamageType
-	{
-		DAMAGE_PIERCING = 0,
-		DAMAGE_BLAST = 1,
-		DAMAGE_ENERGY = 2,
-		DAMAGE_WATER = 3,
-		DAMAGE_NUM_TYPES = 4,
-	};
+	struct SphereForIntersection;
 
-	class SphereForIntersection;
+	struct Box : Geom { };
 
-	class Box : Geom { };
-
-	class Obstacle
+	struct Obstacle
 	{
   		int32_t m_refCount;
   		bool m_bIsEnabled;
@@ -56,64 +48,61 @@ namespace ai
   		m3d::SgNode* m_ownerSgNode;
 	};
 
-	class AIPassageState
+	struct AIPassageState
 	{
-		public:
-			int m_StateNum;
-			std::vector<m3d::AIParam,std::allocator<m3d::AIParam> > m_ParamList;
-			void LoadFromXML(m3d::cmn::XmlFile* xmlFile, const m3d::cmn::XmlNode* OwnNode);
-			void SaveToXML(m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* OwnNode) const;
+		int m_StateNum;
+		std::vector<m3d::AIParam,std::allocator<m3d::AIParam> > m_ParamList;
+		void LoadFromXML(m3d::cmn::XmlFile* xmlFile, const m3d::cmn::XmlNode* OwnNode);
+		void SaveToXML(m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* OwnNode) const;
 	};
 
-	class DecisionMatrix;
+	struct DecisionMatrix;
 
-	class AIMessage
+	struct AIMessage
 	{
-		public:
-			int m_Num;
-			int m_RemoveAfterFinishing;
-			std::vector<m3d::AIParam,std::allocator<m3d::AIParam> > m_ParamList;
-			void LoadFromXML(m3d::cmn::XmlFile* xmlFile, const m3d::cmn::XmlNode* OwnNode);
-			void SaveToXML(m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* OwnNode) const;
-			AIMessage(const ai::AIMessage& __that);
-			AIMessage(int Num, const m3d::AIParam& Param1, const m3d::AIParam& Param2, const m3d::AIParam& Param3);
-			AIMessage();
-			bool operator==(const ai::AIMessage& message);
-			bool operator!=(const ai::AIMessage&);
+		int m_Num;
+		int m_RemoveAfterFinishing;
+		std::vector<m3d::AIParam,std::allocator<m3d::AIParam> > m_ParamList;
+		void LoadFromXML(m3d::cmn::XmlFile* xmlFile, const m3d::cmn::XmlNode* OwnNode);
+		void SaveToXML(m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* OwnNode) const;
+		AIMessage(const ai::AIMessage& __that);
+		AIMessage(int Num, const m3d::AIParam& Param1, const m3d::AIParam& Param2, const m3d::AIParam& Param3);
+		AIMessage();
+		bool operator==(const ai::AIMessage& message);
+		bool operator!=(const ai::AIMessage&);
 	};
 
-	class AI
+	struct AI
 	{
-		public:
-			AI(const ai::AI&);
-			AI();
-			void AIInit();
-			const CStr& GetCurState2Name();
-			const CStr& GetCurState1Name();
-			int GetCurState2Num();
-			int GetCurState1Num();
-			m3d::AIParam GetCmdParam(unsigned int paramNum);
-			m3d::AIParam GetState1Param(unsigned int paramNum);
-			m3d::AIParam GetState2Param(unsigned int paramNum);
-			m3d::AIParam GetMessage1Param(unsigned int paramNum);
-			m3d::AIParam GetMessage2Param(unsigned int paramNum);
-			void SetDecisionMatrix(int MatrixNum);
-			ai::DecisionMatrix* GetDecisionMatrixPtr();
-			void AIUpdate(ai::Obj* pObj);
-			void SetState2Param(int ParamNum, const m3d::AIParam& Param);
-			void SetState1Param(int ParamNum, const m3d::AIParam& Param);
-			void PutCommand(int Num, const m3d::AIParam& Param1, const m3d::AIParam& Param2, const m3d::AIParam& Param3);
-			void PutCommand(const ai::AIMessage& command);
-			void InsCommand(int Num, const m3d::AIParam& Param1, const m3d::AIParam& Param2, const m3d::AIParam& Param3);
-			void SetCommand(int Num, const m3d::AIParam& Param1, const m3d::AIParam& Param2, const m3d::AIParam& Param3);
-			void CommandStackOpen();
-			void CommandStackClose();
-			void PutMessage2(const ai::AIMessage& Message);
-			void PutMessage1(const ai::AIMessage& Message);
-			void LoadAIFromXML(m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* OwnNode);
-			void SaveAIToXML(m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* OwnNode) const;
-			void Dump();
-			CStr ToStr();
+		AI(const ai::AI&);
+		AI();
+		void AIInit();
+		const CStr& GetCurState2Name();
+		const CStr& GetCurState1Name();
+		int GetCurState2Num();
+		int GetCurState1Num();
+		m3d::AIParam GetCmdParam(unsigned int paramNum);
+		m3d::AIParam GetState1Param(unsigned int paramNum);
+		m3d::AIParam GetState2Param(unsigned int paramNum);
+		m3d::AIParam GetMessage1Param(unsigned int paramNum);
+		m3d::AIParam GetMessage2Param(unsigned int paramNum);
+		void SetDecisionMatrix(int MatrixNum);
+		ai::DecisionMatrix* GetDecisionMatrixPtr();
+		void AIUpdate(ai::Obj* pObj);
+		void SetState2Param(int ParamNum, const m3d::AIParam& Param);
+		void SetState1Param(int ParamNum, const m3d::AIParam& Param);
+		void PutCommand(int Num, const m3d::AIParam& Param1, const m3d::AIParam& Param2, const m3d::AIParam& Param3);
+		void PutCommand(const ai::AIMessage& command);
+		void InsCommand(int Num, const m3d::AIParam& Param1, const m3d::AIParam& Param2, const m3d::AIParam& Param3);
+		void SetCommand(int Num, const m3d::AIParam& Param1, const m3d::AIParam& Param2, const m3d::AIParam& Param3);
+		void CommandStackOpen();
+		void CommandStackClose();
+		void PutMessage2(const ai::AIMessage& Message);
+		void PutMessage1(const ai::AIMessage& Message);
+		void LoadAIFromXML(m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* OwnNode);
+		void SaveAIToXML(m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* OwnNode) const;
+		void Dump();
+		CStr ToStr();
 		
 		private:
 			int _CurrentState2Num();
@@ -133,9 +122,7 @@ namespace ai
 			bool m_CommandStackOpen;
 	};
 
-	class Gadget;
-
-	class Vehicle : ComplexPhysicObj
+	struct Vehicle : ComplexPhysicObj
 	{
 		struct WheelRuntimeInfo
 		{
@@ -414,6 +401,7 @@ namespace ai
 			FUNC(0x005D5C60, ai::Wheel*, __thiscall, _GetFirstExistingWheel, Vehicle*);
 			return _GetFirstExistingWheel(this);
 		}
-	}; 
+	};
+
+	ASSERT_SIZE(ai::Vehicle, 0x4f4);
 }
-ASSERT_SIZE(ai::Vehicle, 0x4f4);

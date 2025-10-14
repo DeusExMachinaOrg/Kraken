@@ -5,7 +5,7 @@
 namespace ai
 {
 
-    class VehicleUpdater
+    struct VehicleUpdater
     {
     // ex private
     Vehicle *m_vehicle;

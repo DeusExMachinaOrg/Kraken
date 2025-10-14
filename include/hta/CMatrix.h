@@ -1,10 +1,10 @@
 #pragma once
 #include "CVector.h"
 
-class CVector4;
-class Quaternion;
+struct CVector4;
+struct Quaternion;
 
-class CPlane
+struct CPlane
 {
 public:
     static void buildplane(CPlane*, CVector*);
@@ -27,7 +27,7 @@ private:
 
 
 
-class CMatrix
+struct CMatrix
 {
 public:
     CMatrix(CMatrix const&);

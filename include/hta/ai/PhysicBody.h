@@ -9,13 +9,30 @@
 #include "SgNode.h"
 #include "PhysicObj.h"
 #include "ActionType.h"
+#include "PrototypeInfo.h"
 
 namespace ai
 {
+    struct PhysicBodyPrototypeInfo : PrototypeInfo
+    {
+	    // public:
+        virtual void RefreshFromXml(m3d::cmn::XmlFile*, m3d::cmn::XmlNode const*);
+        virtual bool LoadFromXML(m3d::cmn::XmlFile*, m3d::cmn::XmlNode const*);
+        PhysicBodyPrototypeInfo();
+
+	    // private:
+	    int m_engineModelId;
+	    CStr m_engineModelName;
+	    float m_massValue;
+	    std::vector<CollisionInfo> m_collisionInfos;
+	    bool m_bCollisionTrimeshAllowed;
+    };
+
+	ASSERT_SIZE(ai::PhysicBodyPrototypeInfo, 0x68);
+
 	struct PhysicBody : Obj
 	{
 		virtual void Dtor() = 0;
-
 		CStr m_modelname;
 		dMass mass;
 		stable_size_vector<ai::GeomTransform*> m_pGeoms;
@@ -67,4 +84,6 @@ namespace ai
 			_SetAnimationStopped(this, bStopped);
 		}
 	};
+
+	ASSERT_SIZE(ai::PhysicBody, 0x158);
 }

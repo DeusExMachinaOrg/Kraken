@@ -9,6 +9,39 @@
 
 namespace ai
 {
+    struct TriMesh;
+	struct Box;
+
+    struct VehiclePartPrototypeInfo : PhysicBodyPrototypeInfo
+    {
+	    // public:
+        CVector const& GetSize() const;
+        VehiclePartPrototypeInfo();
+        virtual Obj* CreateTargetObject() const;
+        virtual void RefreshFromXml(m3d::cmn::XmlFile*, m3d::cmn::XmlNode const*);
+        // virtual ~VehiclePartPrototypeInfo();
+        virtual bool LoadFromXML(m3d::cmn::XmlFile*, m3d::cmn::XmlNode const*);
+
+	    // private:
+	    void _InitModelMeshes(m3d::cmn::XmlFile*, m3d::cmn::XmlNode const*);
+	    int m_weaponPrototypeId;
+	    float m_durabilityCoeffsForDamageTypes[4];
+	    float m_durability;
+	    std::set<CStr> m_loadPoints;
+	    CStr m_blowEffectName;
+	    bool m_canBeUsedInAutogenerating;
+	    float m_repairCoef;
+	    std::vector<TriMesh*> m_modelMeshes;
+	    std::vector<Box*> m_boundsForMeshes;
+	    std::vector<void*> m_verts;
+	    std::vector<int*> m_inds;
+	    std::vector<int> m_numsTris;
+	    std::vector<int> m_vertsStride;
+	    std::vector<float> m_groupHealthes;
+    };
+
+	ASSERT_SIZE(ai::VehiclePartPrototypeInfo, 0x110);
+
 	struct VehiclePart : PhysicBody
 	{
 		struct ModelPart
@@ -47,4 +80,6 @@ namespace ai
 		}
 
 	};
+
+	ASSERT_SIZE(ai::VehiclePart, 0x2c8);
 }

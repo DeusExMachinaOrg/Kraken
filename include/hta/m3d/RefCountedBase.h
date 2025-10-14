@@ -2,10 +2,15 @@
 
 namespace m3d
 {
-	struct RefCountedBase
-	{
-		virtual void Dtor() = 0;
+    struct RefCountedBase
+    {
+        RefCountedBase();
+        virtual ~RefCountedBase() = default;
+        int IncRef();
+        int DecRef();
+        int GetRefCount() const;
 
-		int refCount;
-	};
+    private:
+        int m_refCount = 0;
+    };
 }

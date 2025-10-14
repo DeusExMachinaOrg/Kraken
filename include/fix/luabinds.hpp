@@ -2,7 +2,7 @@
 #include "config.hpp"
 
 namespace ai {
-    class Vehicle;
+    struct Vehicle;
 }
 
 namespace kraken::fix::luabinds {

@@ -39,7 +39,7 @@ Out unsafe_cast(In x) {
 };
 
 template<typename K, typename V>
-class stable_size_map;
+struct stable_size_map;
 
 template<typename K, typename V>
 struct MapNode {
@@ -103,7 +103,7 @@ private:
         }
     }
 
-    friend class stable_size_map<K, V>;
+    friend struct stable_size_map<K, V>;
 };
 
 template<typename K, typename V>

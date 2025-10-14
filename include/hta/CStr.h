@@ -1,6 +1,7 @@
 #pragma once
 #include "Func.h"
 #include <string>
+#include <unordered_set>
 
 struct CStr
 {
@@ -29,6 +30,27 @@ struct CStr
 	{
 		return this->allocSz && !strcmp(this->charPtr, str);
 	}
+
+	// custom method
+	bool In(std::initializer_list<const char*> strings) const
+	{
+	    if (!this->allocSz) return false;
+	    
+	    for (const char* str : strings)
+	    {
+	        if (!strcmp(this->charPtr, str))
+	            return true;
+	    }
+	    return false;
+	}
+
+	// custom method
+	bool In(const std::unordered_set<std::string_view>& strings) const
+	{
+	    if (!this->allocSz) return false;
+	    return strings.find(std::string_view(this->charPtr)) != strings.end();
+	}
+
 };
 
 inline bool operator<(const CStr& lhs, const CStr& rhs)
