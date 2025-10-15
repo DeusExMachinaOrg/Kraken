@@ -13,10 +13,16 @@ inline T clamp(T v, T min, T max) {
 };
 
 template<typename T>
-struct stable_size_vector : public std::vector<T> {
-#if !defined(_DEBUG)
-    char pad[4];
-#endif
+struct stable_size_vector {
+    char pad[3];
+    T* _Myfirst;
+    T* _Mylast;
+    T* _Myend;
+
+    inline size_t size() const { return static_cast<size_t>(_Mylast - _Myfirst); }
+    inline bool empty() const { return _Myfirst == _Mylast; }
+    inline T& back() { return _Mylast[-1]; }
+    inline T& front() { return *_Myfirst; }
 };
 
 template<typename K, typename T>
