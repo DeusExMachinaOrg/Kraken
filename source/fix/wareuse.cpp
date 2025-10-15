@@ -81,7 +81,7 @@ namespace kraken::fix::wareuse {
                 if (repositoryObj && repositoryObj->IsKindOf(0x00A0238C)) // Ware class
                 {
                     CStr name;
-                    ai::PrototypeManager::Instance->GetPrototypeName(&name, repositoryObj->PrototypeId);
+                    ai::PrototypeManager::Instance->GetPrototypeName(&name, repositoryObj->m_prototypeId);
 
                     auto playerVehicle = ai::Player::Instance->GetVehicle();
                     if (TryRepair(playerVehicle, name) || TryRefuel(playerVehicle, name))

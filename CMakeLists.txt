@@ -25,6 +25,7 @@ set(SOURCES
     source/fix/recollectionfix.cpp
     source/fix/ultrawide.cpp
     source/fix/fastloading.cpp
+    source/fix/kineticfriction.cpp
 )
 
 # Header files
@@ -78,9 +79,7 @@ set(HEADERS
     include/hta/ai/Path.h
     include/hta/ai/PhysicBody.h
     include/hta/ai/PhysicObj.h
-    include/hta/ai/PhysicObjPrototypeInfo.h
     include/hta/ai/PrototypeInfo.h
-    include/hta/ai/SgNode.h
     include/hta/ai/SimplePhysicObj.h
     include/hta/ai/SimplePhysicObjPrototypeInfo.h
     include/hta/ai/Vehicle.h

@@ -18,6 +18,7 @@
 #include "fix/recollectionfix.hpp"
 #include "fix/ultrawide.hpp"
 #include "fix/fastloading.hpp"
+#include "fix/kineticfriction.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -58,8 +59,9 @@ namespace kraken {
         fix::luabinds::Apply(G_CONFIG);
         fix::posteffectreload::Apply(G_CONFIG);
         fix::wareuse::Apply();
-        fix::recollection::Apply();
+        //fix::recollection::Apply();
         fix::ultrawide::Apply();
         fix::fastloading::Apply();
+        fix::kineticfriction::Apply();
     };
 };

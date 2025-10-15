@@ -1,5 +1,5 @@
 #pragma once
-#include "PhysicObjPrototypeInfo.h"
+#include "hta/ai/Obj.h"
 #include "ComplexPhysicObjPartDescription.h"
 #include "hta/CVector.h"
 #include "stdafx.hpp"

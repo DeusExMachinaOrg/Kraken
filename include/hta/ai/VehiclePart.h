@@ -1,7 +1,7 @@
 #pragma once
 
 #include "PhysicBody.h"
-#include "SgNode.h"
+#include "hta/m3d/SgNode.hpp"
 #include "Numeric.h"
 #include "NumericInRangeRegenerating.h"
 #include "DecalData.h"

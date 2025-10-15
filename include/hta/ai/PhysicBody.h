@@ -6,7 +6,7 @@
 #include "GeomTransform.h"
 #include "CollisionInfo.h"
 #include "hta/Game.h"
-#include "SgNode.h"
+#include "hta/m3d/SgNode.hpp"
 #include "PhysicObj.h"
 #include "ActionType.h"
 
