@@ -23,6 +23,17 @@ struct stable_size_vector {
     inline bool empty() const { return _Myfirst == _Mylast; }
     inline T& back() { return _Mylast[-1]; }
     inline T& front() { return *_Myfirst; }
+
+    using iterator = T*;
+    using const_iterator = const T*;
+
+    inline iterator begin() noexcept { return _Myfirst; }
+    inline const_iterator begin() const noexcept { return _Myfirst; }
+    inline const_iterator cbegin() const noexcept { return _Myfirst; }
+
+    inline iterator end() noexcept { return _Mylast; }
+    inline const_iterator end() const noexcept { return _Mylast; }
+    inline const_iterator cend() const noexcept { return _Mylast; }
 };
 
 template<typename K, typename T>

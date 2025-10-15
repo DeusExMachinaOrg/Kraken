@@ -28,6 +28,7 @@ namespace kraken {
         this->ultrawide        = { "constants", "ultrawide",       0,     true,  0,     1     };
         this->objcontupgrade   = { "constants", "obj_cont_upgrade",1,     true,  0,     1     };
         this->show_load_every  = { "constants", "show_load_every", 100,   true,  0,     uint32_t(-1)};
+        this->weather_number   = { "constants", "weather_number",  0,     true,  0,     1024  };
 
         Config::INSTANCE = this;
 
@@ -60,6 +61,7 @@ namespace kraken {
         this->LoadValue(&this->ultrawide);
         this->LoadValue(&this->objcontupgrade);
         this->LoadValue(&this->show_load_every);
+        this->LoadValue(&this->weather_number);
     };
 
     void Config::Dump() {
@@ -81,6 +83,7 @@ namespace kraken {
         this->DumpValue(&this->ultrawide);
         this->DumpValue(&this->objcontupgrade);
         this->DumpValue(&this->show_load_every);
+        this->DumpValue(&this->weather_number);
     };
 
     template<typename T>
