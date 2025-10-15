@@ -7,15 +7,13 @@ using PresentScene_t = int (__thiscall *)(m3d::rend::IRenderer *);
 
 namespace kraken::fix::fastloading
 {
-    static uint32_t limit;
+    static size_t limit;
     void SkipLoadingPresentScene()
     {
-        static int counter = 0;
-        counter++;
-        if (counter < limit)
-            return;
+        static size_t counter = 0;
 
-        counter = 0;
+        if (counter++ % limit)
+            return;
 
         m3d::rend::IRenderer* renderer = m3d::Application::Instance->Renderer;
         void** vtable = *(void***)renderer;
