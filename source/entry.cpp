@@ -18,6 +18,7 @@
 #include "fix/recollectionfix.hpp"
 #include "fix/ultrawide.hpp"
 #include "fix/fastloading.hpp"
+#include "fix/controls.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -61,5 +62,6 @@ namespace kraken {
         fix::recollection::Apply();
         fix::ultrawide::Apply();
         fix::fastloading::Apply();
+        fix::controls::Apply();
     };
 };

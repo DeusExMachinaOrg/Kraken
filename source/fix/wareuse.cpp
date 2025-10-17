@@ -69,7 +69,7 @@ namespace kraken::fix::wareuse {
     int __fastcall OnMouseButton0Hook(DragDropItemsWnd* dragDropItemsWnd, int, unsigned int state, const PointBase<float>* at)
     {
         auto app = CMiracle3d::Instance;
-        auto impulse = (m3d::GameImpulse*)app->Impulse;
+        auto impulse = (m3d::GameImpulse*)app->m_pImpulses;
 
         if (!DragDropItemsWnd::DragSlot && impulse->CurKeys.IsThere(0x105)) // ctrl
         {
@@ -87,7 +87,7 @@ namespace kraken::fix::wareuse {
                     if (TryRepair(playerVehicle, name) || TryRefuel(playerVehicle, name))
                     {
                         playerVehicle->Repository->GiveUpThingByObjId(repositoryItem.ObjId);
-                        app->UiManager->RemoveWindow(0x24); // Info window
+                        app->m_pInterfaceManager->RemoveWindow(0x24); // Info window
                         return 1;
                     }
                 }

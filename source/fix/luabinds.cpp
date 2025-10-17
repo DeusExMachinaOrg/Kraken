@@ -9,7 +9,7 @@ namespace kraken::fix::luabinds {
     static std::vector<std::string> g_scripts;
     void ExecuteLuaScripts()
     {
-        auto impulse = (m3d::GameImpulse*)CMiracle3d::Instance->Impulse;
+        auto impulse = (m3d::GameImpulse*)CMiracle3d::Instance->m_pImpulses;
         auto scriptServer = m3d::Kernel::g_Kernel->m_scriptServer;
 
         for (int impId = IM_DEBUG_0; impId <= IM_DEBUG_9; impId++) {

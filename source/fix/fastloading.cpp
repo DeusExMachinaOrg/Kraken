@@ -15,7 +15,7 @@ namespace kraken::fix::fastloading
         if (counter++ % limit)
             return;
 
-        m3d::rend::IRenderer* renderer = m3d::Application::Instance->Renderer;
+        m3d::rend::IRenderer* renderer = m3d::Application::Instance->m_renderer;
         void** vtable = *(void***)renderer;
         PresentScene_t presentScene = *reinterpret_cast<PresentScene_t*>(
             reinterpret_cast<std::uintptr_t*>(vtable) + (0x378/sizeof(void*))

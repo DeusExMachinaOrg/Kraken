@@ -2,6 +2,11 @@
 #include "WeaponGroupManager.h"
 #include "GameImpulse.h"
 
+struct ITruxxUiManager
+{
+	virtual void Dtor() = 0;
+};
+
 struct TruxxUiManager
 {
 	char _offset[0x260];

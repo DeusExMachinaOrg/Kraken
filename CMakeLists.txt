@@ -25,6 +25,7 @@ set(SOURCES
     source/fix/recollectionfix.cpp
     source/fix/ultrawide.cpp
     source/fix/fastloading.cpp
+    source/fix/controls.cpp
 )
 
 # Header files
@@ -42,11 +43,13 @@ set(HEADERS
     include/fix/posteffectreload.hpp
     include/fix/ultrawide.hpp
     include/fix/fastloading.hpp
+    include/fix/controls.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
     include/hta/Func.h
     include/hta/Game.h
+    include/hta/CCamera.h
     include/hta/Quaternion.h
     include/hta/DragDropItemsWnd.h
     include/hta/ai/ActionType.h

@@ -50,6 +50,14 @@ struct stable_size_set : public std::set<K> {
 #endif
 };
 
+template <typename T>
+struct stable_size_queue {
+    int **_Map;
+    unsigned int _Mapsize;
+    unsigned int _Myoff;
+    unsigned int _Mysize;
+};
+
 template <class Out, class In>
 Out unsafe_cast(In x) {
     union {
