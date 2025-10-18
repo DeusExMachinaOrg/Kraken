@@ -15,4 +15,9 @@ namespace m3d {
         FUNC(0x00698CE0, void, __thiscall, jump, WheelTraceMgr*, const CVector*, const Quaternion*, float, void*, int32_t, bool);
         jump(this, &pos, &rot, size, object, soil_id, smooth);
     };
+    
+    int32_t WheelTraceMgr::EndSkidding(void* wheel, bool smooth) {
+        FUNC(0x00698630, int32_t, __thiscall, jump, WheelTraceMgr*, void*, bool);
+        return jump(this, wheel, smooth);
+    };
 };

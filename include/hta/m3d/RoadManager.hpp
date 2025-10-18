@@ -56,4 +56,5 @@ namespace m3d {
         bool GetAdjPoint(RoadNode*, uint32_t, int32_t, CVector&);
         ~RoadManager();
     };
+    ASSERT_SIZE(RoadManager, 0x1c);
 };

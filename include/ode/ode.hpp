@@ -46,6 +46,13 @@ struct dContact { /* Size=0x68 */
 /* 0x0058 */ public: float fdir1[4];
 };
 
+struct dBase {
+    /* Size=0x1 */
+};
+
+
+struct dxTriMeshData; // IceMaths / ODE Unknown
+
 const auto dBodyGetAngularVel   = (float* (__fastcall*)(dxBody*))(0x007C4760);
 const auto dGeomSphereGetRadius = (double (__fastcall*)(dxGeom*))(0x00751860);
 

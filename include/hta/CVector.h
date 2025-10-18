@@ -18,4 +18,23 @@ struct CVector {
 	CVector(float x, float y, float z): x(x), y(y), z(z) {};
 	CVector(float* d): x(d[0]), y(d[1]), z(d[2]) {};
 	float length() const { return sqrtf(x*x + y*y + z*z); };
+
+	CVector& operator += (const CVector& other) {
+		x += other.x;
+		y += other.y;
+		z += other.z;
+		return *this;
+	};
+	CVector& operator *= (float other) {
+		x *= other;
+		y *= other;
+		z *= other;
+		return *this;
+	};
+	CVector& operator *= (const CVector& other) {
+		x *= other.x;
+		y *= other.y;
+		z *= other.z;
+		return *this;
+	};
 };
