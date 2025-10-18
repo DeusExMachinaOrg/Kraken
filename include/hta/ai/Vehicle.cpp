@@ -1,4 +1,4 @@
-#include "hta/ai/Vehicle.h"
+#include "hta/ai/Vehicle.hpp"
 
 namespace ai {
     float Vehicle::GetHealth() const {

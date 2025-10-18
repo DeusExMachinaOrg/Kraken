@@ -8,7 +8,7 @@ namespace m3d {
     struct RoadManager;
     struct GeomObjectRoad;
 
-    class RoadNode : public Object {
+    struct RoadNode : public Object {
         /* Size=0x120 */
         /* 0x0000: fields for Object */
         /* 0x0034 */ CVector m_origin;

@@ -1,4 +1,5 @@
 #include "hta/ai/CServer.hpp"
+#include "hta/m3d/Level.hpp"
 
 namespace ai {
     CServer* CServer::Instance() {
@@ -7,5 +8,9 @@ namespace ai {
 
     m3d::CWorld* CServer::GetWorld() {
         return this->m_pWorld;
+    };
+
+    float CServer::GetLevelSize() const {
+        return this->m_level->land_size;
     };
 };

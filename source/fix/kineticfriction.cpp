@@ -2,12 +2,14 @@
 
 #include "ode/ode.hpp"
 #include "hta/m3d/Object.h"
-#include "hta/ai/Vehicle.h"
+#include "hta/ai/Vehicle.hpp"
 #include "hta/ai/Wheel.hpp"
 #include "hta/ai/CServer.hpp"
+#include "hta/ai/DynamicScene.hpp"
 #include "hta/m3d/WheelTraceMgr.hpp"
 #include "hta/m3d/RoadNode.hpp"
 #include "hta/m3d/CWorld.hpp"
+#include "hta/m3d/Landscape.hpp"
 #include "routines.hpp"
 
 #include "fix/kineticfriction.hpp"
@@ -57,11 +59,9 @@ namespace kraken::fix::kineticfriction {
 
     const auto CollideWheelDefault = (int32_t (__fastcall*)(ai::Wheel*, m3d::Object*, dContact*, uint32_t*, bool))(0x00891430);
 
-
     static TireParams DUMMY_TIRES;
 
-    int __fastcall CollideWheelAndAsphalt(ai::Wheel* wheel, m3d::Object* ground, dContact* contact, uint32_t* count, bool reverse) {
-        CollideWheelDefault(wheel, ground, contact, count, reverse);
+    int __fastcall CollideWheelSurface(ai::Wheel* wheel, int32_t soil_id, float friction, dContact* contact, uint32_t* count, bool reverse) {
 
         if (!count || *count == 0 || !contact)
             return 1;
@@ -71,7 +71,6 @@ namespace kraken::fix::kineticfriction {
         Quaternion invert_rotation = ~wheel_rotation;
         float      wheel_radius    = wheel->GetRadius();
 
-        m3d::RoadNode*                surface         = reinterpret_cast<m3d::RoadNode*>(ground);
         ai::Vehicle*                  vehicle         = wheel->GetVehicle();
         const ai::WheelPrototypeInfo* info            = wheel->GetPrototypeInfo();
         CVector                       local_angular   = invert_rotation * wheel_angular;
@@ -83,19 +82,29 @@ namespace kraken::fix::kineticfriction {
         float                         mu_lateral      = mu_longitudinal * DUMMY_TIRES.lateral_factor;
         m3d::WheelTraceMgr&           trace_manager   = ai::CServer::Instance()->GetWorld()->GetWheelTracesMgr();
 
-        mu_longitudinal *= info->m_mU;
-        mu_lateral      *= info->m_mU;
+        mu_longitudinal *= info->m_mU * friction;
+        mu_lateral      *= info->m_mU * friction;
 
+        bool in_skid = false;
         if (vehicle->m_onOilMode) {
             mu_longitudinal *= DUMMY_TIRES.oil_factor;
             mu_lateral      *= DUMMY_TIRES.oil_factor;
-            // TODO: Oil skid effect
+            in_skid          = true;
         }
         else {
+            in_skid = abs(kappa) > 0.6f;
             // TODO: Dust effect
-            // TODO: Skid effect
             // TODO: Smoke effect
         };
+
+        if (in_skid && contact && *count > 0) {
+            if (trace_manager.IsSkiddingStarted(wheel)) {
+                trace_manager.AddTrace(contact->geom.pos, wheel_rotation, wheel->GetWidth(), wheel, soil_id, true);
+            }
+            else {
+                trace_manager.StartSkidding(wheel, soil_id);
+            }
+        }
 
         for (size_t idx = 0; idx < *count; idx++) {
             contact[idx].surface.mu  = mu_longitudinal;
@@ -105,8 +114,28 @@ namespace kraken::fix::kineticfriction {
         return 1;
     };
 
+    int __fastcall CollideWheelAndAsphalt(ai::Wheel* wheel, m3d::Object* ground, dContact* contact, uint32_t* count, bool reverse) {
+        CollideWheelDefault(wheel, ground, contact, count, reverse);
+        m3d::RoadNode* surface = reinterpret_cast<m3d::RoadNode*>(ground);
+        return CollideWheelSurface(wheel, surface->GetSoilType(), 1.0f, contact, count, reverse);
+    };
+
+    int __fastcall CollideWheelAndLandscape(ai::Wheel* wheel, m3d::Object* ground, dContact* contact, uint32_t* count, bool reverse) {
+        CollideWheelDefault(wheel, ground, contact, count, reverse);
+ 
+        m3d::Landscape& terrain = ai::CServer::Instance()->GetWorld()->GetLandscape();
+        float tile_size = (float) ai::CServer::Instance()->GetLevelSize() / (float)terrain.GetTileSize();
+        
+        int32_t x = (int32_t)(contact->geom.pos[0] / tile_size + 0.5);
+        int32_t z = (int32_t)(contact->geom.pos[2] / tile_size + 0.5);
+
+        const ai::DynamicScene::SoilProps& props = ai::DynamicScene::Instance()->GetSoilProps(x, z);
+
+        return CollideWheelSurface(wheel, props.m_idx, props.m_friction, contact, count, reverse);
+    };
+
     void Apply() {
         routines::Redirect(0x0729, (void*)0x00891680, &CollideWheelAndAsphalt);
-        routines::Redirect(0x0971, (void*)0x00891DB0, &CollideWheelAndAsphalt);
+        routines::Redirect(0x0971, (void*)0x00891DB0, &CollideWheelAndLandscape);
     };
 };

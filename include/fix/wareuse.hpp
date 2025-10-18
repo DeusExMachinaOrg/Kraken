@@ -1,7 +1,7 @@
 #pragma once
 #include "config.hpp"
 #include "hta/CStr.h"
-#include "hta/ai/Vehicle.h"
+#include "hta/ai/Vehicle.hpp"
 #include "hta/DragDropItemsWnd.h"
 
 namespace kraken::fix::wareuse {

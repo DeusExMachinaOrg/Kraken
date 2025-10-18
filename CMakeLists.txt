@@ -12,11 +12,15 @@ endif()
 
 # Source files
 set(SOURCES
+    include/hta/ai/Wheel.cpp
     include/hta/ai/Vehicle.cpp
     include/hta/ai/CServer.cpp
+    include/hta/ai/DynamicScene.cpp
     include/hta/m3d/RoadNode.cpp
     include/hta/m3d/CWorld.cpp
     include/hta/m3d/WeatherManager.cpp
+    include/hta/m3d/Landscape.cpp
+    include/hta/m3d/WheelTraceMgr.cpp
 
     source/entry.cpp
     source/config.cpp
@@ -84,7 +88,6 @@ set(HEADERS
     include/hta/ai/PrototypeInfo.h
     include/hta/ai/SimplePhysicObj.h
     include/hta/ai/SimplePhysicObjPrototypeInfo.h
-    include/hta/ai/Vehicle.h
     include/hta/ai/VehiclePart.h
     include/hta/ai/VehicleRecollection.h
     include/hta/ai/FlatLine.h

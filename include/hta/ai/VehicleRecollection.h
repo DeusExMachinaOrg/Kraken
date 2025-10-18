@@ -1,5 +1,5 @@
 #pragma once
-#include "Vehicle.h"
+#include "Vehicle.hpp"
 #include "hta/ai/CServer.hpp"
 #include "hta/ai/ObjContainer.hpp"
 #include "GlobalProperties.h"

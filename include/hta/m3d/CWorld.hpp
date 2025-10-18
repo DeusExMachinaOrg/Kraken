@@ -9,7 +9,7 @@
 #include "hta/m3d/RoadManager.hpp"
 #include "hta/m3d/WeatherManager.h"
 #include "hta/m3d/WheelTraceMgr.hpp"
-#include "hta/ai/Vehicle.h"
+#include "hta/ai/Vehicle.hpp"
 
 namespace m3d {
     struct TexClouds;

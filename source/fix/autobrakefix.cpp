@@ -1,4 +1,4 @@
-﻿#include "hta/ai/Vehicle.h"
+﻿#include "hta/ai/Vehicle.hpp"
 #include "hta/ai/DrivingValues.h"
 #include "fix/autobrakefix.hpp"
 #include "config.hpp"

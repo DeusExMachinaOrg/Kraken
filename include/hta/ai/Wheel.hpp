@@ -3,7 +3,6 @@
 #include "hta/m3d/Class.h"
 #include "hta/m3d/Object.h"
 #include "hta/m3d/SGNode.hpp"
-#include "hta/ai/Vehicle.h"
 #include "hta/ai/Sphere.hpp"
 #include "hta/ai/SimplePhysicObj.h"
 
@@ -18,6 +17,7 @@ namespace ai {
     struct SphericBody;
     struct WheelPrototypeInfo;
     struct Wheel;
+    struct Vehicle;
 
     struct WheelPrototypeInfo : public SimplePhysicObjPrototypeInfo {
         /* Size=0xb4 */
@@ -77,15 +77,12 @@ namespace ai {
         virtual void RenderDebugInfo() const;
         const SphericBody* _SphericBody() const;
         SphericBody* _SphericBody();
-        float GetRadius() const {
-            const auto jump = (double (__thiscall*)(const Wheel*))(0x005DF090);
-            return jump(this);
-        };
+        float GetRadius() const;
         float GetWidth() const;
         virtual CVector GetDirection() const;
         bool AttachToPhysicObj(const PhysicObj*);
         void DetachFromPhysicObj();
-        Vehicle* GetVehicle() const { return (Vehicle*) this->GetParent(); };
+        Vehicle* GetVehicle() const;
         void CreateSuspensionNode();
         void BreakModel();
         void HealModel();
