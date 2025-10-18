@@ -19,7 +19,7 @@ namespace ai
 			return _GetEntityByObjId(this, objId);
 		}
 
-		static inline ObjContainer*& theObjects = *(ObjContainer**)0x00A12E98;
+		static inline ObjContainer*& m_classObjContainer = *(ObjContainer**)0x00A12E98;
 		std::uint8_t _padding[0x0120];
 	};
 }

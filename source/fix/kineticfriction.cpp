@@ -2,7 +2,12 @@
 
 #include "ode/ode.hpp"
 #include "hta/m3d/Object.h"
+#include "hta/ai/Vehicle.h"
 #include "hta/ai/Wheel.hpp"
+#include "hta/ai/CServer.hpp"
+#include "hta/m3d/WheelTraceMgr.hpp"
+#include "hta/m3d/RoadNode.hpp"
+#include "hta/m3d/CWorld.hpp"
 #include "routines.hpp"
 
 #include "fix/kineticfriction.hpp"
@@ -20,6 +25,7 @@ namespace kraken::fix::kineticfriction {
         float r0             = 2.00f; // Резкость перехода статика→динамика
         float mu_static      = 3.00f; // Статическое трение (покой/идеальное качение)
         float lateral_factor = 1.20f; // Множитель перпендикулярного скольжения
+        float oil_factor     = 0.05f; // Фактор трения на масле
     };
 
     inline float calculateKappa(float wheelRadius,
@@ -61,19 +67,35 @@ namespace kraken::fix::kineticfriction {
             return 1;
 
         CVector    wheel_angular   = CVector(dBodyGetAngularVel(wheel->m_body->_id));
-        Quaternion wheel_rotation  = ~wheel->GetRotation();
+        Quaternion wheel_rotation  = wheel->GetRotation();
+        Quaternion invert_rotation = ~wheel_rotation;
         float      wheel_radius    = wheel->GetRadius();
 
-        CVector    local_angular   = wheel_rotation * wheel_angular;
-        CVector    world_linear    = wheel->GetLinearVelocity();
-        float      omega_parallel  = local_angular.x;
-        float      V_parallel      = world_linear.length();
-        float      kappa           = calculateKappa(wheel_radius, omega_parallel, V_parallel, 0.05f);
-        float      mu_longitudinal = mu_from_kappa(kappa, DUMMY_TIRES);
-        float      mu_lateral      = mu_longitudinal * DUMMY_TIRES.lateral_factor;
+        m3d::RoadNode*                surface         = reinterpret_cast<m3d::RoadNode*>(ground);
+        ai::Vehicle*                  vehicle         = wheel->GetVehicle();
+        const ai::WheelPrototypeInfo* info            = wheel->GetPrototypeInfo();
+        CVector                       local_angular   = invert_rotation * wheel_angular;
+        CVector                       world_linear    = wheel->GetLinearVelocity();
+        float                         omega_parallel  = local_angular.x;
+        float                         V_parallel      = world_linear.length();
+        float                         kappa           = calculateKappa(wheel_radius, omega_parallel, V_parallel, 0.05f);
+        float                         mu_longitudinal = mu_from_kappa(kappa, DUMMY_TIRES);
+        float                         mu_lateral      = mu_longitudinal * DUMMY_TIRES.lateral_factor;
+        m3d::WheelTraceMgr&           trace_manager   = ai::CServer::Instance()->GetWorld()->GetWheelTracesMgr();
 
-        // TODO: Add effects
-        // TODO: Add oil
+        mu_longitudinal *= info->m_mU;
+        mu_lateral      *= info->m_mU;
+
+        if (vehicle->m_onOilMode) {
+            mu_longitudinal *= DUMMY_TIRES.oil_factor;
+            mu_lateral      *= DUMMY_TIRES.oil_factor;
+            // TODO: Oil skid effect
+        }
+        else {
+            // TODO: Dust effect
+            // TODO: Skid effect
+            // TODO: Smoke effect
+        };
 
         for (size_t idx = 0; idx < *count; idx++) {
             contact[idx].surface.mu  = mu_longitudinal;

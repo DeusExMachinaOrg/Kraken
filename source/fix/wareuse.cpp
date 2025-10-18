@@ -86,7 +86,7 @@ namespace kraken::fix::wareuse {
                     auto playerVehicle = ai::Player::Instance->GetVehicle();
                     if (TryRepair(playerVehicle, name) || TryRefuel(playerVehicle, name))
                     {
-                        playerVehicle->Repository->GiveUpThingByObjId(repositoryItem.ObjId);
+                        playerVehicle->m_repository->GiveUpThingByObjId(repositoryItem.ObjId);
                         app->UiManager->RemoveWindow(0x24); // Info window
                         return 1;
                     }

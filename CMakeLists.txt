@@ -12,6 +12,12 @@ endif()
 
 # Source files
 set(SOURCES
+    include/hta/ai/Vehicle.cpp
+    include/hta/ai/CServer.cpp
+    include/hta/m3d/RoadNode.cpp
+    include/hta/m3d/CWorld.cpp
+    include/hta/m3d/WeatherManager.cpp
+
     source/entry.cpp
     source/config.cpp
     source/fix/physic.cpp
@@ -51,15 +57,12 @@ set(HEADERS
     include/hta/Quaternion.h
     include/hta/DragDropItemsWnd.h
     include/hta/ai/ActionType.h
-    include/hta/ai/AIParam.h
-    include/hta/ai/AIParam.h
     include/hta/ai/Basket.h
     include/hta/ai/Cabin.h
     include/hta/ai/Chassis.h
     include/hta/ai/CollisionInfo.h
     include/hta/ai/ComplexPhysicObj.h
     include/hta/ai/ComplexPhysicObjPartDescription.h
-    include/hta/ai/ComplexPhysicObjPrototypeInfo.h
     include/hta/ai/Component.h
     include/hta/ai/DecalData.h
     include/hta/ai/dMass.h
@@ -75,7 +78,6 @@ set(HEADERS
     include/hta/ai/NumericInRange.h
     include/hta/ai/NumericInRangeRegenerating.h
     include/hta/ai/Obj.h
-    include/hta/ai/ObjContainer.h
     include/hta/ai/Path.h
     include/hta/ai/PhysicBody.h
     include/hta/ai/PhysicObj.h
@@ -99,7 +101,6 @@ set(HEADERS
     include/hta/m3d/Kernel.h
     include/hta/m3d/TruxxUiManager.h
     include/hta/m3d/WeaponGroupManager.h
-    include/hta/m3d/CWorld.h
     include/hta/m3d/WeatherManager.h
     include/hta/m3d/CClient.h
 

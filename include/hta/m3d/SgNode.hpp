@@ -9,7 +9,7 @@
 #include "hta/m3d/Class.h"
 #include "utils.hpp"
 
-namespace cmn {
+namespace m3d::cmn {
     struct XmlFile;
     struct XmlNode;
 };
@@ -85,13 +85,14 @@ namespace m3d {
         /* 0x01c8 */ protected: GraphItemsForSgNode* m_forGraph;
         /* 0x01cc */ public: int32_t m_predictIdx;
         /* 0x01d0 */ private: Ritual m_initedWithRitual;
+
         public: static Class m_classSgNode;
         
         protected: SgNode();
         protected: SgNode(const SgNode&);
         protected: virtual ~SgNode();
-        public: virtual Object* Clone() = 0;
-        public: virtual Class* GetClass() const = 0;
+        public: virtual Object* Clone();
+        public: virtual Class* GetClass() const;
         public: virtual int32_t ReadFromXmlNode(cmn::XmlFile*, cmn::XmlNode*);
         public: virtual int32_t ReadFromXmlNodeAfterAdd(cmn::XmlFile*, cmn::XmlNode*);
         public: virtual int32_t WriteToXmlNode(cmn::XmlFile*, cmn::XmlNode*);

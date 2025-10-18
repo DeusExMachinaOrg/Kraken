@@ -85,7 +85,7 @@ namespace ai {
         virtual CVector GetDirection() const;
         bool AttachToPhysicObj(const PhysicObj*);
         void DetachFromPhysicObj();
-        Vehicle* GetVehicle() const;
+        Vehicle* GetVehicle() const { return (Vehicle*) this->GetParent(); };
         void CreateSuspensionNode();
         void BreakModel();
         void HealModel();
