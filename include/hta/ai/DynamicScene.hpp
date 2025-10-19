@@ -52,7 +52,7 @@ namespace ai {
         /* 0x0134 */ stable_size_vector<CStr> m_decalsNames;
         /* 0x0144 */ int32_t m_clashDecalId;
         /* 0x0148 */ float m_physicTimeAccumulator;
-        /* 0x014c */ std::deque<int> m_timefilterValues;
+        /* 0x014c */ stable_size_deque<int> m_timefilterValues;
 
         static m3d::Class m_classDynamicScene;
 

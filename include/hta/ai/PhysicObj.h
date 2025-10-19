@@ -58,8 +58,8 @@ namespace ai {
         /* 0x011c */ float m_timeFromLastCollisionEffect;
 
         static m3d::Class m_classPhysicObj;
-        static std::map<CStr,int> m_propertiesMap;
-        static std::map<int,enum eGObjPropertySaveStatus> m_propertiesSaveStatesMap;
+        static stable_size_map<CStr,int> m_propertiesMap;
+        static stable_size_map<int,enum eGObjPropertySaveStatus> m_propertiesSaveStatesMap;
         static m3d::DbgCounter* m_countRelinksToCollisionCells;
         
         virtual ~PhysicObj();

@@ -75,7 +75,7 @@ namespace ai {
         /* 0x0078 */ m3d::Profiler* m_pathFindingProfiler;
         /* 0x007c */ m3d::Profiler* m_bulletProfiler;
         /* 0x0080 */ m3d::Profiler* m_blastWaveProfiler;
-        /* 0x0084 */ std::queue<int> m_consoleCommandsToPostProcess;
+        /* 0x0084 */ stable_size_deque<int> m_consoleCommandsToPostProcess;
     
         CServer(const CServer&);
         CServer();

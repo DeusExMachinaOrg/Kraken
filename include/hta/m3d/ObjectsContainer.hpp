@@ -7,7 +7,7 @@
 namespace m3d {
     class ObjectsContainer {
         /* Size=0x300 */
-        /* 0x0000 */ std::list<Object*> m_objectsByClassIdx[64];
+        /* 0x0000 */ stable_size_list<Object*> m_objectsByClassIdx[64];
 
         void AddObject(Object*);
         void RemoveObject(Object*);

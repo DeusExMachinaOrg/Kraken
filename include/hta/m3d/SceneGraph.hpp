@@ -8,7 +8,7 @@
 #include "hta/m3d/rend/IEffect.hpp"
 #include "hta/m3d/rend/TexHandle.hpp"
 #include "hta/m3d/rend/IHlslShader.hpp"
-
+#include "stdafx.hpp"
 
 namespace m3d {
     struct CWorld;
@@ -36,6 +36,7 @@ namespace m3d {
             /* 0x0000 */ public: ObjectsContainer m_nodesLinkedDirect;
             /* 0x0300 */ public: stable_size_set<Object*> m_nodesShadowingDirect;
             /* 0x030c */ public: bool m_bVisibleInCurrentFrame;
+            /* 0x0310 */         BYTE pad[0x3];
         
             CellItems(const CellItems&);
             CellItems();
@@ -62,6 +63,7 @@ namespace m3d {
         /* 0x0054 */   SceneGraph::CellItems m_cellItems[4096];
         /* 0x310054 */ bool m_easyRelink;
         /* 0x310055 */ bool m_cellsPrepared;
+        /* 0x310056 */ BYTE pad1[0x2];
         /* 0x310058 */ SgNode m_rootNode;
         /* 0x31022c */ SgNode m_landscapeNode;
         /* 0x310400 */ CWorld* m_owner;
@@ -90,6 +92,7 @@ namespace m3d {
         /* 0x3104a8 */ bool m_noModelCull;
         /* 0x3104a9 */ bool m_bIsInUnlinkAndDeleteAll;
         /* 0x3104aa */ bool m_bIsPurgingRemoveIfFree;
+        /* 0x3104ab */ BYTE pad2[0x1];
         /* 0x3104ac */ IsNodeTransparent* m_transparencyTest;
         /* 0x3104b0 */ unsigned char m_enableMap[65536];
         /* 0x3204b0 */ unsigned char m_enableVisSpaceMask;

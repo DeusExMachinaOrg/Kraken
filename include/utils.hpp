@@ -23,6 +23,13 @@ struct stable_size_vector {
     inline bool empty() const { return _Myfirst == _Mylast; }
     inline T& back() { return _Mylast[-1]; }
     inline T& front() { return *_Myfirst; }
+    T& operator[](size_t index) {
+        return _Myfirst[index];
+    }
+
+    const T& operator[](size_t index) const {
+        return _Myfirst[index];
+    }
 };
 
 template<typename K, typename T>
@@ -37,6 +44,22 @@ struct stable_size_set : public std::set<K> {
 #if !defined(_DEBUG)
     char pad[4];
 #endif
+};
+
+template<typename K>
+struct stable_size_deque {
+    char pad[4];
+    float **_Map;
+    unsigned int _Mapsize;
+    unsigned int _Myoff;
+    unsigned int _Mysize;
+};
+
+template<typename K>
+struct stable_size_list {
+    char pad[4];
+    void* _Myhead;
+    unsigned int _Mysize;
 };
 
 template <class Out, class In>
