@@ -62,6 +62,6 @@ namespace kraken {
         //fix::recollection::Apply();
         fix::ultrawide::Apply();
         fix::fastloading::Apply();
-        fix::kineticfriction::Apply();
+        //fix::kineticfriction::Apply();
     };
 };
