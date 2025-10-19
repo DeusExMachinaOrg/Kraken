@@ -40,8 +40,8 @@ namespace ai {
         bool m_testVisibility;
 
         static m3d::Class m_classSimplePhysicObj;
-        static std::map<CStr,int> m_propertiesMap;
-        static std::map<int,enum eGObjPropertySaveStatus> m_propertiesSaveStatesMap;
+        static stable_size_map<CStr,int> m_propertiesMap;
+        static stable_size_map<int,enum eGObjPropertySaveStatus> m_propertiesSaveStatesMap;
         
         virtual ~SimplePhysicObj();
         SimplePhysicObj(const SimplePhysicObjPrototypeInfo&);
