@@ -28,6 +28,7 @@ namespace ai {
         // padding byte
         // padding byte
         // padding byte
+        BYTE pad1[3];
         m3d::CWorld *m_pWorld;
         m3d::Level *m_level;
         ai::DynamicScene *m_pDynamicScene;
@@ -42,15 +43,17 @@ namespace ai {
         bool fPause;
         // padding byte
         // padding byte
+        BYTE pad2[2];
         int m_lastId;
         float m_averageElapsedTime;
-        std::vector<float> m_lastElapsedTimes;
+        stable_size_vector<float> m_lastElapsedTimes;
         int m_CurIndex;
         int m_MaxAverageLength;
         bool m_Accumulation;
         bool m_AveElapsedTimeUsed;
         bool m_InCinematic;
         // padding byte
+        BYTE pad3[1];
         int m_LastSenderID;
         m3d::Profiler *m_profilerTmpForServer;
         m3d::Profiler *m_collideProfiler;
