@@ -1,3 +1,6 @@
+#define LOGGER "wareuse"
+
+#include "ext/logger.hpp"
 #include "fix/wareuse.hpp"
 #include "hta/m3d/CMiracle3d.h"
 #include "hta/ai/PrototypeManager.h"
@@ -99,6 +102,7 @@ namespace kraken::fix::wareuse {
 
     void Apply()
     {
+        LOG_INFO("Feature enabled");
         const kraken::Config& config = kraken::Config::Get();
         for (const auto& wu : config.ware_units.value)
         {

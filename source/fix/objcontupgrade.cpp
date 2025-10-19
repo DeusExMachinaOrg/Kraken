@@ -1,3 +1,6 @@
+#define LOGGER "objcontupgrade"
+
+#include "ext/logger.hpp"
 #include "fix/objcontupgrade.hpp"
 #include <stdint.h>
 #include "routines.hpp"
@@ -7,6 +10,7 @@
 namespace kraken::fix::objcontupgrade {
     void Apply()
     {
+        LOG_INFO("Feature enabled");
         const kraken::Config& config = kraken::Config::Get();
         if (config.objcontupgrade.value == 0)
             return;

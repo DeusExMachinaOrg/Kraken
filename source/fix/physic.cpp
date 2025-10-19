@@ -1,9 +1,12 @@
+#define LOGGER "physic"
+
 #include "float.h"
 
 #include <stdint.h>
 #include <smmintrin.h>
 #include <immintrin.h>
 
+#include "ext/logger.hpp"
 #include "routines.hpp"
 #include "fix/physic.hpp"
 
@@ -2691,6 +2694,7 @@ namespace kraken::fix::physic {
 
 
     void Apply() {
+        LOG_INFO("Feature enabled");
         routines::Redirect(0x0073, (void*) 0x0088D360, (void*) &FillDefaultContactParameters);
         routines::Redirect(0x2350, (void*) 0x008FF580, (void*) &dInternalStepIsland_x2);
         routines::Redirect(0x07B0, (void*) 0x00921A10, (void*) &dSolveL1);

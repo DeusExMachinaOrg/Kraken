@@ -36,7 +36,7 @@ namespace m3d {
         CI_NUM_COLORITEMS = 0x0007,
     };
 
-    class WeatherManager {
+    struct WeatherManager {
         /* Size=0x60 */
         /* 0x0000 */ stable_size_vector<Weather*> m_weatherStorage;
         /* 0x0010 */ stable_size_vector<Weather*> m_curWeatherStorage;

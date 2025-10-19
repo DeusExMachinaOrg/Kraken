@@ -1,5 +1,10 @@
+#define LOGGER "posteffectreload"
+
+#include "ext/logger.hpp"
 #include "fix/posteffectreload.hpp"
+#include "hta/ai/CServer.hpp"
 #include "hta/m3d/CClient.h"
+#include "hta/m3d/WeatherManager.h"
 #include "routines.hpp"
 #include "config.hpp"
 
@@ -8,11 +13,12 @@ void UpdateWeather_Hook();
 namespace kraken::fix::posteffectreload {
     void UpdateWeather()
     {
-        m3d::CClient::Instance->m_world->m_weatherManager.UpdateDayTime();
+        ai::CServer::Instance()->GetWorld()->GetWeatherManager().UpdateDayTime();
     }
 
     void Apply(const Config* config)
     {
+        LOG_INFO("Feature enabled");
         if (!config->posteffectreload.value)
             return;
 

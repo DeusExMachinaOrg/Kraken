@@ -8,4 +8,8 @@ namespace m3d {
     Landscape& CWorld::GetLandscape() {
         return this->m_landscape;
     };
+
+    WeatherManager& CWorld::GetWeatherManager() {
+        return this->m_weatherManager;
+    };
 };
