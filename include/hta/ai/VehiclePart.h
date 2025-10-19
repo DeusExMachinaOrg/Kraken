@@ -79,6 +79,12 @@ namespace ai
 			return _GetPrice(this, provider);
 		}
 
+		const ai::VehiclePartPrototypeInfo* GetPrototypeInfo()
+		{
+			FUNC(0x006D3370, const ai::VehiclePartPrototypeInfo*, __thiscall, _GetPrototypeInfo, VehiclePart*);
+			return _GetPrototypeInfo(this);
+		}
+
 	};
 
 	ASSERT_SIZE(ai::VehiclePart, 0x2c8);
