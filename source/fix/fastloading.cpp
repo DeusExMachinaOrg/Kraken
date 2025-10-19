@@ -1,3 +1,6 @@
+#define LOGGER "fastloading"
+
+#include "ext/logger.hpp"
 #include "fix/fastloading.hpp"
 #include "hta/m3d/Application.h"
 #include "routines.hpp"
@@ -25,6 +28,7 @@ namespace kraken::fix::fastloading
 
     void Apply()
     {
+        LOG_INFO("Feature enabled");
         const kraken::Config& config = kraken::Config::Get();
         limit = config.show_load_every.value;
         routines::ReplaceCall((void*)0x004C8BBE, SkipLoadingPresentScene);

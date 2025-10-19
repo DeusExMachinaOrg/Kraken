@@ -1,6 +1,6 @@
 #pragma once
 #include "stdafx.hpp"
-#include "CWorld.h"
+#include "hta/m3d/CWorld.hpp"
 
 namespace m3d
 {

@@ -1,6 +1,7 @@
 #pragma once
-#include "Vehicle.h"
-#include "ObjContainer.h"
+#include "Vehicle.hpp"
+#include "hta/ai/CServer.hpp"
+#include "hta/ai/ObjContainer.hpp"
 #include "GlobalProperties.h"
 
 namespace m3d
@@ -70,7 +71,7 @@ namespace ai
 	{
         void Update(float elapsedTime, std::uint32_t workTime)
         {
-            const float currentTime = ObjContainer::theObjects->GetGameTimeDiff();
+            const float currentTime = CServer::Instance()->m_pObjects->GetGameTimeDiff();
             const float removalThreshold = currentTime - (GlobalProperties::theGlobProp->m_gameTimeMult * 3.0f);
 
             if (!m_recollectionItems.empty() && m_recollectionItems.back().time > currentTime)
@@ -102,7 +103,7 @@ namespace ai
                 if (m_vehicleId >= 0)
                 {
                     // Get the object record for the vehicle
-                    auto* vehicleObj = reinterpret_cast<Vehicle*>(ObjContainer::theObjects->GetEntityByObjId(m_vehicleId));
+                    auto* vehicleObj = reinterpret_cast<Vehicle*>(CServer::Instance()->m_pObjects->GetEntityByObjId(m_vehicleId));
                     if (vehicleObj != nullptr)
                     {
                         // Create new recollection item with current position

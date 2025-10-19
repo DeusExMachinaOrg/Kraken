@@ -1,3 +1,6 @@
+#define LOGGER "luabinds"
+
+#include "ext/logger.hpp"
 #include "fix/luabinds.hpp"
 #include "fix/impulse.hpp"
 #include "hta/m3d/GameImpulse.h"
@@ -36,6 +39,7 @@ namespace kraken::fix::luabinds {
 
     void Apply(const Config* config)
     {
+        LOG_INFO("Feature enabled");
         if (config->lua_enabled.value == 0)
             return;
 

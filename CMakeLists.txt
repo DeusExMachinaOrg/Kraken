@@ -12,6 +12,16 @@ endif()
 
 # Source files
 set(SOURCES
+    include/hta/ai/Wheel.cpp
+    include/hta/ai/Vehicle.cpp
+    include/hta/ai/CServer.cpp
+    include/hta/ai/DynamicScene.cpp
+    include/hta/m3d/RoadNode.cpp
+    include/hta/m3d/CWorld.cpp
+    include/hta/m3d/WeatherManager.cpp
+    include/hta/m3d/Landscape.cpp
+    include/hta/m3d/WheelTraceMgr.cpp
+
     source/entry.cpp
     source/config.cpp
     source/fix/physic.cpp
@@ -25,6 +35,7 @@ set(SOURCES
     source/fix/recollectionfix.cpp
     source/fix/ultrawide.cpp
     source/fix/fastloading.cpp
+    source/fix/kineticfriction.cpp
 )
 
 # Header files
@@ -50,15 +61,12 @@ set(HEADERS
     include/hta/Quaternion.h
     include/hta/DragDropItemsWnd.h
     include/hta/ai/ActionType.h
-    include/hta/ai/AIParam.h
-    include/hta/ai/AIParam.h
     include/hta/ai/Basket.h
     include/hta/ai/Cabin.h
     include/hta/ai/Chassis.h
     include/hta/ai/CollisionInfo.h
     include/hta/ai/ComplexPhysicObj.h
     include/hta/ai/ComplexPhysicObjPartDescription.h
-    include/hta/ai/ComplexPhysicObjPrototypeInfo.h
     include/hta/ai/Component.h
     include/hta/ai/DecalData.h
     include/hta/ai/dMass.h
@@ -74,16 +82,12 @@ set(HEADERS
     include/hta/ai/NumericInRange.h
     include/hta/ai/NumericInRangeRegenerating.h
     include/hta/ai/Obj.h
-    include/hta/ai/ObjContainer.h
     include/hta/ai/Path.h
     include/hta/ai/PhysicBody.h
     include/hta/ai/PhysicObj.h
-    include/hta/ai/PhysicObjPrototypeInfo.h
     include/hta/ai/PrototypeInfo.h
-    include/hta/ai/SgNode.h
     include/hta/ai/SimplePhysicObj.h
     include/hta/ai/SimplePhysicObjPrototypeInfo.h
-    include/hta/ai/Vehicle.h
     include/hta/ai/VehiclePart.h
     include/hta/ai/VehicleRecollection.h
     include/hta/ai/FlatLine.h
@@ -100,7 +104,6 @@ set(HEADERS
     include/hta/m3d/Kernel.h
     include/hta/m3d/TruxxUiManager.h
     include/hta/m3d/WeaponGroupManager.h
-    include/hta/m3d/CWorld.h
     include/hta/m3d/WeatherManager.h
     include/hta/m3d/CClient.h
 

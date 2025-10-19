@@ -1,3 +1,6 @@
+#define LOGGER "wareuse"
+
+#include "ext/logger.hpp"
 #include "fix/wareuse.hpp"
 #include "hta/m3d/CMiracle3d.h"
 #include "hta/ai/PrototypeManager.h"
@@ -81,12 +84,12 @@ namespace kraken::fix::wareuse {
                 if (repositoryObj && repositoryObj->IsKindOf(0x00A0238C)) // Ware class
                 {
                     CStr name;
-                    ai::PrototypeManager::Instance->GetPrototypeName(&name, repositoryObj->PrototypeId);
+                    ai::PrototypeManager::Instance->GetPrototypeName(&name, repositoryObj->m_prototypeId);
 
                     auto playerVehicle = ai::Player::Instance->GetVehicle();
                     if (TryRepair(playerVehicle, name) || TryRefuel(playerVehicle, name))
                     {
-                        playerVehicle->Repository->GiveUpThingByObjId(repositoryItem.ObjId);
+                        playerVehicle->m_repository->GiveUpThingByObjId(repositoryItem.ObjId);
                         app->UiManager->RemoveWindow(0x24); // Info window
                         return 1;
                     }
@@ -99,6 +102,7 @@ namespace kraken::fix::wareuse {
 
     void Apply()
     {
+        LOG_INFO("Feature enabled");
         const kraken::Config& config = kraken::Config::Get();
         for (const auto& wu : config.ware_units.value)
         {

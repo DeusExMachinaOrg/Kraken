@@ -1,5 +1,8 @@
-﻿#include "hta/ai/Vehicle.h"
+﻿#define LOGGER "autobrakefix"
+
+#include "hta/ai/Vehicle.hpp"
 #include "hta/ai/DrivingValues.h"
+#include "ext/logger.hpp"
 #include "fix/autobrakefix.hpp"
 #include "config.hpp"
 #include "routines.hpp"
@@ -48,6 +51,7 @@ namespace kraken::fix::autobrakefix {
     }
 
     void Apply() {
+        LOG_INFO("Feature enabled");
         kraken::routines::ChangeCall((void*)0x005D3137, (void*)&SetThrottle);
     }
 }

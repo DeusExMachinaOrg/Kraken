@@ -1,6 +1,6 @@
 #pragma once
 #include "hta/Game.h"
-#include "hta/ai/Vehicle.h"
+#include "hta/ai/Vehicle.hpp"
 
 namespace ai
 {
