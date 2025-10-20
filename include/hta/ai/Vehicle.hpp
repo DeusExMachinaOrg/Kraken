@@ -14,8 +14,6 @@
 #include "Chassis.h"
 #include "Path.h"
 
-#include <deque>
-
 namespace ai
 {
     struct VehicleUpdater;

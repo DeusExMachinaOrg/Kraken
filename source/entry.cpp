@@ -19,6 +19,7 @@
 #include "fix/ultrawide.hpp"
 #include "fix/fastloading.hpp"
 #include "fix/kineticfriction.hpp"
+#include "fix/cardan.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -63,5 +64,6 @@ namespace kraken {
         fix::ultrawide::Apply();
         fix::fastloading::Apply();
         //fix::kineticfriction::Apply();
+        fix::cardan::Apply();
     };
 };

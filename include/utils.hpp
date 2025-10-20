@@ -19,6 +19,7 @@ struct stable_size_vector {
     T* _Mylast;
     T* _Myend;
 
+    inline T* data() { return _Myfirst; }
     inline size_t size() const { return static_cast<size_t>(_Mylast - _Myfirst); }
     inline bool empty() const { return _Myfirst == _Mylast; }
     inline T& back() { return _Mylast[-1]; }
@@ -71,5 +72,14 @@ Out unsafe_cast(In x) {
     a = x;
     return b;
 };
+
+inline int RoughSign(float value)
+{
+	if (value > 0.000001)
+		return 1;
+	if (value >= -0.000001)
+		return 0;
+	return -1;
+}
 
 #endif
