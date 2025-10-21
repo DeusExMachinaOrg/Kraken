@@ -14,8 +14,30 @@
 #include "fix/cardan.hpp"
 
 namespace kraken::fix::cardan {
+    void SetChassisAnimationStopped(ai::Vehicle* vehicle, bool stopped) {
+        // ----------------------------------------------
+        // Cardan fix
+        // stopped = true -> stop chassis animation
+        // ----------------------------------------------
+        ai::Chassis* chassis = vehicle->GetChassis();
+        if (chassis) {
+            m3d::AnimInfo* info;
+            chassis->Node->GetProperty(1, &info);
+            if (info) {
+                bool has_anim = !info->m_Empty;
+                if (has_anim) {
+                    chassis->SetAnimationStopped(stopped);
+                }
+            }
+        }
+    }
+
     void __fastcall KeepThrottle(ai::Vehicle* vehicle, void*, bool applyActions)
     {
+        // -------------------------------------------------
+        // Original function code from IDA
+        // with modifications to fix Cardan animation issue
+        // -------------------------------------------------
         int v3; // ecx
         int v4; // eax
         int v5; // eax
@@ -107,17 +129,8 @@ namespace kraken::fix::cardan {
                             v26->SetNodeAnimAction(ActionType(2), 1);
                         }
 
-                        ai::Chassis* chassis = vehicle->GetChassis();
-                        if (chassis) {
-                            m3d::AnimInfo* info;
-                            chassis->Node->GetProperty(1, &info);
-                            if (info) {
-                                bool has_anim = !info->m_Empty;
-                                if (has_anim) {
-                                    chassis->SetAnimationStopped(0);
-                                }
-                            }
-                        }
+                        // Cardan fix
+                        SetChassisAnimationStopped(vehicle, 0);
                     }
                 }
             }
@@ -145,17 +158,8 @@ namespace kraken::fix::cardan {
                                 v20->SetNodeAnimAction(ActionType(3), 1);
                             }
 
-                            ai::Chassis* chassis = vehicle->GetChassis();
-                            if (chassis) {
-                                m3d::AnimInfo* info;
-                                chassis->Node->GetProperty(1, &info);
-                                if (info) {
-                                    bool has_anim = !info->m_Empty;
-                                    if (has_anim) {
-                                        chassis->SetAnimationStopped(0);
-                                    }
-                                }
-                            }
+                            // Cardan fix
+                            SetChassisAnimationStopped(vehicle, 0);
                         }
                     }
                 }
@@ -177,17 +181,8 @@ namespace kraken::fix::cardan {
                             v16->SetNodeAnimAction(ActionType(0), 1);
                         }
 
-                        ai::Chassis* chassis = vehicle->GetChassis();
-                        if (chassis) {
-                            m3d::AnimInfo* info;
-                            chassis->Node->GetProperty(1, &info);
-                            if (info) {
-                                bool has_anim = !info->m_Empty;
-                                if (has_anim) {
-                                    chassis->SetAnimationStopped(1);
-                                }
-                            }
-                        }
+                        // Cardan fix
+                        SetChassisAnimationStopped(vehicle, 1);
                     }
                 }
             }
