@@ -20,6 +20,7 @@
 #include "fix/fastloading.hpp"
 #include "fix/kineticfriction.hpp"
 #include "fix/cardan.hpp"
+#include "fix/tactics.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -65,5 +66,6 @@ namespace kraken {
         fix::fastloading::Apply();
         //fix::kineticfriction::Apply();
         fix::cardan::Apply();
+        fix::tactics::Apply();
     };
 };

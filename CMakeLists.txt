@@ -16,11 +16,13 @@ set(SOURCES
     include/hta/ai/Vehicle.cpp
     include/hta/ai/CServer.cpp
     include/hta/ai/DynamicScene.cpp
+    include/hta/ai/AI.cpp
     include/hta/m3d/RoadNode.cpp
     include/hta/m3d/CWorld.cpp
     include/hta/m3d/WeatherManager.cpp
     include/hta/m3d/Landscape.cpp
     include/hta/m3d/WheelTraceMgr.cpp
+    include/hta/m3d/AIParam.cpp
 
     source/entry.cpp
     source/config.cpp
@@ -37,6 +39,7 @@ set(SOURCES
     source/fix/fastloading.cpp
     source/fix/kineticfriction.cpp
     source/fix/cardan.cpp
+    source/fix/tactics.cpp
 )
 
 # Header files
@@ -55,6 +58,7 @@ set(HEADERS
     include/fix/ultrawide.hpp
     include/fix/fastloading.hpp
     include/fix/cardan.hpp
+    include/fix/tactics.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h

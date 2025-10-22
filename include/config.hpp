@@ -58,6 +58,7 @@ namespace kraken {
         ConfigValue<uint32_t>                 objcontupgrade;
         ConfigValue<uint32_t>                 show_load_every; // Update loading screen each N objects (vanilla N = 1)
         ConfigValue<uint32_t>                 cardan_fix;
+        ConfigValue<uint32_t>                 tactics;
 
     public:
          Config();
