@@ -49,17 +49,33 @@ namespace ai {
     };
 
     const Basket* Vehicle::GetBasket() const {
-        FUNC(0x005CBA00, Basket*, __thiscall, _GetBasket, const Vehicle*);
+        FUNC(0x005CBA90, Basket*, __thiscall, _GetBasket, const Vehicle*);
         return _GetBasket(this);
     };
 
-    const Cabin* Vehicle::GetCabin() const {
-        FUNC(0x005CBA00, Cabin*, __thiscall, _GetCabin, const Vehicle*);
+    Basket* Vehicle::GetBasket() {
+        FUNC(0x005CBA00, Basket*, __thiscall, _GetBasket, Vehicle*);
+        return _GetBasket(this);
+    }
+
+    const Cabin* Vehicle::GetCabin() const
+    {
+        FUNC(0x005CBA60, Cabin*, __thiscall, _GetCabin, const Vehicle*);
+        return _GetCabin(this);
+    }
+
+    Cabin* Vehicle::GetCabin() {
+        FUNC(0x005CB9D0, Cabin*, __thiscall, _GetCabin, Vehicle*);
         return _GetCabin(this);
     };
 
     const Chassis* Vehicle::GetChassis() const {
-        FUNC(0x005CB9A0, Chassis*, __thiscall, _GetChassis, const Vehicle*);
+        FUNC(0x005CBA30, Chassis*, __thiscall, _GetChassis, const Vehicle*);
+        return _GetChassis(this);
+    }
+
+    Chassis* Vehicle::GetChassis() {
+        FUNC(0x005CB9A0, Chassis*, __thiscall, _GetChassis, Vehicle*);
         return _GetChassis(this);
     };
 

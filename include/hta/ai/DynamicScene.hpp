@@ -6,7 +6,6 @@
 #include "hta/m3d/Class.h"
 #include "hta/m3d/Object.h"
 
-#include <deque>
 #include <stdint.h>
 
 namespace ai {

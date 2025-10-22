@@ -22,8 +22,6 @@
 #include "hta/m3d/rend/Vertices.hpp"
 #include "hta/ai/Obstacle.hpp"
 
-#include <deque>
-
 namespace m3d {
     struct CWorld;
     struct GeomObject;
@@ -519,7 +517,7 @@ namespace m3d {
         uint32_t GetNearestGrassInstance(const CVector&) const;
         void _dbgGenerateGrass();
         void RenderGrass(uint32_t, GrassInstance**, int32_t*, RenderGrassType);
-        void RenderGrass(const std::deque<std::pair<int,int>>&);
+        void RenderGrass(const stable_size_deque<std::pair<int,int>>&);
         void CollectGrassCell(int32_t, int32_t, uint32_t&, GrassInstance**, int32_t*);
         int32_t getGrassModelIdByName(const char*) const;
         bool WriteGrassToXmlFile(const char*);

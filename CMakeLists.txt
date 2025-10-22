@@ -36,6 +36,7 @@ set(SOURCES
     source/fix/ultrawide.cpp
     source/fix/fastloading.cpp
     source/fix/kineticfriction.cpp
+    source/fix/cardan.cpp
 )
 
 # Header files
@@ -53,6 +54,7 @@ set(HEADERS
     include/fix/posteffectreload.hpp
     include/fix/ultrawide.hpp
     include/fix/fastloading.hpp
+    include/fix/cardan.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
@@ -106,6 +108,7 @@ set(HEADERS
     include/hta/m3d/WeaponGroupManager.h
     include/hta/m3d/WeatherManager.h
     include/hta/m3d/CClient.h
+    include/hta/m3d/AnimInfo.hpp
 
     include/ext/logger.hpp
     source/ext/logger.cpp
