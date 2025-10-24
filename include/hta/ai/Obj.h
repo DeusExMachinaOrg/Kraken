@@ -93,6 +93,7 @@ namespace ai {
 		protected: static stable_size_map<CStr,int> m_propertiesMap;
 		protected: static stable_size_map<int,enum eGObjPropertySaveStatus> m_propertiesSaveStatesMap;
 		
+		public:
 		Obj(const Obj&);
 		Obj(const PrototypeInfo&);
 		Obj();

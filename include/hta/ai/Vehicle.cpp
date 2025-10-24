@@ -21,6 +21,11 @@ namespace ai {
         return _GetMaxFuel(this);
     };
 
+    float Vehicle::_GetCabinControlCoeff() const {
+        FUNC(0x005D3700, float, __thiscall, _GetCabinControlCoeff, const Vehicle*);
+        return _GetCabinControlCoeff(this);
+    };
+
     void Vehicle::ActivateHeadLights(bool bActivate) {
         FUNC(0x005DA130, void, __thiscall, _ActivateHeadLights, Vehicle*, bool);
         _ActivateHeadLights(this, bActivate);

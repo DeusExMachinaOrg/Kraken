@@ -14,6 +14,8 @@ endif()
 set(SOURCES
     include/hta/ai/Wheel.cpp
     include/hta/ai/Vehicle.cpp
+    include/hta/ai/PhysicObj.cpp
+    include/hta/ai/Obj.cpp
     include/hta/ai/CServer.cpp
     include/hta/ai/DynamicScene.cpp
     include/hta/m3d/RoadNode.cpp
@@ -83,10 +85,8 @@ set(HEADERS
     include/hta/ai/Numeric.h
     include/hta/ai/NumericInRange.h
     include/hta/ai/NumericInRangeRegenerating.h
-    include/hta/ai/Obj.h
     include/hta/ai/Path.h
     include/hta/ai/PhysicBody.h
-    include/hta/ai/PhysicObj.h
     include/hta/ai/PrototypeInfo.h
     include/hta/ai/SimplePhysicObj.h
     include/hta/ai/SimplePhysicObjPrototypeInfo.h
