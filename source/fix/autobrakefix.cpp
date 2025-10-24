@@ -95,19 +95,15 @@ void __fastcall _ApplyStabilizingForces(ai::Vehicle *vehicle)
                 
                 float cabinControlCoeff = vehicle->_GetCabinControlCoeff();
                 // Default Targem logic - more response when accelerating on braking
-                // float throttleMultiplier = fabs(throttleFactor * 0.5f) + 0.5f; // Range: [0.5, 1.0]
+                float throttleMultiplier = fabs(throttleFactor) + 0.5f; // Range: [0.5, 1.0]
                 
                 // Alternative, probably more realistic
                 // Scale inversely with speed for better low-speed control
-                float speedInfluence = 1.0f / (1.0f + totalVel * 0.1f);
+                // float speedInfluence = 1.0f / (1.0f + totalVel * 0.1f);
                 
                 // Apply cabin control coefficient and throttle
-                CVector finalTorque;
-                finalTorque.x = (torque.x * cabinControlCoeff * directionSign) * speedInfluence; // or throttleMultiplier
-                finalTorque.y = (torque.y * cabinControlCoeff * directionSign) * speedInfluence;
-                finalTorque.z = (torque.z * cabinControlCoeff * directionSign) * speedInfluence;
-                
-                vehicle->AddRelTorque(finalTorque);
+                torque.y *= cabinControlCoeff * directionSign * throttleMultiplier; // or speedInfluence
+                vehicle->AddRelTorque(torque);
             }
         }
     }
