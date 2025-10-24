@@ -23,10 +23,9 @@ void __fastcall _ApplyStabilizingForces(ai::Vehicle *vehicle)
         // temporary, check if we need any additional early exit actions
     }
     
-    // Get vehicle velocity
     CVector velocity = vehicle->GetLinearVelocity();
     
-    // Apply pressing force if wheels are touching ground
+    // Apply downforce (pressing force in Targem's therms) if wheels are touching ground
     if (vehicle->m_numWheelsTouchingGround > 0)
     {
         float horizontalVel = sqrt(velocity.z * velocity.z + velocity.x * velocity.x);
@@ -36,19 +35,19 @@ void __fastcall _ApplyStabilizingForces(ai::Vehicle *vehicle)
             float pressingForce = vehicle->GetPrototypeInfo()->m_pressingForce;
             float mass = vehicle->GetMass();
             
-            CVector force;
-            force.x = 0.0f;
-            force.y = mass * pressingForce * horizontalVel * -0.1962f;
-            force.z = 0.0f;
+            CVector downforce;
+            downforce.x = 0.0f;
+            downforce.y = mass * pressingForce * horizontalVel * -0.1962f;
+            downforce.z = 0.0f;
             
-            vehicle->AddForce(force);
+            vehicle->AddForce(downforce);
         }
     }
     
     // Calculate total velocity magnitude
     float totalVel = sqrt(velocity.y * velocity.y + velocity.z * velocity.z + velocity.x * velocity.x);
     
-    // Apply drift/turning forces
+    // Apply counter-steering stabilization torque
     if (vehicle->m_numWheelsTouchingGround > 0)
     {
         ai::Vehicle::WheelRuntimeInfo *wheelInfo = vehicle->m_wheels._Myfirst;
@@ -66,7 +65,7 @@ void __fastcall _ApplyStabilizingForces(ai::Vehicle *vehicle)
                 }
             }
             
-            CVector INITIAL_UP_DIRECTION_4 = CVector(0.0, 1.0, 0.0);
+            CVector UP_DIRECTION_VECTOR = CVector(0.0, 1.0, 0.0);
 
             ai::Wheel *wheel = wheelInfo->m_wheel;
             if (wheel)
@@ -79,31 +78,34 @@ void __fastcall _ApplyStabilizingForces(ai::Vehicle *vehicle)
                 float throttleFactor = vehicle->m_throttle * 0.5f;
                 
                 // Determine if moving forward or backward
-                float dotProduct = (direction.y * velocity.y) + (direction.z * velocity.z) + (direction.x * velocity.x);
+                float dotProduct = (direction.y * velocity.y) + 
+                                   (direction.z * velocity.z) +
+                                   (direction.x * velocity.x);
                 int directionSign = (dotProduct >= 0.0f) ? 1 : -1;
                 
-                // Calculate torque based on wheel angle
-                CVector torque;
-                torque.x = (0.0f - INITIAL_UP_DIRECTION_4.x) * wheelAngle;
-                torque.y = (0.0f - INITIAL_UP_DIRECTION_4.y) * wheelAngle;
-                torque.z = (0.0f - INITIAL_UP_DIRECTION_4.z) * wheelAngle;
+                // Calculate counter-steering torque around Y-axis (yaw)
+                CVector torque; // x, z - always 0
+                torque.y = -UP_DIRECTION_VECTOR.y * wheelAngle;
                 
                 float mass = vehicle->GetMass();
                 float driftCoeff = vehicle->m_driftCoeff;
                 
                 // Apply mass, velocity, and drift coefficient
-                torque.x = (torque.x * mass * totalVel) * driftCoeff;
                 torque.y = (torque.y * mass * totalVel) * driftCoeff;
-                torque.z = (torque.z * mass * totalVel) * driftCoeff;
+                
+                float cabinControlCoeff = vehicle->_GetCabinControlCoeff();
+                // Default Targem logic - more response when accelerating on braking
+                // float throttleMultiplier = fabs(throttleFactor * 0.5f) + 0.5f; // Range: [0.5, 1.0]
+                
+                // Alternative, probably more realistic
+                // Scale inversely with speed for better low-speed control
+                float speedInfluence = 1.0f / (1.0f + totalVel * 0.1f);
                 
                 // Apply cabin control coefficient and throttle
-                float cabinControlCoeff = vehicle->_GetCabinControlCoeff();
-                float throttleMultiplier = fabs(throttleFactor) + 0.5f;
-                
                 CVector finalTorque;
-                finalTorque.x = (torque.x * cabinControlCoeff * directionSign) * throttleMultiplier;
-                finalTorque.y = (torque.y * cabinControlCoeff * directionSign) * throttleMultiplier;
-                finalTorque.z = (torque.z * cabinControlCoeff * directionSign) * throttleMultiplier;
+                finalTorque.x = (torque.x * cabinControlCoeff * directionSign) * speedInfluence; // or throttleMultiplier
+                finalTorque.y = (torque.y * cabinControlCoeff * directionSign) * speedInfluence;
+                finalTorque.z = (torque.z * cabinControlCoeff * directionSign) * speedInfluence;
                 
                 vehicle->AddRelTorque(finalTorque);
             }
