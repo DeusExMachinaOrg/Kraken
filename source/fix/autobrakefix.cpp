@@ -109,7 +109,6 @@ void __fastcall _ApplyStabilizingForces(ai::Vehicle *vehicle)
     }
     
     vehicle->m_numWheelsTouchingGround = 0;
-    LOG_DEBUG("_ApplyStabilizingForces");
 }
 
     void __fastcall SetThrottle(ai::Vehicle* vehicle, int, float throttle, bool autobrake)
