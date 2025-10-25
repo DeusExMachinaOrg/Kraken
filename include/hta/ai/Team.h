@@ -1,8 +1,9 @@
 #pragma once
-#include "Obj.h"
+#include "Obj.hpp"
 #include "Formation.h"
 #include "Vehicle.hpp"
 #include "AI.hpp"
+#include "Event.hpp"
 
 namespace ai {
     class CombatMastermind;
@@ -41,6 +42,26 @@ namespace ai {
         {
             FUNC(0x00657C30, void, __thiscall, AdjustRoles, Team*, int);
             return AdjustRoles(this, id);
+        }
+        void _OnObjectDie(const Event* evn)
+        {
+            FUNC(0x00657E00, void, __thiscall, OnObjectDie, Team*, const Event*);
+            return OnObjectDie(this, evn);
+        }
+        void _OnUnderAttack(const Event* evn)
+        {
+            FUNC(0x00657E50, void, __thiscall, OnUnderAttack, Team*, const Event*);
+            return OnUnderAttack(this, evn);
+        }
+        void _OnNoticeEnemy(const Event* evn)
+        {
+            FUNC(0x00655C10, void, __thiscall, OnNoticeEnemy, Team*, const Event*);
+            return OnNoticeEnemy(this, evn);
+        }
+        void _DoNoticeEnemy(int objId)
+        {
+            FUNC(0x00658F50, void, __thiscall, DoNoticeEnemy, Team*, int);
+            return DoNoticeEnemy(this, objId);
         }
     };
     ASSERT_SIZE(ai::Team, 0x168);

@@ -3,11 +3,12 @@
 #include "utils.hpp"
 #include "hta/m3d/CStrHash.hpp"
 #include "hta/m3d/Object.h"
-#include "hta/ai/Obj.h"
+#include "hta/ai/Obj.hpp"
 #include "hta/ai/GameTime.hpp"
 
 namespace ai {
     struct ObjContainer : public m3d::Object {
+        static inline ObjContainer*& theObjects = *(ObjContainer**)0x00A12E98;
         enum eSAVE_TYPES : int32_t {
             SAVE_LEVEL = 0x0000,
             SAVE_FULL = 0x0001,
