@@ -73,8 +73,8 @@ namespace kraken::fix::tactics {
         if (!attacked_vehicle || !current_target_vehicle)
             return false;
 
-        const float attacker_hp = GetCurrentHealthPercent(attacker_vehicle);
-        const float current_target_hp = GetCurrentHealthPercent(current_target_vehicle);
+        const float attacker_hp = attacker_vehicle->GetHealth();
+        const float current_target_hp = current_target_vehicle->GetHealth();
 
         // Change tactic if attacker HP < current target HP
         if (current_target_hp - attacker_hp < 1E-4)
