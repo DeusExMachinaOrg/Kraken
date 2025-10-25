@@ -29,7 +29,8 @@ namespace kraken {
         this->objcontupgrade   = { "constants", "obj_cont_upgrade",1,     true,  0,     1     };
         this->show_load_every  = { "constants", "show_load_every", 100,   true,  0,     uint32_t(-1)};
         this->cardan_fix       = { "constants", "cardan_fix"      ,1,     true,  0,     1     };
-        this->tactics          = { "constants", "tactics",         1,     true,  0,     1     };
+        this->tactics          = { "tactics",   "enabled",         1,     true,  0,     1     };
+        this->tactics_lock     = { "tactics",   "lock_on_player",  1,     true,  0,     1     };
 
         Config::INSTANCE = this;
 
@@ -64,6 +65,7 @@ namespace kraken {
         this->LoadValue(&this->show_load_every);
         this->LoadValue(&this->cardan_fix);
         this->LoadValue(&this->tactics);
+        this->LoadValue(&this->tactics_lock);
     };
 
     void Config::Dump() {
@@ -87,6 +89,7 @@ namespace kraken {
         this->DumpValue(&this->show_load_every);
         this->DumpValue(&this->cardan_fix);
         this->DumpValue(&this->tactics);
+        this->DumpValue(&this->tactics_lock);
     };
 
     template<typename T>

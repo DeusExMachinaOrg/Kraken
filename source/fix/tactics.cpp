@@ -31,10 +31,16 @@ namespace kraken::fix::tactics {
         Param1.Detach();
     }
 
-    bool isSameAttacker(ai::Team* team, const ai::Event* evn)
+    static bool g_lockOnPlayer = false;
+
+    float GetCurrentHealthPercent(ai::Vehicle* vehicle)
     {
-        ai::AI* pAI = &team->m_AI;
-        const CStr& stateName = pAI->GetCurState2Name();
+        return vehicle->GetHealth() / vehicle->GetMaxHealth();
+    }
+
+    bool isSameAttacker(ai::Team* team, const ai::Event* evn, bool lock_on_player)
+    {
+        const CStr& stateName = team->m_AI.GetCurState2Name();
         if (!stateName.m_charPtr || !stateName.Equal("Attack"))
             return false;
 
@@ -49,8 +55,31 @@ namespace kraken::fix::tactics {
 
         const int currentTarget = role->m_TargetVehicleId;
         int attacker_id = evn->m_param1.id;
+
+        // Same attacker, skip tactic change
         if (attacker_id == currentTarget)
             return true;
+
+        // Lock on player vehicle
+        if (lock_on_player) {
+            if (currentTarget == 1) // Ignore non-player attackers
+                return true;
+            if (attacker_id == 1) // Attack player
+                return false;
+        }
+
+        ai::Vehicle* attacker_vehicle = (ai::Vehicle*)ai::ObjContainer::theObjects->GetEntityByObjId(attacker_id);
+        ai::Vehicle* current_target_vehicle = (ai::Vehicle*)ai::ObjContainer::theObjects->GetEntityByObjId(currentTarget);
+        if (!attacked_vehicle || !current_target_vehicle)
+            return false;
+
+        const float attacker_hp = GetCurrentHealthPercent(attacker_vehicle);
+        const float current_target_hp = GetCurrentHealthPercent(current_target_vehicle);
+
+        // Change tactic if attacker HP < current target HP
+        if (current_target_hp - attacker_hp < 1E-4)
+            return true;
+
         return false;
     }
 
@@ -67,7 +96,7 @@ namespace kraken::fix::tactics {
         case ai::GE_UNDER_ATTACK:
         {
             // AdjustRoles only if the attacker is different from the current target
-            if (isSameAttacker(team, evn)) {
+            if (isSameAttacker(team, evn, g_lockOnPlayer)) {
                 result = 1;
                 break;
             }
@@ -96,6 +125,16 @@ namespace kraken::fix::tactics {
             return;
 
         LOG_INFO("Feature enabled");
+
+        if (config.tactics_lock.value != 0) {
+            LOG_INFO("Lock on player enabled");
+            g_lockOnPlayer = true;
+        }
+        else {
+            LOG_INFO("Lock on player disabled");
+            g_lockOnPlayer = false;
+        }
+
         //kraken::routines::Redirect(0xBF, (void*) 0x00658B50, Fixed_AttackNow);
         kraken::routines::Redirect(0x79, (void*) 0x00657FF0, Fixed_TeamOnEvent);
     }
