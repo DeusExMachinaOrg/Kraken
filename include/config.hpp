@@ -41,8 +41,13 @@ namespace kraken {
         ConfigValue<uint32_t> save_height;
         ConfigValue<uint32_t> view_resolution;
 
-        // Constants
+        // Global Physic Constants
         ConfigValue<float>                    gravity;
+        ConfigValue<float>                    contact_surface_layer;
+        ConfigValue<float>                    cfm;
+        ConfigValue<float>                    erp;
+
+        // Constants
         ConfigValue<uint32_t>                 price_fuel;
         ConfigValue<uint32_t>                 price_paint;
         ConfigValue<float>                    keep_throttle;
