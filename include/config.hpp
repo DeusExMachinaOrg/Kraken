@@ -58,6 +58,9 @@ namespace kraken {
         ConfigValue<uint32_t>                 objcontupgrade;
         ConfigValue<uint32_t>                 show_load_every; // Update loading screen each N objects (vanilla N = 1)
         ConfigValue<uint32_t>                 cardan_fix;
+        ConfigValue<float>                    contact_surface_layer;
+        ConfigValue<float>                    cfm;
+        ConfigValue<float>                    erp;
 
     public:
          Config();
