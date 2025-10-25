@@ -39,10 +39,10 @@ namespace kraken::fix::luabinds {
 
     void Apply(const Config* config)
     {
-        LOG_INFO("Feature enabled");
         if (config->lua_enabled.value == 0)
             return;
 
+        LOG_INFO("Feature enabled");
         g_scripts = config->lua_scripts.value;
         kraken::routines::Redirect(5, (void*)0x00401B37, (void*)&LuaScripts_Hook);
     }
