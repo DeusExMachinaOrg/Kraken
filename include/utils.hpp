@@ -31,6 +31,17 @@ struct stable_size_vector {
     const T& operator[](size_t index) const {
         return _Myfirst[index];
     }
+
+    using iterator = T*;
+    using const_iterator = const T*;
+
+    inline iterator begin() noexcept { return _Myfirst; }
+    inline const_iterator begin() const noexcept { return _Myfirst; }
+    inline const_iterator cbegin() const noexcept { return _Myfirst; }
+
+    inline iterator end() noexcept { return _Mylast; }
+    inline const_iterator end() const noexcept { return _Mylast; }
+    inline const_iterator cend() const noexcept { return _Mylast; }
 };
 
 template<typename K, typename T>

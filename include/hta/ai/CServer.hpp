@@ -5,7 +5,7 @@
 #include "hta/m3d/CWorld.hpp"
 #include "hta/m3d/IConHandler.hpp"
 #include "hta/m3d/Profiler.hpp"
-#include "hta/ai/Obj.h"
+#include "hta/ai/Obj.hpp"
 #include "hta/ai/ObjContainer.hpp"
 
 #include <queue>

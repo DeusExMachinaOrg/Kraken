@@ -4,7 +4,7 @@
 
 struct CStr
 {
-	char* charPtr;
+	char* m_charPtr;
 	int allocSz;
 	char zeroChar;
 
@@ -16,18 +16,18 @@ struct CStr
 	CStr(const char* str)
 	{
 		allocSz = strlen(str) + 1;
-		charPtr = new char[allocSz];
-		strcpy(charPtr, str);
+		m_charPtr = new char[allocSz];
+		strcpy(m_charPtr, str);
 	}
 
-	bool Equal(char* str)
+	bool Equal(char* str) const
 	{
-		return this->allocSz && !strcmp(this->charPtr, str);
+		return this->allocSz && !strcmp(this->m_charPtr, str);
 	}
 
-	bool Equal(const char* str)
+	bool Equal(const char* str) const
 	{
-		return this->allocSz && !strcmp(this->charPtr, str);
+		return this->allocSz && !strcmp(this->m_charPtr, str);
 	}
 };
 

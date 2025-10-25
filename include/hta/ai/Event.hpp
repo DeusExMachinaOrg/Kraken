@@ -1,6 +1,7 @@
 #pragma once 
 
 #include <stdint.h>
+#include "hta/m3d/AIParam.hpp"
 
 namespace ai {
     enum eGameEvent : int32_t {
@@ -81,5 +82,17 @@ namespace ai {
     GE_DYNAMIC_QUEST_FORGOTTEN = 0x004a,
     GE_DYNAMIC_QUEST_FAILED = 0x004b,
     GE_NUM_EVENTS = 0x004c,
+    };
+
+    struct Event {
+        ai::eGameEvent m_eventId;
+        int m_recipientObjId;
+        int m_senderObjId;
+        float m_timeOut;
+        int m_framesToPass;
+        float m_timeStamp;
+        int m_debugNum;
+        m3d::AIParam m_param1;
+        m3d::AIParam m_param2;
     };
 };

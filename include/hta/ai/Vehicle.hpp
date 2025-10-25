@@ -17,7 +17,6 @@
 namespace ai
 {
     struct VehicleUpdater;
-    struct VehicleRole;
     struct VehicleRecollection;
     struct GeomRepositoryItem;
     struct Team;
@@ -28,6 +27,13 @@ namespace ai
         DAMAGE_ENERGY = 0x0002,
         DAMAGE_WATER = 0x0003,
         DAMAGE_NUM_TYPES = 0x0004,
+    };
+
+    struct VehicleRole : Obj // sizeof=0xCC
+    {
+        int m_TargetVehicleId;
+        int m_TargetTeamId;
+        int m_TargetObjId;
     };
 
     struct VehiclePrototypeInfo : public ComplexPhysicObjPrototypeInfo {

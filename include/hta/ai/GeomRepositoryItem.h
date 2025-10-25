@@ -1,7 +1,7 @@
 #pragma once
 #include "CVector.h"
 #include "Func.h"
-#include "Obj.h"
+#include "Obj.hpp"
 
 namespace ai
 {

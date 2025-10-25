@@ -48,7 +48,7 @@ namespace m3d {
         void ConvertFromString(void*, eAIParamType) const;
         void ReadFromString(const CStr&);
         void Clear();
-        ~AIParam();
+        ~AIParam() = default;
         AIParam(const float&);
         AIParam(const Quaternion&);
         AIParam(const CVector&);
@@ -56,7 +56,7 @@ namespace m3d {
         AIParam(const int32_t&);
         AIParam(const uint32_t&);
         AIParam(const CStr&);
-        AIParam();
+        AIParam() = default;
         AIParam(const AIParam&);
         AIParam(const stable_size_vector<int>&);
         bool operator>(const AIParam&);
