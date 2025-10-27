@@ -116,5 +116,10 @@ namespace kraken::fix::wareuse {
             }
         }
         kraken::routines::OverrideValue(reinterpret_cast<void*>(0x009CB32C), (void*)&OnMouseButton0Hook);
+        if (config.wares.value)
+        {
+            routines::Override(32, (void*) 0x0047FD7F,
+            "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90");
+        }
     }
 }
