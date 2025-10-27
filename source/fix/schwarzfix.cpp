@@ -1,14 +1,19 @@
 #define LOGGER "SCHWARZ"
 
+#include <unordered_map>
+#include <unordered_set>
+#include "routines.hpp"
+#include "configstructs.hpp"
+#include "ext/logger.hpp"
+#include "CStr.h"
+#include "hta/ai/PrototypeManager.h"
+#include "hta/ai/DynamicScene.hpp"
 #include "hta/ai/Vehicle.h"
 #include "hta/ai/VehiclePart.h"
 #include "hta/ai/ComplexPhysicObj.h"
 #include "fix/schwarzfix.hpp"
-#include "routines.hpp"
-#include "ext/logger.hpp"
-#include <unordered_map>
-#include <unordered_set>
-#include "CStr.h"
+#include "hta/ai/DynamicQuestPeace.hpp"
+#include "hta/ai/Player.h"
 
 enum GadgetId : __int32 // borrowed from CabinWnd::GadgetId
 {
@@ -19,30 +24,46 @@ enum GadgetId : __int32 // borrowed from CabinWnd::GadgetId
   GADGET_NUM_GADGETS = 0xA,
 };
 
-std::unordered_set<CStr> significant_modifiers = {
+std::unordered_set<std::string> significant_modifiers = {
     "Durability", "MaxDurability", // cargo and cabin
     "MaxTorque", "MaxSpeed", // cabin
     "MaxHealth", // chassis
     "Damage", "FiringRate", "ReChargingTime", "Accuracy", "FiringRange", // guns
+    "GadgetAntiMissileRadius", // common
 };
 
 namespace kraken::fix::schwarzfix {
+    static inline ai::PrototypeManager*& thePrototypeManager = *(ai::PrototypeManager**)0x00A18AA8;
+    static inline ai::DynamicScene*& gDynamicScene = *(ai::DynamicScene**)0x00A12958;
+    static inline ai::Player*& thePlayer = *(ai::Player**)0x00A135E4;
 
-    uint32_t GetCommonGadgetSchwarz(ai::Gadget* gadget, const int gadget_id, stable_size_map<CStr, ai::VehiclePart*> vehicle_parts)
+
+    std::unordered_map<std::string, uint32_t> schwarz_overrides;
+    bool complex_schwarz;
+    float gun_gadgets_max_schwarz_part;
+    float common_gadgets_max_schwarz_part;
+    float wares_max_schwarz_part;
+
+    bool peace_price_from_schwarz;
+    bool no_money_in_player_schwarz;
+
+    // TODO: add option to take into account how effective the gadget is for vehicle
+    uint32_t GetCommonGadgetSchwarz(ai::Gadget* gadget, const int gadget_id)
     {
         unsigned int gprice = gadget->GetPrice(0);
         const ai::GadgetPrototypeInfo* gprotinfo = gadget->GetPrototypeInfo();
         CStr modificator = gprotinfo->m_modifications[0].m_propertyName;
 
-        LOG_INFO("--- Common Gadget id%d #%d (1st mod: %s), Price: %d ---",
+        LOG_INFO("--- Common Gadget id%d #%d (1st mod: %s), RawPrice: %d ---",
             gadget_id,
             gadget->m_slotNum,
             modificator.charPtr,
             gprice);
 
+        // TODO: allow to skip
         for (auto modification : gprotinfo->m_modifications)
         {
-            if (significant_modifiers.find(modification.m_propertyName.charPtr) != significant_modifiers.end())
+            if (significant_modifiers.find((std::string)modification.m_propertyName) != significant_modifiers.end())
             {
                 return gadget->GetPrice(0);
             }
@@ -52,11 +73,6 @@ namespace kraken::fix::schwarzfix {
             }
         }
         return 0;
-
-        for (const auto[part_name, veh_part] : vehicle_parts)
-        {
-
-        }
 
         // | GADGETS AFFECTING BALANCE |
         // Vehicle (GADGET_COMMON)
@@ -74,22 +90,24 @@ namespace kraken::fix::schwarzfix {
 
     }
 
-    uint32_t GetWeaponGadgetSchwarz(ai::Gadget* gadget, const int gadget_id, std::unordered_map<CStr, ai::VehiclePart*> weapons)
+    // TODO: add option to take into account how effective the gadget is for guns config
+    uint32_t GetWeaponGadgetSchwarz(ai::Gadget* gadget, const int gadget_id)
     {
         uint32_t gprice = gadget->GetPrice(0);
         const ai::GadgetPrototypeInfo* gprotinfo = gadget->GetPrototypeInfo();
         CStr modificator = gprotinfo->m_modifications[0].m_propertyName;
 
-        LOG_INFO("--- Weapon Gadget id%d #%d (1st mod: %s), Price: %d ---",
+        LOG_INFO("--- Weapon Gadget id%d #%d (1st mod: %s), RawPrice: %d ---",
             gadget_id,
             gadget->m_slotNum,
             modificator.charPtr,
             gprice);
 
 
+        // TODO: allow to skip
         for (auto modification : gprotinfo->m_modifications)
         {
-            if (significant_modifiers.find(modification.m_propertyName.charPtr) != significant_modifiers.end())
+            if (significant_modifiers.find((std::string)modification.m_propertyName) != significant_modifiers.end())
             {
                 return gadget->GetPrice(0);
             }
@@ -102,6 +120,192 @@ namespace kraken::fix::schwarzfix {
 
     }
 
+    uint32_t GetOverridenPrice(ai::Obj* object)
+    {
+        CStr prot_name = object->GetPrototypeInfo()->m_prototypeName;
+        auto overriden_schwarz = schwarz_overrides.find((std::string)prot_name);
+        if (overriden_schwarz != schwarz_overrides.end())
+        {
+            return overriden_schwarz->second;
+        }
+        return 0;
+    }
+
+    uint32_t GetGunPartPrice(ai::Gun* gun)
+    {
+        uint32_t part_durability = gun->m_durability.m_value.m_value;
+        uint32_t part_max_durability = gun->m_durability.m_maxValue.m_value;
+
+        float condition = part_durability / part_max_durability;
+
+        LOG_DEBUG("Dur: %.2f, MaxDur: %.2f, Gun Condition: %.2f",
+            part_durability,
+            part_max_durability,
+            condition);
+
+        if (condition <= 0.01)
+        {
+            LOG_DEBUG("Ignoring in Schwarz calculation, low condition");
+            return 0;
+        }
+
+        uint32_t overriden_base_schwarz = GetOverridenPrice(gun);
+        if (overriden_base_schwarz != 0)
+        {
+            uint32_t shells_price = 0;
+            if (gun->GetPrototypeInfo()->m_WithShellsPoolLimit)
+            {
+                uint32_t shell_prot_id = gun->m_shellPrototypeId;
+                if (shell_prot_id != -1)
+                {
+                    ai::PrototypeInfo* shell_prototype;
+                    if ( !thePrototypeManager->m_prototypes.empty() && shell_prot_id < thePrototypeManager->m_prototypes.size() )
+                        shell_prototype = thePrototypeManager->m_prototypes[shell_prot_id];
+                    else
+                        shell_prototype = 0;
+
+                    if (shell_prototype)
+                    {
+                        uint32_t base_shell_price = shell_prototype->m_price;
+                        uint32_t shells_in_pool = gun->m_ShellsInPool;
+                        uint32_t shells_total = shells_in_pool + gun->m_ShellsInCurrentCharge;
+                        shells_price = base_shell_price * shells_total;
+                    }
+                }
+            }
+            return overriden_base_schwarz + shells_price;
+
+        }
+        return gun->GetPrice(0);
+    }
+
+    uint32_t GetPartPrice(ai::VehiclePart* veh_part)
+    {
+        uint32_t overriden_base_schwarz = GetOverridenPrice(veh_part);
+        if (overriden_base_schwarz != 0)
+        {
+            return overriden_base_schwarz;
+        }
+        return veh_part->m_price.m_value;
+    }
+
+    uint32_t GetGadgetPrice(ai::Gadget* gadget)
+    {
+        uint32_t overriden_base_schwarz = GetOverridenPrice(gadget);
+        if (overriden_base_schwarz != 0)
+        {
+            return overriden_base_schwarz;
+        }
+    }
+
+    uint32_t GetDurablePartSchwarz(ai::VehiclePart* veh_part)
+    {
+        float part_max_durability = veh_part->m_durability.m_maxValue.m_value;
+        if (part_max_durability < 0.001)
+        {
+            LOG_WARNING(
+                "Part '%s' has ~0 max durability and is not CHASSIS, so will not be correctly processed",
+                veh_part->m_partName.charPtr);
+
+            return 1;
+        }
+        float part_durability = veh_part->m_durability.m_value.m_value;
+        float condition_coeff = part_durability / part_max_durability;
+        LOG_DEBUG("Dur: %.2f, MaxDur: %.2f, PriceCoeff: %.2f",
+            part_durability,
+            part_max_durability,
+            condition_coeff);
+        return GetPartPrice(veh_part) * condition_coeff;
+    }
+
+    uint32_t __fastcall GetComplexSchwarz(ai::Vehicle* vehicle, void* _)
+    {
+        LOG_DEBUG("> GetComplexSchwarz <");
+        LOG_WARNING("----- %s -----", vehicle->name);
+
+        float intermediate_schwarz = 0.0f;
+
+        uint32_t cab_price;
+        uint32_t basket_price;
+        uint32_t chassis_price;
+        uint32_t guns_schwarz;
+
+        for (const auto& [part_name, veh_part] : vehicle->m_vehicleParts) {
+            LOG_INFO("--- [%s] %s ---", part_name.charPtr, veh_part->GetPrototypeInfo()->m_prototypeName);
+
+            if (part_name.Equal("CHASSIS"))
+            {
+                float condition_coeff = vehicle->GetHealth() / vehicle->GetMaxHealth();
+                chassis_price += GetPartPrice(veh_part) * condition_coeff;
+            }
+            else if (part_name.Equal("CABIN"))
+            {
+                cab_price += GetDurablePartSchwarz(veh_part);
+            }
+            else if (part_name.Equal("BASKET"))
+            {
+                basket_price += GetDurablePartSchwarz(veh_part);
+            }
+            else // a gun
+            {
+                guns_schwarz += GetGunPartPrice(reinterpret_cast<ai::Gun*>(veh_part));
+            }
+        }
+
+        uint32_t  gun_gadgets_price;
+        uint32_t  common_gadgets_price;
+
+        for (const auto& [gadget_id, gadget] : vehicle->m_gadgets){
+            // gadget_id/slot 0 - 4 (COMMON), slot 5 - 9 (WEAPON)
+            if (gadget_id <= GadgetId::GADGET_COMMON_MAX)
+            {
+                common_gadgets_price += GetCommonGadgetSchwarz(gadget, gadget_id);
+            }
+            else
+            {
+                gun_gadgets_price += GetWeaponGadgetSchwarz(gadget, gadget_id);
+            }
+        }
+
+        uint32_t wares_price;
+
+        if (vehicle->m_repository)
+        {
+            // uint32_t num_items = vehicle->m_repository->m_slots.size();
+
+            for (auto item : vehicle->m_repository->m_slots)
+            {
+                ai::Obj* obj = item.GetObj();
+                if (obj)
+                {
+                    wares_price += obj->GetPrice(0);
+                }
+            }
+        }
+
+        intermediate_schwarz = cab_price + basket_price + chassis_price;
+
+        uint32_t total_gadgets_schwarz = 0;
+        if (gun_gadgets_price)
+        {
+            uint32_t max_gun_gadget_schwarz = guns_schwarz * gun_gadgets_max_schwarz_part;
+            total_gadgets_schwarz += min(gun_gadgets_price, max_gun_gadget_schwarz);
+        }
+        if (common_gadgets_price)
+        {
+            uint32_t max_common_gadget_schwarz = intermediate_schwarz * common_gadgets_max_schwarz_part;
+            total_gadgets_schwarz += min(common_gadgets_price, max_common_gadget_schwarz);
+        }
+
+        if (wares_price)
+        {
+            uint32_t maximum_wares_part_of_schwarz = intermediate_schwarz * wares_max_schwarz_part;
+            intermediate_schwarz += min(wares_price, maximum_wares_part_of_schwarz);
+        }
+
+        return (uint32_t)intermediate_schwarz;
+    }
+
     uint32_t __fastcall GetSchwarz(ai::Vehicle* vehicle, void* _)
     {
         LOG_DEBUG("> GetSchwarz <");
@@ -110,7 +314,7 @@ namespace kraken::fix::schwarzfix {
 
         uint32_t new_schwarz = 0;
         uint32_t total_price_by_game = 0;
-        
+
         float hp_coeff = vehicle->GetHealth() / vehicle->GetMaxHealth();
 
         float base_schwarz_part = 0.5f;
@@ -124,7 +328,7 @@ namespace kraken::fix::schwarzfix {
         for (const auto& [part_name, veh_part] : vehicle->m_vehicleParts) {
             LOG_INFO("--- %s ---", veh_part->m_modelname);
 
-            float part_condition_price_coeff = 1.0f;
+            float part_condition_price_coeff;
             float part_durability = veh_part->m_durability.m_value.m_value;
             float part_max_durability = veh_part->m_durability.m_maxValue.m_value;
 
@@ -145,7 +349,6 @@ namespace kraken::fix::schwarzfix {
                 }
                 else // a gun
                 {
-                    weapons.insert({part_name, veh_part});
                     const ai::VehiclePartPrototypeInfo* gun_protinfo = veh_part->GetPrototypeInfo();
                     // equiped_weapon_types.emplace(gun_protinfo)
                     
@@ -165,7 +368,7 @@ namespace kraken::fix::schwarzfix {
             {
                 part_condition_price_coeff = 0.0;
                 LOG_WARNING(
-                    "Part '%s' has ~0 max durability and will not be correctly processed",
+                    "Part '%s' has ~0 max durability and is not CHASSIS, so will not be correctly processed",
                     part_name.charPtr);
                 continue;
             }
@@ -197,11 +400,11 @@ namespace kraken::fix::schwarzfix {
             // gadget_id/slot 0 - 4 (COMMON), slot 5 - 9 (WEAPON)
             if (gadget_id <= GadgetId::GADGET_COMMON_MAX)
             {
-                new_schwarz += GetCommonGadgetSchwarz(gadget, gadget_id, vehicle->m_vehicleParts);
+                new_schwarz += GetCommonGadgetSchwarz(gadget, gadget_id);
             }
             else
             {
-                new_schwarz += GetWeaponGadgetSchwarz(gadget, gadget_id, weapons);
+                new_schwarz += GetWeaponGadgetSchwarz(gadget, gadget_id);
             }
         }
 
@@ -231,7 +434,36 @@ namespace kraken::fix::schwarzfix {
         return new_schwarz;
     }
 
+    int32_t __fastcall _CalcReward(ai::DynamicQuestPeace* quest, void* _) // ai::DynamicQuestPeace
+    {
+        int32_t calculated_from_player;
+      
+        const ai::DynamicQuestPeacePrototypeInfo* protInfo = quest->GetPrototypeInfo();
+        if ( !gDynamicScene->GetVehicleControlledByPlayer() )
+            return protInfo->m_minReward;
+        if ( !thePlayer )
+            return 0;
+        
+        if (no_money_in_player_schwarz)
+            calculated_from_player = thePlayer->GetSchwarz() * protInfo->m_playerMoneyPart;
+        else
+            calculated_from_player = thePlayer->GetMoney() * protInfo->m_playerMoneyPart;
+            
+
+        return -min(calculated_from_player, protInfo->m_minReward);
+    }
+
     void Apply() {
-        kraken::routines::Redirect(0x0088, (void*) 0x005E0DB0, (void*) &GetSchwarz);
+        const kraken::Config& config = kraken::Config::Get();
+        schwarz_overrides = config.schwarz_overrides.value;
+        complex_schwarz = config.complex_schwarz.value;
+        gun_gadgets_max_schwarz_part = config.gun_gadgets_max_schwarz_part.value;
+        common_gadgets_max_schwarz_part = config.common_gadgets_max_schwarz_part.value;
+        wares_max_schwarz_part = config.wares_max_schwarz_part.value;
+
+        peace_price_from_schwarz = config.peace_price_from_schwarz.value;
+        no_money_in_player_schwarz = config.no_money_in_player_schwarz.value;
+
+        kraken::routines::Redirect(0x0088, (void*) 0x005E0DB0, (void*) &GetComplexSchwarz);
     }
 }

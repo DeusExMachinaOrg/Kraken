@@ -19,6 +19,15 @@ namespace kraken::configstructs {
         std::string Ware;
         WareType Type;
     };
+
+    struct SchwarzOverride {
+        SchwarzOverride(uint32_t price, const std::string& prototype_name)
+            : Price(price), PrototypeName(prototype_name)
+        {   
+        }
+        uint32_t Price;
+        std::string PrototypeName;
+    };
 };
 
 #endif

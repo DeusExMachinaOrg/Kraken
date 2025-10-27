@@ -51,6 +51,12 @@ struct CStr
 	    return strings.find(std::string_view(this->charPtr)) != strings.end();
 	}
 
+	// cast to string
+    operator std::string() const
+    {
+        return (charPtr && allocSz) ? std::string(charPtr) : std::string();
+    }
+
 };
 
 inline bool operator<(const CStr& lhs, const CStr& rhs)

@@ -3,6 +3,7 @@
 
 #include "stdafx.hpp"
 #include <vector>
+#include <unordered_map>
 #include "configstructs.hpp"
 
 namespace kraken {
@@ -23,6 +24,12 @@ namespace kraken {
         const char* section;
         const char* keyPrefix; // e.g. "Script_"
         std::vector<std::string> value;
+    };
+
+    template<>
+    struct ConfigValue<std::unordered_map<std::string, uint32_t>> {
+        const char* section;
+        std::unordered_map<std::string, uint32_t> value;
     };
 
     template<>
@@ -57,6 +64,16 @@ namespace kraken {
         ConfigValue<uint32_t>                 ultrawide;
         ConfigValue<uint32_t>                 objcontupgrade;
         ConfigValue<uint32_t>                 show_load_every; // Update loading screen each N objects (vanilla N = 1)
+
+        // Schwarz
+        ConfigValue<bool>                     complex_schwarz;
+        ConfigValue<float>                    gun_gadgets_max_schwarz_part;
+        ConfigValue<float>                    common_gadgets_max_schwarz_part;
+        ConfigValue<float>                    wares_max_schwarz_part;
+        ConfigValue<bool>                     peace_price_from_schwarz;
+        ConfigValue<bool>                     no_money_in_player_schwarz;
+        ConfigValue<std::unordered_map<std::string, uint32_t>> schwarz_overrides;
+
 
     public:
          Config();

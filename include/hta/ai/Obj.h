@@ -3,6 +3,7 @@
 
 #include "hta/m3d/Object.h"
 #include "Modifier.h"
+#include "hta/ai/PrototypeInfo.h"
 #include "IPriceCoeffProvider.h"
 
 namespace ai
@@ -133,11 +134,17 @@ namespace ai
 		stable_size_vector<ai::Modifier> m_modifiers;
 		stable_size_vector<ai::Obj::EventRecipientInfo> m_eventRecipients;
 
-		unsigned int GetPrice(const ai::IPriceCoeffProvider* provider)
-		{
-			FUNC(0x0068A120, unsigned int, __thiscall, _GetPrice, Obj*, const ai::IPriceCoeffProvider*);
-			return _GetPrice(this, provider);
-		}
+        uint32_t GetPrice(const ai::IPriceCoeffProvider* provider)
+        {
+            FUNC(0x0068A120, uint32_t, __thiscall, _GetPrice, Obj*, const ai::IPriceCoeffProvider*);
+            return _GetPrice(this, provider);
+        };
+
+        const ai::PrototypeInfo* GetPrototypeInfo()
+        {
+			FUNC(0x0068D190, const ai::PrototypeInfo*, __thiscall, _GetPrototypeInfo, Obj*);
+			return _GetPrototypeInfo(this);
+        };
 	};
 
 	ASSERT_SIZE(ai::Obj, 0xC0);
