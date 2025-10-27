@@ -18,10 +18,10 @@ namespace kraken::fix::posteffectreload {
 
     void Apply(const Config* config)
     {
-        LOG_INFO("Feature enabled");
         if (!config->posteffectreload.value)
             return;
 
+        LOG_INFO("Feature enabled");
         kraken::routines::Redirect(9, (void*)0x0041F433, (void*)&UpdateWeather_Hook);
     }
 }
