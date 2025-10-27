@@ -225,10 +225,10 @@ namespace kraken::fix::schwarzfix {
 
         float intermediate_schwarz = 0.0f;
 
-        uint32_t cab_price;
-        uint32_t basket_price;
-        uint32_t chassis_price;
-        uint32_t guns_schwarz;
+        uint32_t cab_price = 0;
+        uint32_t basket_price = 0;
+        uint32_t chassis_price = 0;
+        uint32_t guns_schwarz = 0;
 
         for (const auto& [part_name, veh_part] : vehicle->m_vehicleParts) {
             LOG_INFO("--- [%s] %s ---", part_name.charPtr, veh_part->GetPrototypeInfo()->m_prototypeName);
@@ -252,8 +252,8 @@ namespace kraken::fix::schwarzfix {
             }
         }
 
-        uint32_t  gun_gadgets_price;
-        uint32_t  common_gadgets_price;
+        uint32_t gun_gadgets_price = 0;
+        uint32_t common_gadgets_price = 0;
 
         for (const auto& [gadget_id, gadget] : vehicle->m_gadgets){
             // gadget_id/slot 0 - 4 (COMMON), slot 5 - 9 (WEAPON)
@@ -271,16 +271,20 @@ namespace kraken::fix::schwarzfix {
 
         if (vehicle->m_repository)
         {
-            // uint32_t num_items = vehicle->m_repository->m_slots.size();
+            uint32_t num_items = vehicle->m_repository->m_slots.size();
 
-            for (auto item : vehicle->m_repository->m_slots)
+            if (num_items)
             {
-                ai::Obj* obj = item.GetObj();
-                if (obj)
+                for (auto item : vehicle->m_repository->m_slots)
                 {
-                    wares_price += obj->GetPrice(0);
+                    ai::Obj* obj = item.GetObj();
+                    if (obj)
+                    {
+                        wares_price += obj->GetPrice(0);
+                    }
                 }
             }
+
         }
 
         intermediate_schwarz = cab_price + basket_price + chassis_price;
@@ -306,7 +310,8 @@ namespace kraken::fix::schwarzfix {
         return (uint32_t)intermediate_schwarz;
     }
 
-    uint32_t __fastcall GetSchwarz(ai::Vehicle* vehicle, void* _)
+    // TODO: delete
+    uint32_t __fastcall GetSchwarzOldDraft(ai::Vehicle* vehicle, void* _)
     {
         LOG_DEBUG("> GetSchwarz <");
         LOG_WARNING("----- %s -----", vehicle->name);
@@ -444,7 +449,7 @@ namespace kraken::fix::schwarzfix {
         if ( !thePlayer )
             return 0;
         
-        if (no_money_in_player_schwarz)
+        if (peace_price_from_schwarz)
             calculated_from_player = thePlayer->GetSchwarz() * protInfo->m_playerMoneyPart;
         else
             calculated_from_player = thePlayer->GetMoney() * protInfo->m_playerMoneyPart;
