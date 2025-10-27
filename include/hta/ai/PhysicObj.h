@@ -2,7 +2,7 @@
 
 #include "ode/ode.hpp"
 
-#include "Obj.h"
+#include "Obj.hpp"
 #include "hta/Quaternion.h"
 #include "hta/ref_ptr.h"
 #include "hta/AABB.hpp"

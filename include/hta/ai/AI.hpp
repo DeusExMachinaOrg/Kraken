@@ -2,7 +2,7 @@
 #include "utils.hpp"
 #include "hta/m3d/Object.h"
 #include "hta/m3d/AIParam.hpp"
-#include "hta/ai/Obj.h"
+#include "hta/ai/Obj.hpp"
 
 namespace m3d::cmn {
     struct XmlFile;
