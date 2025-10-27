@@ -1,5 +1,5 @@
 #pragma once
-#include "hta/ai/Obj.h"
+#include "hta/ai/Obj.hpp"
 #include "utils.hpp"
 
 namespace ai {

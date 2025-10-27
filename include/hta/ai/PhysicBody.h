@@ -1,7 +1,7 @@
 #pragma once
 #include <vector>
 
-#include "Obj.h"
+#include "Obj.hpp"
 #include "dMass.h"
 #include "GeomTransform.h"
 #include "CollisionInfo.h"
