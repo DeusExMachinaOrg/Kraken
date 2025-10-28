@@ -10,6 +10,8 @@
 #include "hta/ai/Cabin.h"
 #include "hta/ai/Basket.h"
 #include "hta/m3d/AnimInfo.hpp"
+#include "hta/ai/CServer.hpp"
+#include "hta/m3d/CWorld.hpp"
 
 #include "fix/cardan.hpp"
 
@@ -30,6 +32,11 @@ namespace kraken::fix::cardan {
                 }
             }
         }
+
+        m3d::CWorld* world = ai::CServer::Instance()->GetWorld();
+        const m3d::SceneGraph& sceneGraph = world->m_sceneGraph;
+        size_t size = sceneGraph.m_thinkList.size();
+        LOG_INFO("m_thinkList:%d", size);
     }
 
     void __fastcall KeepThrottle(ai::Vehicle* vehicle, void*, bool applyActions)
