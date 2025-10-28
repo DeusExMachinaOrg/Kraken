@@ -38,6 +38,17 @@ namespace kraken::fix::tactics {
         return vehicle->GetHealth() / vehicle->GetMaxHealth();
     }
 
+    ai::Vehicle* GetVehicle(m3d::Object* obj)
+    {
+        if (obj) {
+            if (obj->GetClass() == (m3d::Class*)0x00A00914)
+                return (ai::Vehicle*)obj;
+            else
+                return nullptr; // Not vehicle (breakpoint)
+        }
+        return nullptr;
+    }
+
     bool isSameAttacker(ai::Team* team, const ai::Event* evn, bool lock_on_player)
     {
         const CStr& stateName = team->m_AI.GetCurState2Name();
@@ -45,7 +56,7 @@ namespace kraken::fix::tactics {
             return false;
 
         int attacked_vehicle_id = evn->m_senderObjId;
-        ai::Vehicle* attacked_vehicle = (ai::Vehicle*)ai::ObjContainer::theObjects->GetEntityByObjId(attacked_vehicle_id);
+        ai::Vehicle* attacked_vehicle = GetVehicle(ai::ObjContainer::theObjects->GetEntityByObjId(attacked_vehicle_id));
         if (!attacked_vehicle || attacked_vehicle->m_roleId == -1)
             return false;
 
@@ -68,9 +79,9 @@ namespace kraken::fix::tactics {
                 return false;
         }
 
-        ai::Vehicle* attacker_vehicle = (ai::Vehicle*)ai::ObjContainer::theObjects->GetEntityByObjId(attacker_id);
-        ai::Vehicle* current_target_vehicle = (ai::Vehicle*)ai::ObjContainer::theObjects->GetEntityByObjId(currentTarget);
-        if (!attacked_vehicle || !current_target_vehicle)
+        ai::Vehicle* attacker_vehicle = GetVehicle(ai::ObjContainer::theObjects->GetEntityByObjId(attacker_id));
+        ai::Vehicle* current_target_vehicle = GetVehicle(ai::ObjContainer::theObjects->GetEntityByObjId(currentTarget));
+        if (!attacker_vehicle || !current_target_vehicle)
             return false;
 
         const float attacker_hp = attacker_vehicle->GetHealth();
