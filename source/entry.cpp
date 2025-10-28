@@ -22,6 +22,7 @@
 #include "fix/cardan.hpp"
 #include "fix/tactics.hpp"
 #include "hta/pointers.hpp"
+#include "fix/watereffect.hpp"
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
@@ -70,5 +71,6 @@ namespace kraken {
         //fix::kineticfriction::Apply();
         fix::cardan::Apply();
         fix::tactics::Apply();
+        fix::watereffect::Apply();
     };
 };

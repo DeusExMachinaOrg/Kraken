@@ -42,6 +42,7 @@ set(SOURCES
     source/fix/kineticfriction.cpp
     source/fix/cardan.cpp
     source/fix/tactics.cpp
+    source/fix/watereffect.cpp
 )
 
 # Header files
@@ -61,6 +62,7 @@ set(HEADERS
     include/fix/fastloading.hpp
     include/fix/cardan.hpp
     include/fix/tactics.hpp
+    include/fix/watereffect.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
