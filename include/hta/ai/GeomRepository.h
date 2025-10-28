@@ -2,10 +2,11 @@
 #include <utils.hpp>
 #include <containers.hpp>
 #include <hta/ai/GeomRepositoryItem.h>
+#include "stdafx.hpp"
 
 namespace ai
 {
-	struct GeomRepository
+	struct GeomRepository : m3d::Object
 	{
         enum SortStyle : int32_t {
             SORT_NONE = 0x0000,
@@ -14,6 +15,7 @@ namespace ai
         /* Size=0x64 */
         /* 0x0000: fields for m3d::Object */
         /* 0x0034 */ bool m_Changed;
+                     BYTE m_pad[3];
         /* 0x0038 */ PointBase<int> m_geomSize;
         /* 0x0040 */ hta::vector<GeomRepositoryItem> m_slots;
         /* 0x0050 */ hta::set<int> m_referenceChests;

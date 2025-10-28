@@ -267,7 +267,7 @@ namespace kraken::fix::schwarzfix {
             }
         }
 
-        uint32_t wares_price;
+        uint32_t wares_price{};
 
         if (vehicle->m_repository)
         {
