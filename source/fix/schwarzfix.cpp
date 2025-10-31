@@ -39,13 +39,13 @@ namespace kraken::fix::schwarzfix {
 
 
     std::unordered_map<std::string, uint32_t> schwarz_overrides;
-    bool complex_schwarz;
-    float gun_gadgets_max_schwarz_part;
-    float common_gadgets_max_schwarz_part;
-    float wares_max_schwarz_part;
+    bool complex_schwarz{false};
+    float gun_gadgets_max_schwarz_part{};
+    float common_gadgets_max_schwarz_part{};
+    float wares_max_schwarz_part{};
 
-    bool peace_price_from_schwarz;
-    bool no_money_in_player_schwarz;
+    bool peace_price_from_schwarz{false};
+    bool no_money_in_player_schwarz{false};
 
     // TODO: add option to take into account how effective the gadget is for vehicle
     uint32_t GetCommonGadgetSchwarz(ai::Gadget* gadget, const int gadget_id)
@@ -152,7 +152,7 @@ namespace kraken::fix::schwarzfix {
         uint32_t overriden_base_schwarz = GetOverridenPrice(gun);
         if (overriden_base_schwarz != 0)
         {
-            uint32_t shells_price = 0;
+            uint32_t shells_price{};
             if (gun->GetPrototypeInfo()->m_WithShellsPoolLimit)
             {
                 uint32_t shell_prot_id = gun->m_shellPrototypeId;
@@ -223,12 +223,12 @@ namespace kraken::fix::schwarzfix {
         LOG_DEBUG("> GetComplexSchwarz <");
         LOG_WARNING("----- %s -----", vehicle->name);
 
-        float intermediate_schwarz = 0.0f;
+        float intermediate_schwarz{};
 
-        uint32_t cab_price = 0;
-        uint32_t basket_price = 0;
-        uint32_t chassis_price = 0;
-        uint32_t guns_schwarz = 0;
+        uint32_t cab_price{};
+        uint32_t basket_price{};
+        uint32_t chassis_price{};
+        uint32_t guns_schwarz{};
 
         for (const auto& [part_name, veh_part] : vehicle->m_vehicleParts) {
             LOG_INFO("--- [%s] %s ---", part_name.charPtr, veh_part->GetPrototypeInfo()->m_prototypeName);
@@ -252,8 +252,8 @@ namespace kraken::fix::schwarzfix {
             }
         }
 
-        uint32_t gun_gadgets_price = 0;
-        uint32_t common_gadgets_price = 0;
+        uint32_t gun_gadgets_price{};
+        uint32_t common_gadgets_price{};
 
         for (const auto& [gadget_id, gadget] : vehicle->m_gadgets){
             // gadget_id/slot 0 - 4 (COMMON), slot 5 - 9 (WEAPON)
@@ -289,7 +289,7 @@ namespace kraken::fix::schwarzfix {
 
         intermediate_schwarz = cab_price + basket_price + chassis_price;
 
-        uint32_t total_gadgets_schwarz = 0;
+        uint32_t total_gadgets_schwarz{};
         if (gun_gadgets_price)
         {
             uint32_t max_gun_gadget_schwarz = guns_schwarz * gun_gadgets_max_schwarz_part;
@@ -317,15 +317,15 @@ namespace kraken::fix::schwarzfix {
         LOG_WARNING("----- %s -----", vehicle->name);
         CStr vname = vehicle->name;
 
-        uint32_t new_schwarz = 0;
-        uint32_t total_price_by_game = 0;
+        uint32_t new_schwarz{};
+        uint32_t total_price_by_game{};
 
         float hp_coeff = vehicle->GetHealth() / vehicle->GetMaxHealth();
 
         float base_schwarz_part = 0.5f;
         float armor_schwarz_part = 1.0f - base_schwarz_part;
 
-        float totalPrice = 0.0f;
+        float totalPrice{};
         
         std::unordered_map<CStr, ai::VehiclePart *> weapons;
         std::unordered_set<CStr> equiped_weapon_types;
@@ -413,22 +413,18 @@ namespace kraken::fix::schwarzfix {
             }
         }
 
-        uint32_t vanilla_schwarz;
-        uint32_t vanilla_base_price;
+        uint32_t vanilla_schwarz{};
+        uint32_t vanilla_base_price = vehicle->GetPrice(0);
 
-        float full_max_durability;
-        float full_cur_durability;
+        float full_max_durability{};
+        float full_cur_durability{};
  
         full_max_durability = vehicle->GetMaxFullDurability();
         full_cur_durability = vehicle->GetFullDurability();
         
-        vanilla_base_price = vehicle->GetPrice(0);
-
-        float full_dur_price_coeff;
+        float full_dur_price_coeff{};
         if (full_max_durability >= 0.001)
             full_dur_price_coeff = full_cur_durability / full_max_durability;
-        else
-            full_dur_price_coeff = 0.0;
 
         vanilla_schwarz = (uint32_t)(vanilla_base_price * full_dur_price_coeff);
 
@@ -441,7 +437,7 @@ namespace kraken::fix::schwarzfix {
 
     int32_t __fastcall _CalcReward(ai::DynamicQuestPeace* quest, void* _) // ai::DynamicQuestPeace
     {
-        int32_t calculated_from_player;
+        int32_t calculated_from_player{};
       
         const ai::DynamicQuestPeacePrototypeInfo* protInfo = quest->GetPrototypeInfo();
         if ( !gDynamicScene->GetVehicleControlledByPlayer() )
@@ -460,7 +456,7 @@ namespace kraken::fix::schwarzfix {
 
     uint32_t GetSchwarz(ai::Player* player) 
     {
-        uint32_t schwarz;
+        uint32_t schwarz{};
         ai::Vehicle *vehicle;
 
         schwarz = no_money_in_player_schwarz ? 0 : player->m_money.m_value.m_value;
