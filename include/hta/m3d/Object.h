@@ -1,6 +1,7 @@
 #pragma once
 #include "RefCountedBase.h"
 #include "hta/CStr.h"
+#include <stdint.h>
 
 namespace m3d
 {
@@ -29,20 +30,19 @@ namespace m3d
         const char* desc = nullptr;
     };
 
-    struct Class /* Size=0x1c */
-    {
-		const char* m_className = nullptr;
-		int m_classSize = 0;
-		Object* (* m_fnCreateObject)() = nullptr;
-		Class* (* m_fnGetBaseClass)() = nullptr;
-		int m_index = 0;
-		ExportInfo* m_lExports = nullptr;
-		void* m_scriptHandle = nullptr;
-
-		// public:
-		bool IsKindOf(char const*) const;
-		bool IsKindOf(Class const*) const;
-		Object* NewInstance() const;
+    struct Class {
+        /* Size=0x1c */
+        /* 0x0000 */ const char* m_className;
+        /* 0x0004 */ int32_t m_classSize;
+        /* 0x0008 */ Object* (* m_fnCreateObject)();
+        /* 0x000c */ Class* (* m_fnGetBaseClass)();
+        /* 0x0010 */ int32_t m_index;
+        /* 0x0014 */ ExportInfo* m_lExports;
+        /* 0x0018 */ void* m_scriptHandle;
+        
+        bool IsKindOf(const char*) const;
+        bool IsKindOf(const Class*) const;
+        Object* NewInstance() const;
     };
 	ASSERT_SIZE(m3d::Class, 0x1c);
 

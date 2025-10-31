@@ -3,11 +3,15 @@
 
 namespace ai
 {
-	struct PhysicObjPrototypeInfo : PrototypeInfo
-	{
-		float m_intersectionRadius;
-		float m_lookRadius;
-	};
+    struct PhysicObjPrototypeInfo : PrototypeInfo {
+        /* Size=0x48 */
+        /* 0x0000: fields for PrototypeInfo */
+        /* 0x0040 */ float m_intersectionRadius;
+        /* 0x0044 */ float m_lookRadius;
 
-	ASSERT_SIZE(ai::PhysicObjPrototypeInfo, 0x48);
+        PhysicObjPrototypeInfo();
+        virtual bool LoadFromXML(m3d::cmn::XmlFile*, const m3d::cmn::XmlNode*);
+        virtual ~PhysicObjPrototypeInfo();
+    };
+    static_assert(sizeof(PhysicObjPrototypeInfo) == 0x48);
 }

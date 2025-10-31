@@ -130,7 +130,7 @@ namespace ai
         bool IsWithShellsPoolLimit() const;
         virtual void SaveRuntimeValues(m3d::cmn::XmlFile*, m3d::cmn::XmlNode*) const;
         virtual bool CanFire() const;
-        virtual unsigned int GetPrice(IPriceCoeffProvider const*) const;
+        virtual uint32_t GetPrice(IPriceCoeffProvider const*) const;
         Gun(GunPrototypeInfo const&);
         float GetInitialHorizAngle() const;
         void SetChargeState(int);
@@ -197,5 +197,12 @@ namespace ai
         bool m_bWasShot;
         bool m_bJustShot;
         float m_initialHorizAngle;
+
+		uint32_t GetPrice(const ai::IPriceCoeffProvider* provider)
+		{
+			FUNC(0x006E1E50, uint32_t, __thiscall, _GetPrice, Gun*, const ai::IPriceCoeffProvider*);
+			return _GetPrice(this, provider);
+		}
+
     };
 }

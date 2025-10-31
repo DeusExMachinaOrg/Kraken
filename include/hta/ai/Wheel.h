@@ -37,63 +37,28 @@ namespace ai
 
     };
 
-    struct Wheel : SimplePhysicObj
-    {
-    public:
-        enum WheelSteering
-        {
-            STEERING_NO = 0x0,
-            STEERING_CORRECT = 0x1,
-            STEERING_INVERSE = 0xFFFFFFFF,
+    struct Wheel : public SimplePhysicObj {
+        enum WheelSteering : int32_t {
+            STEERING_NO = 0x0000,
+            STEERING_CORRECT = 0x0001,
+            STEERING_INVERSE = 0xff,
         };
-
-    public:
-        void BreakModel();
-        Wheel(WheelPrototypeInfo const &);
-        virtual WheelPrototypeInfo const * GetPrototypeInfo() const ;
-        virtual void RelinkGeomsToCollisionCells();
-        SphericBody const * _SphericBody() const ;
-        virtual m3d::Class * GetClass() const ;
-        virtual void LinkGeomsToCollisionCells();
-        bool AttachToPhysicObj(PhysicObj const *);
-        float GetWidth() const ;
-        virtual CVector GetDirection() const ;
-        void CreateSuspensionNode();
-        virtual void SaveRuntimeValues(m3d::cmn::XmlFile *,m3d::cmn::XmlNode *) const ;
-        virtual bool CanChildBeAdded(m3d::Class *) const ;
-        Vehicle * GetVehicle() const ;
-        void SetInitialRotation(Quaternion const &);
-        virtual void RenderDebugInfo() const ;
-        virtual void Remove();
-        virtual void Update(float,unsigned int);
-        void HealModel();
-        void DetachFromPhysicObj();
-        virtual void SetPassedToAnotherMapStatus();
-        virtual void LoadRuntimeValues(m3d::cmn::XmlFile *,m3d::cmn::XmlNode const *);
-        virtual void UnlinkGeomsFromCollisionCells();
-        static m3d::Class * GetBaseClass();
-        float GetRadius() const ;
-
-    protected:
-        virtual void _InternalCreateVisualPart();
-        virtual ~Wheel();
-
-    private:
-        static m3d::Object * CreateObject();
-        virtual m3d::Object * Clone();
-
-    private:
-        dxJoint *m_jointID;
-        int m_driven;
-        WheelSteering m_steering;
-        m3d::SgNode *m_SplashEffect;
-        __int16 m_SplashType;
-        bool m_MakeSplash;
-        unsigned int m_wheelType;
-        float m_curAngle;
-        bool m_bModelBroken;
-        m3d::SgNode *m_suspensionNode;
-        Quaternion m_initialRotation;
+        /* Size=0x178 */
+        /* 0x0000: fields for SimplePhysicObj */
+        /* 0x0144 */ dxJoint* m_jointID;
+        /* 0x0148 */ int32_t m_driven;
+        /* 0x014c */ WheelSteering m_steering;
+        /* 0x0150 */ m3d::SgNode* m_SplashEffect;
+        /* 0x0154 */ int16_t m_SplashType;
+        /* 0x0156 */ bool m_MakeSplash;
+        /* 0x0158 */ uint32_t m_wheelType;
+        /* 0x015c */ float m_curAngle;
+        /* 0x0160 */ bool m_bModelBroken;
+        /* 0x0164 */ m3d::SgNode* m_suspensionNode;
+        /* 0x0168 */ Quaternion m_initialRotation;
+        static m3d::Class m_classWheel;
+        static const CVector AXIS_FOR_WHEEL;
+        static const float STEERING_LIMIT;
     };
 
 	ASSERT_SIZE(ai::Wheel, 0x178);

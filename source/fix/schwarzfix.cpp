@@ -54,8 +54,7 @@ namespace kraken::fix::schwarzfix {
         const ai::GadgetPrototypeInfo* gprotinfo = gadget->GetPrototypeInfo();
         CStr modificator = gprotinfo->m_modifications[0].m_propertyName;
 
-        LOG_INFO("--- Common Gadget id%d #%d (1st mod: %s), RawPrice: %d ---",
-            gadget_id,
+        LOG_INFO("--- Common Gadget #%d (1st mod: %s), RawPrice: %d ---",
             gadget->m_slotNum,
             modificator.charPtr,
             gprice);
@@ -65,13 +64,14 @@ namespace kraken::fix::schwarzfix {
         {
             if (significant_modifiers.find((std::string)modification.m_propertyName) != significant_modifiers.end())
             {
-                return gadget->GetPrice(0);
+                return gprice;
             }
             else
             {
                 continue;
             }
         }
+        LOG_WARNING("Common Gadget ignored in schwarz, doesn't have significant modifiers");
         return 0;
 
         // | GADGETS AFFECTING BALANCE |
@@ -97,8 +97,7 @@ namespace kraken::fix::schwarzfix {
         const ai::GadgetPrototypeInfo* gprotinfo = gadget->GetPrototypeInfo();
         CStr modificator = gprotinfo->m_modifications[0].m_propertyName;
 
-        LOG_INFO("--- Weapon Gadget id%d #%d (1st mod: %s), RawPrice: %d ---",
-            gadget_id,
+        LOG_INFO("--- Weapon Gadget id #%d (1st mod: %s), RawPrice: %d ---",
             gadget->m_slotNum,
             modificator.charPtr,
             gprice);
@@ -109,13 +108,14 @@ namespace kraken::fix::schwarzfix {
         {
             if (significant_modifiers.find((std::string)modification.m_propertyName) != significant_modifiers.end())
             {
-                return gadget->GetPrice(0);
+                return gprice;
             }
             else
             {
                 continue;
             }
         }
+        LOG_WARNING("Weapon Gadget ignored in schwarz, doesn't have significant modifiers");
         return 0;
 
     }
@@ -126,6 +126,7 @@ namespace kraken::fix::schwarzfix {
         auto overriden_schwarz = schwarz_overrides.find((std::string)prot_name);
         if (overriden_schwarz != schwarz_overrides.end())
         {
+            LOG_DEBUG("Override price provided: %d", overriden_schwarz->second);
             return overriden_schwarz->second;
         }
         return 0;
@@ -138,45 +139,53 @@ namespace kraken::fix::schwarzfix {
 
         float condition = part_durability / part_max_durability;
 
-        LOG_DEBUG("Dur: %.2f, MaxDur: %.2f, Gun Condition: %.2f",
+        if (condition <= 0.01)
+        {
+            LOG_WARNING("Ignoring in Schwarz calculation, very low condition");
+            return 0;
+        }
+
+        uint32_t base_price{};
+        uint32_t overriden_base_schwarz = GetOverridenPrice(gun);
+        if (overriden_base_schwarz != 0)
+        {
+            base_price = overriden_base_schwarz;
+        }
+        else
+        {
+            base_price = gun->GetPrice(0); // TODO: very much possible that this doesn't work correctly for Compound Guns
+        }
+
+        uint32_t shells_price{};
+        if (gun->GetPrototypeInfo()->m_WithShellsPoolLimit)
+        {
+            uint32_t shell_prot_id = gun->m_shellPrototypeId;
+            if (shell_prot_id != -1)
+            {
+                ai::PrototypeInfo* shell_prototype;
+                if ( !thePrototypeManager->m_prototypes.empty() && shell_prot_id < thePrototypeManager->m_prototypes.size() )
+                    shell_prototype = thePrototypeManager->m_prototypes[shell_prot_id];
+                else
+                    shell_prototype = 0;
+
+                if (shell_prototype)
+                {
+                    uint32_t base_shell_price = shell_prototype->m_price;
+                    uint32_t shells_in_pool = gun->m_ShellsInPool;
+                    uint32_t shells_total = shells_in_pool + gun->m_ShellsInCurrentCharge;
+                    shells_price = base_shell_price * shells_total;
+                }
+            }
+        }
+        LOG_DEBUG("[Base: %d, Shells: %d] Dur: %.2f, MaxDur: %.2f, Gun Condition: %.2f (condition ignored)",
+            base_price, shells_price,
             part_durability,
             part_max_durability,
             condition);
 
-        if (condition <= 0.01)
-        {
-            LOG_DEBUG("Ignoring in Schwarz calculation, low condition");
-            return 0;
-        }
+        return base_price + shells_price;
 
-        uint32_t overriden_base_schwarz = GetOverridenPrice(gun);
-        if (overriden_base_schwarz != 0)
-        {
-            uint32_t shells_price{};
-            if (gun->GetPrototypeInfo()->m_WithShellsPoolLimit)
-            {
-                uint32_t shell_prot_id = gun->m_shellPrototypeId;
-                if (shell_prot_id != -1)
-                {
-                    ai::PrototypeInfo* shell_prototype;
-                    if ( !thePrototypeManager->m_prototypes.empty() && shell_prot_id < thePrototypeManager->m_prototypes.size() )
-                        shell_prototype = thePrototypeManager->m_prototypes[shell_prot_id];
-                    else
-                        shell_prototype = 0;
 
-                    if (shell_prototype)
-                    {
-                        uint32_t base_shell_price = shell_prototype->m_price;
-                        uint32_t shells_in_pool = gun->m_ShellsInPool;
-                        uint32_t shells_total = shells_in_pool + gun->m_ShellsInCurrentCharge;
-                        shells_price = base_shell_price * shells_total;
-                    }
-                }
-            }
-            return overriden_base_schwarz + shells_price;
-
-        }
-        return gun->GetPrice(0);
     }
 
     uint32_t GetPartPrice(ai::VehiclePart* veh_part)
@@ -211,11 +220,14 @@ namespace kraken::fix::schwarzfix {
         }
         float part_durability = veh_part->m_durability.m_value.m_value;
         float condition_coeff = part_durability / part_max_durability;
-        LOG_DEBUG("Dur: %.2f, MaxDur: %.2f, PriceCoeff: %.2f",
+        uint32_t base_price = GetPartPrice(veh_part);
+        LOG_DEBUG("[Final: %.0f, Base: %d] Dur: %.2f, MaxDur: %.2f, PriceCoeff: %.2f",
+            base_price * condition_coeff,
+            base_price,
             part_durability,
             part_max_durability,
             condition_coeff);
-        return GetPartPrice(veh_part) * condition_coeff;
+        return base_price * condition_coeff;
     }
 
     uint32_t GetSchwarzOld(ai::Vehicle* vehicle)
@@ -260,12 +272,14 @@ namespace kraken::fix::schwarzfix {
             if (part_name.Equal("CHASSIS"))
             {
                 float condition_coeff = vehicle->GetHealth() / vehicle->GetMaxHealth();
-                chassis_price += GetPartPrice(veh_part) * condition_coeff;
-                LOG_DEBUG("HP: %.2f, MaxHP: %.2f, PriceCoeff: %.2f",
+                uint32_t base_price = GetPartPrice(veh_part); // TODO: remove additional vars with debug logs
+                chassis_price += base_price * condition_coeff;
+                LOG_DEBUG("[Final: %.0f, Base: %d] HP: %.2f, MaxHP: %.2f, PriceCoeff: %.2f",
+                    base_price * condition_coeff,
+                    base_price,
                     vehicle->GetHealth(),
                     vehicle->GetMaxHealth(),
                     condition_coeff);
-
             }
             else if (part_name.Equal("CABIN"))
             {
@@ -317,6 +331,7 @@ namespace kraken::fix::schwarzfix {
         }
 
         intermediate_schwarz = cab_price + basket_price + chassis_price;
+        LOG_DEBUG("Only cab+cargo+chassis: %d", intermediate_schwarz);
 
         uint32_t total_gadgets_schwarz{};
         uint32_t total_wares_schwarz{};
@@ -324,17 +339,29 @@ namespace kraken::fix::schwarzfix {
         {
             uint32_t max_gun_gadget_schwarz = guns_schwarz * gun_gadgets_max_schwarz_part;
             total_gadgets_schwarz += min(gun_gadgets_price, max_gun_gadget_schwarz);
+            LOG_DEBUG("[WeaponGadgets final: %d, Base: %d] WeaponGadgetMaxSchwarzPart (from base vehicle): %.2f",
+                min(gun_gadgets_price, max_gun_gadget_schwarz),
+                gun_gadgets_price,
+                gun_gadgets_max_schwarz_part);
         }
         if (common_gadgets_price)
         {
             uint32_t max_common_gadget_schwarz = intermediate_schwarz * common_gadgets_max_schwarz_part;
             total_gadgets_schwarz += min(common_gadgets_price, max_common_gadget_schwarz);
+            LOG_DEBUG("[CommonGadgets final: %d, Base: %d] CommonGadgetMaxSchwarzPart (from base vehicle): %.2f",
+                min(common_gadgets_price, max_common_gadget_schwarz), // remove all debug duplication of calculations
+                common_gadgets_price,
+                max_common_gadget_schwarz);
         }
 
         if (wares_price)
         {
             uint32_t maximum_wares_part_of_schwarz = intermediate_schwarz * wares_max_schwarz_part;
             total_wares_schwarz = min(wares_price, maximum_wares_part_of_schwarz);
+            LOG_DEBUG("[Wares final: %d, Base: %d] WaresMaxSchwarzPart: %.2f",
+                total_wares_schwarz,
+                wares_price,
+                wares_max_schwarz_part);
             intermediate_schwarz += total_wares_schwarz;
         }
 
