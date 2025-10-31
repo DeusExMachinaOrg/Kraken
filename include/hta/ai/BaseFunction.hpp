@@ -1,6 +1,6 @@
 #pragma once
 
-namespace hta::ai {
+namespace ai {
     struct BaseFunction {
         /* Size=0x4 */
 

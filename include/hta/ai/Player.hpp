@@ -1,11 +1,10 @@
 #pragma once
 #include "hta/Game.h"
 #include "hta/ai/Vehicle.h"
-#include "ai/FuncPtr.hpp"
+#include "hta/ai/FuncPtr.hpp"
 
 namespace ai
 {
-
 	template<typename T>
     struct NumericBoundedBelow : public Component<T> {
         /* Size=0x78 (120 bytes) */

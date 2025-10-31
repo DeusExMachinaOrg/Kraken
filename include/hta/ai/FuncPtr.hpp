@@ -3,7 +3,7 @@
 #include "ai/BaseFunction.hpp"
 #include "stdafx.hpp"
 
-namespace hta::ai {
+namespace ai {
     template <typename T>
     struct FuncPtr {
         /* Size=0x8 */

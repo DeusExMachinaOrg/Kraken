@@ -133,8 +133,8 @@ namespace kraken::fix::schwarzfix {
 
     uint32_t GetGunPartPrice(ai::Gun* gun)
     {
-        uint32_t part_durability = gun->m_durability.m_value.m_value;
-        uint32_t part_max_durability = gun->m_durability.m_maxValue.m_value;
+        float part_durability = gun->m_durability.m_value.m_value;
+        float part_max_durability = gun->m_durability.m_maxValue.m_value;
 
         float condition = part_durability / part_max_durability;
 
@@ -218,6 +218,30 @@ namespace kraken::fix::schwarzfix {
         return GetPartPrice(veh_part) * condition_coeff;
     }
 
+    uint32_t GetSchwarzOld(ai::Vehicle* vehicle)
+    {
+        LOG_DEBUG("> GetSchwarz Original <");
+
+        uint32_t vanilla_schwarz{};
+        uint32_t vanilla_base_price = vehicle->GetPrice(0);
+
+        float full_max_durability{};
+        float full_cur_durability{};
+ 
+        full_max_durability = vehicle->GetMaxFullDurability();
+        full_cur_durability = vehicle->GetFullDurability();
+        
+        float full_dur_price_coeff{};
+        if (full_max_durability >= 0.001)
+            full_dur_price_coeff = full_cur_durability / full_max_durability;
+
+        vanilla_schwarz = (uint32_t)(vanilla_base_price * full_dur_price_coeff);
+
+        LOG_WARNING("----- Vanilla Schwarz: %d, Base Price: %d, dur_coeff: %.2f (~%.2f/%.2f) -----",
+            vanilla_schwarz, vanilla_base_price, full_dur_price_coeff, full_cur_durability, full_max_durability);
+        return vanilla_schwarz;
+    }
+
     uint32_t __fastcall GetComplexSchwarz(ai::Vehicle* vehicle, void* _)
     {
         LOG_DEBUG("> GetComplexSchwarz <");
@@ -290,6 +314,7 @@ namespace kraken::fix::schwarzfix {
         intermediate_schwarz = cab_price + basket_price + chassis_price;
 
         uint32_t total_gadgets_schwarz{};
+        uint32_t total_wares_schwarz{};
         if (gun_gadgets_price)
         {
             uint32_t max_gun_gadget_schwarz = guns_schwarz * gun_gadgets_max_schwarz_part;
@@ -304,135 +329,17 @@ namespace kraken::fix::schwarzfix {
         if (wares_price)
         {
             uint32_t maximum_wares_part_of_schwarz = intermediate_schwarz * wares_max_schwarz_part;
-            intermediate_schwarz += min(wares_price, maximum_wares_part_of_schwarz);
+            total_wares_schwarz = min(wares_price, maximum_wares_part_of_schwarz);
+            intermediate_schwarz += total_wares_schwarz;
         }
+
+        intermediate_schwarz += guns_schwarz;
+
+        GetSchwarzOld(vehicle);
+        LOG_WARNING("----- New Schwarz: %.1f (Schwarz Parts: CAB %d + BASKET %d + CHASSIS %d + GUNS %d + GADGETS %d + WARES %d) -----",
+            intermediate_schwarz, cab_price, basket_price, chassis_price, guns_schwarz, total_gadgets_schwarz, total_wares_schwarz);
 
         return (uint32_t)intermediate_schwarz;
-    }
-
-    // TODO: delete
-    uint32_t __fastcall GetSchwarzOldDraft(ai::Vehicle* vehicle, void* _)
-    {
-        LOG_DEBUG("> GetSchwarz <");
-        LOG_WARNING("----- %s -----", vehicle->name);
-        CStr vname = vehicle->name;
-
-        uint32_t new_schwarz{};
-        uint32_t total_price_by_game{};
-
-        float hp_coeff = vehicle->GetHealth() / vehicle->GetMaxHealth();
-
-        float base_schwarz_part = 0.5f;
-        float armor_schwarz_part = 1.0f - base_schwarz_part;
-
-        float totalPrice{};
-        
-        std::unordered_map<CStr, ai::VehiclePart *> weapons;
-        std::unordered_set<CStr> equiped_weapon_types;
-
-        for (const auto& [part_name, veh_part] : vehicle->m_vehicleParts) {
-            LOG_INFO("--- %s ---", veh_part->m_modelname);
-
-            float part_condition_price_coeff;
-            float part_durability = veh_part->m_durability.m_value.m_value;
-            float part_max_durability = veh_part->m_durability.m_maxValue.m_value;
-
-            if (part_name.Equal("CHASSIS"))
-            {
-                part_condition_price_coeff = hp_coeff;
-                LOG_DEBUG("Skipping dur check for chassis");
-            }
-            else if (part_max_durability >= 0.001)
-            {
-                if (part_name.In({"CABIN", "BASKET"}))
-                {
-                    part_condition_price_coeff = part_durability / part_max_durability;
-                    LOG_DEBUG("Dur: %.2f, MaxDur: %.2f, PriceCoeff: %.2f",
-                        part_durability,
-                        part_max_durability,
-                        part_condition_price_coeff);
-                }
-                else // a gun
-                {
-                    const ai::VehiclePartPrototypeInfo* gun_protinfo = veh_part->GetPrototypeInfo();
-                    // equiped_weapon_types.emplace(gun_protinfo)
-                    
-                    part_condition_price_coeff = part_durability / part_max_durability;
-                    if (part_condition_price_coeff >= 0.05) // let's try to only apply coeff to guns that are almost broken
-                    {
-                        part_condition_price_coeff = 1.0;
-                    }
-                    LOG_DEBUG("Dur: %.2f, MaxDur: %.2f, Gun PriceCoeff: %.2f",
-                        part_durability,
-                        part_max_durability,
-                        part_condition_price_coeff);
-
-                }
-            }
-            else
-            {
-                part_condition_price_coeff = 0.0;
-                LOG_WARNING(
-                    "Part '%s' has ~0 max durability and is not CHASSIS, so will not be correctly processed",
-                    part_name.charPtr);
-                continue;
-            }
-
-            float price_coeff = 1.0; // veh_part->GetPriceCoeff(0) will always == 1.0
-
-            float part_price = veh_part->m_price.m_value;
-            float schwarz_recalculated_float = price_coeff * part_condition_price_coeff * part_price;
-            int schwarz_recalculated;
-            if (schwarz_recalculated_float >= 1.0)
-                schwarz_recalculated = (int)schwarz_recalculated_float;
-            else
-                schwarz_recalculated = 1;
-            float price_by_game_actual = (float)veh_part->GetPrice(0);
-
-            // TODO: check usage of GetPrice specific for Gun class (that also takes shells into account)
-            LOG_DEBUG("Vanilla GetPrice of '%s' is %d (raw price is %.2f, recalculated schwarz is %d)",
-                part_name.charPtr, // TODO: Plain said this is very naughty
-                veh_part->GetPrice(0),
-                part_price,
-                schwarz_recalculated);
-
-            total_price_by_game += veh_part->GetPrice(0);
-            new_schwarz += schwarz_recalculated;
-        }
-
-
-        for (const auto& [gadget_id, gadget] : vehicle->m_gadgets){
-            // gadget_id/slot 0 - 4 (COMMON), slot 5 - 9 (WEAPON)
-            if (gadget_id <= GadgetId::GADGET_COMMON_MAX)
-            {
-                new_schwarz += GetCommonGadgetSchwarz(gadget, gadget_id);
-            }
-            else
-            {
-                new_schwarz += GetWeaponGadgetSchwarz(gadget, gadget_id);
-            }
-        }
-
-        uint32_t vanilla_schwarz{};
-        uint32_t vanilla_base_price = vehicle->GetPrice(0);
-
-        float full_max_durability{};
-        float full_cur_durability{};
- 
-        full_max_durability = vehicle->GetMaxFullDurability();
-        full_cur_durability = vehicle->GetFullDurability();
-        
-        float full_dur_price_coeff{};
-        if (full_max_durability >= 0.001)
-            full_dur_price_coeff = full_cur_durability / full_max_durability;
-
-        vanilla_schwarz = (uint32_t)(vanilla_base_price * full_dur_price_coeff);
-
-        LOG_WARNING("----- New Schwarz: %d (vanilla total price: %d) -----",
-            new_schwarz, total_price_by_game);
-        LOG_WARNING("----- Vanilla Schwarz: %d, Base Price: %d, dur_coeff: %.2f (~%.2f/%.2f) -----",
-            vanilla_schwarz, vanilla_base_price, full_dur_price_coeff, full_cur_durability, full_max_durability);
-        return new_schwarz;
     }
 
     int32_t __fastcall _CalcReward(ai::DynamicQuestPeace* quest, void* _) // ai::DynamicQuestPeace
