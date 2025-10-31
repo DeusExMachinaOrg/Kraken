@@ -15,7 +15,7 @@ namespace hta {
 
     template<typename T>
     struct vector {
-        char pad[3];
+        char pad[4];
         T* _Myfirst;
         T* _Mylast;
         T* _Myend;
