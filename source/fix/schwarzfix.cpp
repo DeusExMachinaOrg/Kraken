@@ -261,6 +261,11 @@ namespace kraken::fix::schwarzfix {
             {
                 float condition_coeff = vehicle->GetHealth() / vehicle->GetMaxHealth();
                 chassis_price += GetPartPrice(veh_part) * condition_coeff;
+                LOG_DEBUG("HP: %.2f, MaxHP: %.2f, PriceCoeff: %.2f",
+                    vehicle->GetHealth(),
+                    vehicle->GetMaxHealth(),
+                    condition_coeff);
+
             }
             else if (part_name.Equal("CABIN"))
             {
