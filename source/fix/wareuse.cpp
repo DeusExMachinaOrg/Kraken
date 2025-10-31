@@ -1,7 +1,7 @@
 #include "fix/wareuse.hpp"
 #include "hta/m3d/CMiracle3d.h"
 #include "hta/ai/PrototypeManager.h"
-#include "hta/ai/Player.h"
+#include "hta/ai/Player.hpp"
 #include "configstructs.hpp"
 #include "routines.hpp"
 

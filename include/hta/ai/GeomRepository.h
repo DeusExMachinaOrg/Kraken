@@ -20,7 +20,7 @@ namespace ai
         /* 0x005c */ int32_t m_vehicleId;
         /* 0x0060 */ SortStyle m_sortStyle;
         static m3d::Class m_classGeomRepository;
-
+		
 		void GiveUpThingByObjId(int objId)
 		{
 			FUNC(0x006CAFA0, void, __thiscall, _OnMouseButton0, GeomRepository*, int);

@@ -98,7 +98,9 @@ set(HEADERS
     include/hta/ai/VehicleUpdater.h
     include/hta/ai/DrivingValues.h
     include/hta/ai/PrototypeManager.h
-    include/hta/ai/Player.h
+    include/hta/ai/Player.hpp
+    include/hta/ai/BaseFunction.hpp
+    include/hta/ai/FuncPtr.hpp
     include/hta/m3d/Object.h
     include/hta/m3d/RefCountedBase.h
     include/hta/m3d/Application.h

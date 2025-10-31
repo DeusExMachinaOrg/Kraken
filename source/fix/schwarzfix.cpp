@@ -13,7 +13,7 @@
 #include "hta/ai/ComplexPhysicObj.h"
 #include "fix/schwarzfix.hpp"
 #include "hta/ai/DynamicQuestPeace.hpp"
-#include "hta/ai/Player.h"
+#include "hta/ai/Player.hpp"
 
 enum GadgetId : __int32 // borrowed from CabinWnd::GadgetId
 {
@@ -61,7 +61,7 @@ namespace kraken::fix::schwarzfix {
             gprice);
 
         // TODO: allow to skip
-        for (auto modification : gprotinfo->m_modifications)
+        for (auto& modification : gprotinfo->m_modifications)
         {
             if (significant_modifiers.find((std::string)modification.m_propertyName) != significant_modifiers.end())
             {
@@ -105,7 +105,7 @@ namespace kraken::fix::schwarzfix {
 
 
         // TODO: allow to skip
-        for (auto modification : gprotinfo->m_modifications)
+        for (auto& modification : gprotinfo->m_modifications)
         {
             if (significant_modifiers.find((std::string)modification.m_propertyName) != significant_modifiers.end())
             {
@@ -275,7 +275,7 @@ namespace kraken::fix::schwarzfix {
 
             if (num_items)
             {
-                for (auto item : vehicle->m_repository->m_slots)
+                for (auto& item : vehicle->m_repository->m_slots)
                 {
                     ai::Obj* obj = item.GetObj();
                     if (obj)
@@ -456,6 +456,18 @@ namespace kraken::fix::schwarzfix {
             
 
         return -min(calculated_from_player, protInfo->m_minReward);
+    }
+
+    uint32_t GetSchwarz(ai::Player* player) 
+    {
+        uint32_t schwarz;
+        ai::Vehicle *vehicle;
+
+        schwarz = no_money_in_player_schwarz ? 0 : player->m_money.m_value.m_value;
+        vehicle = player->GetVehicle();
+        if ( vehicle )
+            schwarz += vehicle->GetSchwarz();
+        return schwarz;
     }
 
     void Apply() {

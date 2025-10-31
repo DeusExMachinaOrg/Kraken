@@ -396,6 +396,12 @@ namespace ai
 			return _GetCruisingSpeed(this);
 		}
 
+		uint32_t GetSchwarz() 
+		{
+			FUNC(0x005E0DB0, uint32_t, __thiscall, _GetSchwarz, Vehicle*);
+			return _GetSchwarz(this);
+		}
+
 		ai::Wheel* GetFirstExistingWheel()
 		{
 			FUNC(0x005D5C60, ai::Wheel*, __thiscall, _GetFirstExistingWheel, Vehicle*);
