@@ -437,7 +437,7 @@ namespace kraken::fix::complexschwarz {
         intermediate_schwarz += guns_schwarz;
 
         GetSchwarzOld(vehicle);
-        LOG_WARNING("----- New Schwarz: %.0f (Schwarz Parts: CAB %d + BASKET %d + CHASSIS %d + GUNS %d + GADGETS %d + WARES %d) -----",
+        LOG_WARNING("----- New Schwarz: %d (Schwarz Parts: CAB %d + BASKET %d + CHASSIS %d + GUNS %d + GADGETS %d + WARES %d) -----",
             intermediate_schwarz, cab_price, basket_price, chassis_price, guns_schwarz, total_gadgets_schwarz, total_wares_schwarz);
 
         return intermediate_schwarz;
