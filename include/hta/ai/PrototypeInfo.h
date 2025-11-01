@@ -2,8 +2,19 @@
 #include "hta/CStr.h"
 #include "m3d/Object.h"
 
+namespace m3d
+{
+    namespace cmn
+    {
+        struct XmlFile;
+        struct XmlNode;
+        struct Class;
+    }
+}
+
 namespace ai
 {
+    struct Obj;
 
     struct PrototypeInfo {
         /* Size=0x40 */
@@ -18,6 +29,22 @@ namespace ai
         /* 0x002c */ bool m_bIsAbstract;
         /* 0x0030 */ CStr m_parentPrototypeName;
         /* 0x003c */ m3d::Class* m_protoClassObject;
+
+        PrototypeInfo();
+        PrototypeInfo(const PrototypeInfo&);
+        virtual ~PrototypeInfo();
+        virtual bool LoadFromXML(m3d::cmn::XmlFile*, const m3d::cmn::XmlNode*);
+        virtual void PostLoad();
+        virtual void RefreshFromXml(m3d::cmn::XmlFile*, const m3d::cmn::XmlNode*);
+        virtual Obj* CreateTargetObject() const;
+        bool bIsAbstract() const;
+        const CStr& GetParentPrototypeName() const;
+        virtual uint32_t GetBasePrice() const;
+        void CopyFrom(const PrototypeInfo&);
+        CStr GetDebugDescription() const;
+        bool IsPrototypeOf(const m3d::Class*) const;
+        virtual void _InternalCopyFrom(const PrototypeInfo&);
     };
+
     static_assert(sizeof(PrototypeInfo) == 0x40);
 }

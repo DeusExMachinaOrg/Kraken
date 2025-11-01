@@ -14,6 +14,7 @@
 #include "fix/schwarzfix.hpp"
 #include "hta/ai/DynamicQuestPeace.hpp"
 #include "hta/ai/Player.hpp"
+#include "hta/ai/CompoundGun.hpp"
 
 enum GadgetId : __int32 // borrowed from CabinWnd::GadgetId
 {
@@ -132,6 +133,65 @@ namespace kraken::fix::schwarzfix {
         return 0;
     }
 
+    uint32_t GetCompoundGunPartPrice(ai::CompoundGun* gun)
+    {
+        float part_durability = gun->GetDurability();
+        float part_max_durability = gun->GetMaxDurability();
+
+        float condition = part_durability / part_max_durability;
+
+        if (condition <= 0.01)
+        {
+            LOG_WARNING("Ignoring in Schwarz calculation, very low condition");
+            return 0;
+        }
+
+        uint32_t base_price{};
+        uint32_t overriden_base_schwarz = GetOverridenPrice(gun);
+        if (overriden_base_schwarz != 0)
+        {
+            base_price = overriden_base_schwarz;
+        }
+        else
+        {
+            base_price = gun->m_price.m_value;
+        }
+
+        uint32_t shells_price{};
+        if (gun->IsWithCharging())
+        {
+            if (gun->IsWithShellsPoolLimit())
+            {
+                uint32_t shell_prot_id = gun->GetShellPrototypeId();
+                if (shell_prot_id != -1)
+                {
+                    ai::PrototypeInfo* shell_prototype;
+                    if ( !thePrototypeManager->m_prototypes.empty() && shell_prot_id < thePrototypeManager->m_prototypes.size() )
+                        shell_prototype = thePrototypeManager->m_prototypes[shell_prot_id];
+                    else
+                        shell_prototype = 0;
+
+                    if (shell_prototype)
+                    {
+                        uint32_t base_shell_price = shell_prototype->m_price;
+                        uint32_t shells_in_pool = gun->GetShellsInPool();
+                        uint32_t shells_total = shells_in_pool + gun->GetShellsInCurrentCharge();
+                        shells_price = base_shell_price * shells_total;
+                    }
+                }
+            }
+        }
+        LOG_DEBUG("[Base: %d, Shells: %d] Dur: %.2f, MaxDur: %.2f, CompoundGun Condition: %.2f (condition ignored)",
+            base_price, shells_price,
+            part_durability,
+            part_max_durability,
+            condition);
+
+        return base_price + shells_price;
+
+
+    }
+
     uint32_t GetGunPartPrice(ai::Gun* gun)
     {
         float part_durability = gun->m_durability.m_value.m_value;
@@ -153,7 +213,7 @@ namespace kraken::fix::schwarzfix {
         }
         else
         {
-            base_price = gun->GetPrice(0); // TODO: very much possible that this doesn't work correctly for Compound Guns
+            base_price = gun->m_price.m_value;
         }
 
         uint32_t shells_price{};
@@ -184,8 +244,6 @@ namespace kraken::fix::schwarzfix {
             condition);
 
         return base_price + shells_price;
-
-
     }
 
     uint32_t GetPartPrice(ai::VehiclePart* veh_part)
@@ -256,6 +314,11 @@ namespace kraken::fix::schwarzfix {
 
     uint32_t __fastcall GetComplexSchwarz(ai::Vehicle* vehicle, void* _)
     {
+        if (!complex_schwarz)
+        {
+            return GetSchwarzOld(vehicle);
+        }
+
         LOG_DEBUG("> GetComplexSchwarz <");
         LOG_WARNING("----- %s -----", vehicle->name);
 
@@ -289,8 +352,13 @@ namespace kraken::fix::schwarzfix {
             {
                 basket_price += GetDurablePartSchwarz(veh_part);
             }
-            else // a gun
+            else if (veh_part->IsKindOf(0x00A024D0)) //ai::CompoundGun*
             {
+                guns_schwarz += GetCompoundGunPartPrice(reinterpret_cast<ai::CompoundGun*>(veh_part));
+            }
+            else // a normal gun
+            {
+                m3d::Class* pclass = veh_part->GetClass();
                 guns_schwarz += GetGunPartPrice(reinterpret_cast<ai::Gun*>(veh_part));
             }
         }
@@ -331,7 +399,7 @@ namespace kraken::fix::schwarzfix {
         }
 
         intermediate_schwarz = cab_price + basket_price + chassis_price;
-        LOG_DEBUG("Only cab+cargo+chassis: %d", intermediate_schwarz);
+        LOG_DEBUG("Only cab+cargo+chassis: %.0f", intermediate_schwarz);
 
         uint32_t total_gadgets_schwarz{};
         uint32_t total_wares_schwarz{};
@@ -368,7 +436,7 @@ namespace kraken::fix::schwarzfix {
         intermediate_schwarz += guns_schwarz;
 
         GetSchwarzOld(vehicle);
-        LOG_WARNING("----- New Schwarz: %.1f (Schwarz Parts: CAB %d + BASKET %d + CHASSIS %d + GUNS %d + GADGETS %d + WARES %d) -----",
+        LOG_WARNING("----- New Schwarz: %.0f (Schwarz Parts: CAB %d + BASKET %d + CHASSIS %d + GUNS %d + GADGETS %d + WARES %d) -----",
             intermediate_schwarz, cab_price, basket_price, chassis_price, guns_schwarz, total_gadgets_schwarz, total_wares_schwarz);
 
         return (uint32_t)intermediate_schwarz;

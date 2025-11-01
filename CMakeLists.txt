@@ -68,6 +68,8 @@ set(HEADERS
     include/hta/ai/DecalData.h
     include/hta/ai/dMass.h
     include/hta/ai/Geom.h
+    include/hta/ai/CompoundGun.hpp
+    include/hta/ai/CompoundVehiclePart.hpp
     include/hta/ai/GeometryInfo.h
     include/hta/ai/GeomRepository.h
     include/hta/ai/GeomRepositoryItem.h

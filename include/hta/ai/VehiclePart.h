@@ -73,9 +73,9 @@ namespace ai
 		stable_size_vector<ai::VehiclePart::LoadDecalData> m_loadDecalsData;
 		int m_ownerCompoundPart;
 
-		__int32 GetPrice(const ai::IPriceCoeffProvider* provider)
+		uint32_t GetPrice(const ai::IPriceCoeffProvider* provider)
 		{
-			FUNC(0x006CF0C0, __int32, __thiscall, _GetPrice, VehiclePart*, const ai::IPriceCoeffProvider*);
+			FUNC(0x006CF0C0, uint32_t, __thiscall, _GetPrice, VehiclePart*, const ai::IPriceCoeffProvider*);
 			return _GetPrice(this, provider);
 		}
 
