@@ -461,7 +461,7 @@ namespace kraken::fix::schwarzfix {
         return -min(calculated_from_player, protInfo->m_minReward);
     }
 
-    uint32_t GetSchwarz(ai::Player* player) 
+    uint32_t __fastcall GetSchwarz(ai::Player* player) 
     {
         uint32_t schwarz{};
         ai::Vehicle *vehicle;
@@ -485,5 +485,7 @@ namespace kraken::fix::schwarzfix {
         no_money_in_player_schwarz = config.no_money_in_player_schwarz.value;
 
         kraken::routines::Redirect(0x0088, (void*) 0x005E0DB0, (void*) &GetComplexSchwarz);
+        kraken::routines::Redirect(0x0088, (void*) 0x00746D50, (void*) &_CalcReward);
+        kraken::routines::Redirect(0x0088, (void*) 0x00651380, (void*) &GetSchwarz);
     }
 }

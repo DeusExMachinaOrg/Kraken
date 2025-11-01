@@ -30,7 +30,7 @@ namespace kraken {
         this->objcontupgrade     = { "constants", "obj_cont_upgrade",1,     true,  0,     1     };
         this->show_load_every    = { "constants", "show_load_every", 100,   true,  0,     uint32_t(-1)};
 
-        this->peace_price_from_schwarz          = { "schwarz", "calc_peace_price_from_schwarz",   true };
+        this->peace_price_from_schwarz          = { "schwarz", "calc_peace_price_from_schwarz",   false };
         this->no_money_in_player_schwarz        = { "schwarz", "no_money_in_player_schwarz",      true };
         
         this->complex_schwarz                   = { "schwarz", "complex_schwarz",                 true };
