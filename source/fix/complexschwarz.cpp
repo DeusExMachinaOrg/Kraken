@@ -11,7 +11,7 @@
 #include "hta/ai/Vehicle.h"
 #include "hta/ai/VehiclePart.h"
 #include "hta/ai/ComplexPhysicObj.h"
-#include "fix/schwarzfix.hpp"
+#include "fix/complexschwarz.hpp"
 #include "hta/ai/DynamicQuestPeace.hpp"
 #include "hta/ai/Player.hpp"
 #include "hta/ai/CompoundGun.hpp"
@@ -33,7 +33,7 @@ std::unordered_set<std::string> significant_modifiers = {
     "GadgetAntiMissileRadius", // common
 };
 
-namespace kraken::fix::schwarzfix {
+namespace kraken::fix::complexschwarz {
     static inline ai::PrototypeManager*& thePrototypeManager = *(ai::PrototypeManager**)0x00A18AA8;
     static inline ai::DynamicScene*& gDynamicScene = *(ai::DynamicScene**)0x00A12958;
     static inline ai::Player*& thePlayer = *(ai::Player**)0x00A135E4;

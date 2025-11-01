@@ -25,7 +25,7 @@ set(SOURCES
     source/fix/recollectionfix.cpp
     source/fix/ultrawide.cpp
     source/fix/fastloading.cpp
-    source/fix/schwarzfix.cpp
+    source/fix/complexschwarz.cpp
 )
 
 # Header files
@@ -43,7 +43,7 @@ set(HEADERS
     include/fix/posteffectreload.hpp
     include/fix/ultrawide.hpp
     include/fix/fastloading.hpp
-    include/fix/schwarzfix.hpp
+    include/fix/complexschwarz.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
