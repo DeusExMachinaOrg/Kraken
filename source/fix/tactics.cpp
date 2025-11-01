@@ -7,6 +7,7 @@
 #include "hta/ai/Event.hpp"
 #include "hta/ai/Team.h"
 #include "hta/ai/ObjContainer.hpp"
+#include "hta/ai/StaticAutoGun.hpp"
 
 #include "fix/tactics.hpp"
 
@@ -38,10 +39,27 @@ namespace kraken::fix::tactics {
         return vehicle->GetHealth() / vehicle->GetMaxHealth();
     }
 
+    float GetCurrentHealth(m3d::Object* obj)
+    {
+        if (obj) {
+            if (obj->IsKindOf(ai::Vehicle::m_classVehicle)) {
+                ai::Vehicle* vehicle = (ai::Vehicle*)obj;
+                return vehicle->GetHealth();
+            }
+            else if (obj->IsKindOf(ai::StaticAutoGun::m_classStaticAutoGun)) {
+                ai::StaticAutoGun* autoGun = (ai::StaticAutoGun*)obj;
+                return autoGun->Health().m_value.m_value;
+            }
+            else
+                return FLT_MAX; // Not vehicle (breakpoint)
+        }
+        return FLT_MAX;
+    }
+
     ai::Vehicle* GetVehicle(m3d::Object* obj)
     {
         if (obj) {
-            if (obj->GetClass() == (m3d::Class*)0x00A00914)
+            if (obj->IsKindOf(ai::Vehicle::m_classVehicle))
                 return (ai::Vehicle*)obj;
             else
                 return nullptr; // Not vehicle (breakpoint)
@@ -64,28 +82,28 @@ namespace kraken::fix::tactics {
         if (!role)
             return false;
 
-        const int currentTarget = role->m_TargetVehicleId;
+        const int current_target_id = role->m_TargetVehicleId;
         int attacker_id = evn->m_param1.id;
 
         // Same attacker, skip tactic change
-        if (attacker_id == currentTarget)
+        if (attacker_id == current_target_id)
             return true;
 
         // Lock on player vehicle
         if (lock_on_player) {
-            if (currentTarget == 1) // Ignore non-player attackers
+            if (current_target_id == 1) // Ignore non-player attackers
                 return true;
             if (attacker_id == 1) // Attack player
                 return false;
         }
 
-        ai::Vehicle* attacker_vehicle = GetVehicle(ai::ObjContainer::theObjects->GetEntityByObjId(attacker_id));
-        ai::Vehicle* current_target_vehicle = GetVehicle(ai::ObjContainer::theObjects->GetEntityByObjId(currentTarget));
-        if (!attacker_vehicle || !current_target_vehicle)
+        ai::Obj* attacker = ai::ObjContainer::theObjects->GetEntityByObjId(attacker_id);
+        ai::Obj* current_target = ai::ObjContainer::theObjects->GetEntityByObjId(current_target_id);
+        if (!attacker || !current_target)
             return false;
 
-        const float attacker_hp = attacker_vehicle->GetHealth();
-        const float current_target_hp = current_target_vehicle->GetHealth();
+        const float attacker_hp = GetCurrentHealth(attacker);
+        const float current_target_hp = GetCurrentHealth(current_target);
 
         // Change tactic if attacker HP < current target HP
         if (current_target_hp - attacker_hp < 1E-4)

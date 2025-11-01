@@ -51,6 +51,8 @@ namespace ai {
         virtual void _InternalCopyFrom(const PrototypeInfo&);
     };
 
+    static_assert(sizeof(PrototypeInfo) == 0x0040);
+
 
     struct Obj : m3d::Object {
         enum HierarchyType : int32_t {

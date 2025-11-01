@@ -229,7 +229,7 @@ namespace ai
         /* 0x04e0 */ CVector m_curSteeringForce;
         /* 0x04ec */ bool m_bCurSteeringForceValid;
         /* 0x04f0 */ int32_t m_soundRechargeChannelId;
-        static m3d::Class m_classVehicle;
+        inline static m3d::Class* m_classVehicle = (m3d::Class*)0x00A00914;
         static stable_size_map<CStr,int> m_propertiesMap;
         static stable_size_map<int,enum eGObjPropertySaveStatus> m_propertiesSaveStatesMap;
         static const int32_t NUM_GEARS;
