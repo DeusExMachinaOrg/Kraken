@@ -21,6 +21,16 @@ namespace ai {
         return _GetMaxFuel(this);
     };
 
+	float Vehicle::GetMaxFullDurability() const {
+		FUNC(0x0005D0D70, float, __thiscall, _GetMaxFullDurability, const Vehicle*);
+		return _GetMaxFullDurability(this);
+	}
+
+	float Vehicle::GetFullDurability() const {
+		FUNC(0x0005D0CF0, float, __thiscall, _GetFullDurability, const Vehicle*);
+		return _GetFullDurability(this);
+	}
+
     void Vehicle::ActivateHeadLights(bool bActivate) {
         FUNC(0x005DA130, void, __thiscall, _ActivateHeadLights, Vehicle*, bool);
         _ActivateHeadLights(this, bActivate);

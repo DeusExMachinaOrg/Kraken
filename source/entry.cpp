@@ -21,6 +21,7 @@
 #include "fix/kineticfriction.hpp"
 #include "fix/cardan.hpp"
 #include "fix/tactics.hpp"
+#include "fix/complexschwarz.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -70,5 +71,6 @@ namespace kraken {
         //fix::kineticfriction::Apply();
         fix::cardan::Apply();
         fix::tactics::Apply();
+        fix::complexschwarz::Apply();
     };
 };

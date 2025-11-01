@@ -1,28 +1,13 @@
 #pragma once
 #include "hta/ai/Obj.hpp"
+#include "hta/ai/PrototypeInfo.h"
 #include "utils.hpp"
+#include "Gun.hpp"
 
 namespace ai {
     struct Vehicle;
 
-    enum FiringTypes : int32_t {
-        FT_MACHINE_GUN = 0x0000,
-        FT_CANNON = 0x0001,
-        FT_SHOT_GUN = 0x0002,
-        FT_LASER = 0x0003,
-        FT_PLASMA = 0x0004,
-        FT_ROCKET = 0x0005,
-        FT_ARTILLERY = 0x0006,
-        FT_THUNDERBOLT = 0x0007,
-        FT_MINE = 0x0008,
-        FT_NAIL = 0x0009,
-        FT_TURBO = 0x000a,
-        FT_OIL = 0x000b,
-        FT_SMOKE = 0x000c,
-        FT_NUM_FIRING_TYPES = 0x000d,
-    };
-
-    class GadgetPrototypeInfo : public PrototypeInfo {
+    struct GadgetPrototypeInfo : public PrototypeInfo {
         enum GadgetAppliers : int32_t {
             GA_VEHICLE = 0x0000,
             GA_OBJECT_BY_RESOURCE = 0x0001,
@@ -70,7 +55,7 @@ namespace ai {
         virtual ~GadgetPrototypeInfo();
     };
 
-    class Gadget : public Obj {
+    struct Gadget : public Obj {
         /* Size=0xc4 */
         /* 0x0000: fields for Obj */
         /* 0x00c0 */ int32_t m_slotNum;

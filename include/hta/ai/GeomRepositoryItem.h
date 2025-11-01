@@ -1,6 +1,6 @@
 #pragma once
-#include "CVector.h"
-#include "Func.h"
+#include "hta/CVector.h"
+#include "hta/Func.h"
 #include "Obj.hpp"
 
 namespace ai
