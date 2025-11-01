@@ -81,7 +81,7 @@ namespace kraken::fix::wareuse {
             if (repositoryItem.IsValid())
             {
                 auto repositoryObj = repositoryItem.GetObj();
-                if (repositoryObj && repositoryObj->IsKindOf(0x00A0238C)) // Ware class
+                if (repositoryObj && repositoryObj->IsKindOf((m3d::Class*)0x00A0238C)) // Ware class
                 {
                     CStr name;
                     ai::PrototypeManager::Instance->GetPrototypeName(&name, repositoryObj->m_prototypeId);
