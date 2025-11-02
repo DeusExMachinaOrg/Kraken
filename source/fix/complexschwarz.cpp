@@ -1,4 +1,4 @@
-#define LOGGER "SCHWARZ"
+#define LOGGER "schwarz"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -490,7 +490,7 @@ namespace kraken::fix::complexschwarz {
             if (veh_part->m_parentId != -1) // for hp condition checks we need parent vehicle
             {
                 ai::Obj* parent_obj = (ai::Obj*)ai::ObjContainer::theObjects->GetEntityByObjId(veh_part->m_parentId);
-                if (parent_obj->IsKindOf(0x00A00914)) //ai::Vehicle*
+                if (parent_obj->IsKindOf((m3d::Class*)0x00A00914)) //ai::Vehicle*
                 {
                     float health = reinterpret_cast<ai::Vehicle*>(parent_obj)->GetHealth();
                     float max_health = reinterpret_cast<ai::Vehicle*>(parent_obj)->GetMaxHealth();
