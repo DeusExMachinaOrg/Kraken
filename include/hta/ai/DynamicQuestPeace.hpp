@@ -2,22 +2,9 @@
 #include <hta/ai/PrototypeInfo.h>
 #include "Obj.hpp"
 #include "Event.hpp"
+#include "ObjContainer.hpp"
 
 namespace ai {
-
-    struct GameTime {
-        /* Size=0x18 */
-        /* 0x0008 */ int64_t m_milliSeconds;
-        /* 0x0010 */ int64_t m_milliSeconds0;
-
-        static const int64_t SecondBase;
-        static const int64_t MinuteBase;
-        static const int64_t HourBase;
-        static const int64_t DayBase;
-        static const int64_t MonthBase;
-        static const int64_t YearBase;
-    };
-
     enum FadingMsgId : int32_t {
         FM_CONVOY_FAILED = 0x0000,
         FM_HUNT_COMPLETED = 0x0001,
