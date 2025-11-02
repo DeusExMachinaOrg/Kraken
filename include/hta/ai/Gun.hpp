@@ -64,7 +64,7 @@ namespace ai
         bool m_WithShellsPoolLimit;
         int m_blastWavePrototypeId;
         FiringTypes m_firingType;
-        std::vector<CMatrix> m_fireLpMatrices;
+        stable_size_vector<CMatrix> m_fireLpMatrices;
         CStr m_explosionTypeName;
         CStr m_shellPrototypeName;
         CStr m_blastWavePrototypeName;
