@@ -24,7 +24,7 @@ namespace ai
 	    int m_engineModelId;
 	    CStr m_engineModelName;
 	    float m_massValue;
-	    std::vector<CollisionInfo> m_collisionInfos;
+	    stable_size_vector<CollisionInfo> m_collisionInfos;
 	    bool m_bCollisionTrimeshAllowed;
     };
 

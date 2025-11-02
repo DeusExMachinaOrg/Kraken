@@ -353,7 +353,7 @@ namespace kraken::fix::complexschwarz {
             {
                 basket_price += GetDurablePartSchwarz(veh_part);
             }
-            else if (veh_part->IsKindOf(0x00A024D0)) //ai::CompoundGun*
+            else if (veh_part->IsKindOf((m3d::Class*)0x00A024D0)) //ai::CompoundGun*
             {
                 guns_schwarz += GetCompoundGunPartPrice(reinterpret_cast<ai::CompoundGun*>(veh_part));
             }

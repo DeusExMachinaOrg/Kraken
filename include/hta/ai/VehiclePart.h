@@ -27,17 +27,17 @@ namespace ai
 	    int m_weaponPrototypeId;
 	    float m_durabilityCoeffsForDamageTypes[4];
 	    float m_durability;
-	    std::set<CStr> m_loadPoints;
+	    stable_size_set<CStr> m_loadPoints;
 	    CStr m_blowEffectName;
 	    bool m_canBeUsedInAutogenerating;
 	    float m_repairCoef;
-	    std::vector<TriMesh*> m_modelMeshes;
-	    std::vector<Box*> m_boundsForMeshes;
-	    std::vector<void*> m_verts;
-	    std::vector<int*> m_inds;
-	    std::vector<int> m_numsTris;
-	    std::vector<int> m_vertsStride;
-	    std::vector<float> m_groupHealthes;
+	    stable_size_vector<TriMesh*> m_modelMeshes;
+	    stable_size_vector<Box*> m_boundsForMeshes;
+	    stable_size_vector<void*> m_verts;
+	    stable_size_vector<int*> m_inds;
+	    stable_size_vector<int> m_numsTris;
+	    stable_size_vector<int> m_vertsStride;
+	    stable_size_vector<float> m_groupHealthes;
     };
 
 	ASSERT_SIZE(ai::VehiclePartPrototypeInfo, 0x110);
