@@ -6,6 +6,7 @@
 #include "configstructs.hpp"
 #include "ext/logger.hpp"
 #include "hta/CStr.h"
+#include "hta/ai/IPriceCoeffProvider.h"
 #include "hta/ai/PrototypeManager.h"
 #include "hta/ai/DynamicScene.hpp"
 #include "hta/ai/Vehicle.hpp"
@@ -15,6 +16,7 @@
 #include "hta/ai/DynamicQuestPeace.hpp"
 #include "hta/ai/Player.hpp"
 #include "hta/ai/CompoundGun.hpp"
+#include "hta/ai/ObjContainer.hpp"
 
 enum GadgetId : __int32 // borrowed from CabinWnd::GadgetId
 {
@@ -359,7 +361,7 @@ namespace kraken::fix::complexschwarz {
             }
             else // a normal gun
             {
-                m3d::Class* pclass = veh_part->GetClass();
+                // m3d::Class* pclass = veh_part->GetClass();
                 guns_schwarz += GetGunPartPrice(reinterpret_cast<ai::Gun*>(veh_part));
             }
         }
@@ -443,7 +445,7 @@ namespace kraken::fix::complexschwarz {
         return intermediate_schwarz;
     }
 
-    int32_t __fastcall _CalcReward(ai::DynamicQuestPeace* quest, void* _) // ai::DynamicQuestPeace
+    int32_t __fastcall _CalcRewardForPeace(ai::DynamicQuestPeace* quest, void* _) // ai::DynamicQuestPeace
     {
         int32_t calculated_from_player{};
       
@@ -462,7 +464,7 @@ namespace kraken::fix::complexschwarz {
         return -min(calculated_from_player, protInfo->m_minReward);
     }
 
-    uint32_t __fastcall GetSchwarz(ai::Player* player) 
+    uint32_t __fastcall GetPlayerSchwarz(ai::Player* player, void* _)
     {
         uint32_t schwarz{};
         ai::Vehicle *vehicle;
@@ -473,6 +475,37 @@ namespace kraken::fix::complexschwarz {
             schwarz += vehicle->GetSchwarz();
         return schwarz;
     }
+
+    uint32_t __fastcall GetVehiclePartPrice(ai::VehiclePart* veh_part, void* _, const ai::IPriceCoeffProvider* provider)
+    {
+        float price;
+        float condition_coeff{};
+        float raw_price;
+
+        raw_price = veh_part->m_price.m_value;
+        if ( veh_part->m_durability.m_maxValue.m_value >= 0.001f ) // use durability by default
+            condition_coeff = veh_part->m_durability.m_value.m_value / veh_part->m_durability.m_maxValue.m_value;
+        else if (complex_schwarz) // when complex schwarz is disabled, we want to keep vanilla logic
+        {
+            if (veh_part->m_parentId != -1) // for hp condition checks we need parent vehicle
+            {
+                ai::Obj* parent_obj = (ai::Obj*)ai::ObjContainer::theObjects->GetEntityByObjId(veh_part->m_parentId);
+                if (parent_obj->IsKindOf(0x00A00914)) //ai::Vehicle*
+                {
+                    float health = reinterpret_cast<ai::Vehicle*>(parent_obj)->GetHealth();
+                    float max_health = reinterpret_cast<ai::Vehicle*>(parent_obj)->GetMaxHealth();
+                    if (max_health >= 0.001f) // probably only true for chassis?
+                    {
+                        condition_coeff = health / max_health;
+                    }
+                }
+            }
+        }
+  
+        price = veh_part->GetPriceCoeff(provider) * condition_coeff * raw_price;
+        return price >= 1.0 ? (uint32_t)price : 1;
+    }
+
 
     void Apply() {
         const kraken::Config& config = kraken::Config::Get();
@@ -489,7 +522,8 @@ namespace kraken::fix::complexschwarz {
         no_money_in_player_schwarz = config.no_money_in_player_schwarz.value;
 
         kraken::routines::Redirect(0x0088, (void*) 0x005E0DB0, (void*) &GetComplexSchwarz);
-        kraken::routines::Redirect(0x0088, (void*) 0x00746D50, (void*) &_CalcReward);
-        kraken::routines::Redirect(0x0088, (void*) 0x00651380, (void*) &GetSchwarz);
+        kraken::routines::Redirect(0x0088, (void*) 0x00746D50, (void*) &_CalcRewardForPeace);
+        kraken::routines::Redirect(0x0088, (void*) 0x00651380, (void*) &GetPlayerSchwarz);
+        kraken::routines::Redirect(0x0020, (void*) 0x006CF0C0, (void*) &GetVehiclePartPrice);
     }
 }
