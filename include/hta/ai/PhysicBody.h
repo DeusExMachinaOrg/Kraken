@@ -12,6 +12,24 @@
 
 namespace ai
 {
+
+    struct PhysicBodyPrototypeInfo : PrototypeInfo
+    {
+	    // public:
+        virtual void RefreshFromXml(m3d::cmn::XmlFile*, m3d::cmn::XmlNode const*);
+        virtual bool LoadFromXML(m3d::cmn::XmlFile*, m3d::cmn::XmlNode const*);
+        PhysicBodyPrototypeInfo();
+
+	    // private:
+	    int m_engineModelId;
+	    CStr m_engineModelName;
+	    float m_massValue;
+	    std::vector<CollisionInfo> m_collisionInfos;
+	    bool m_bCollisionTrimeshAllowed;
+    };
+
+	ASSERT_SIZE(ai::PhysicBodyPrototypeInfo, 0x68);
+
 	struct PhysicBody : Obj
 	{
 		virtual void Dtor() = 0;

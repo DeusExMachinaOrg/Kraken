@@ -10,6 +10,7 @@
 #include "hta/m3d/Object.h"
 #include "hta/m3d/DbgCounter.h"
 #include "hta/ai/Geom.h"
+#include "hta/ai/PrototypeInfo.h"
 
 namespace m3d::cmn {
     struct XmlFile;
@@ -24,7 +25,7 @@ namespace ai {
     struct PhysicObjPrototypeInfo;
     struct PhysicObj;
 
-    class PhysicObjPrototypeInfo : public PrototypeInfo {
+    struct PhysicObjPrototypeInfo : public PrototypeInfo {
         /* Size=0x48 */
         /* 0x0000: fields for PrototypeInfo */
         /* 0x0040 */ public: float m_intersectionRadius;

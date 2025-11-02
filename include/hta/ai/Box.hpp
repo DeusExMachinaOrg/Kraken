@@ -5,7 +5,7 @@
 #include "hta/ai/Geom.h"
 
 namespace ai {
-    class Box : public Geom {
+    struct Box : public Geom {
         /* Size=0x18 */
         /* 0x0000: fields for ai::Geom */
 

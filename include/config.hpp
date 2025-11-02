@@ -3,6 +3,7 @@
 
 #include "stdafx.hpp"
 #include <vector>
+#include <unordered_map>
 #include "configstructs.hpp"
 
 namespace kraken {
@@ -65,6 +66,15 @@ namespace kraken {
         ConfigValue<uint32_t>                 cardan_fix;
         ConfigValue<uint32_t>                 tactics;
         ConfigValue<uint32_t>                 tactics_lock;
+
+        // Schwarz
+        ConfigValue<bool>                     complex_schwarz;
+        ConfigValue<float>                    gun_gadgets_max_schwarz_part;
+        ConfigValue<float>                    common_gadgets_max_schwarz_part;
+        ConfigValue<float>                    wares_max_schwarz_part;
+        ConfigValue<bool>                     peace_price_from_schwarz;
+        ConfigValue<bool>                     no_money_in_player_schwarz;
+        ConfigValue<std::unordered_map<std::string, uint32_t>> schwarz_overrides;
 
     public:
          Config();
