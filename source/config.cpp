@@ -33,6 +33,7 @@ namespace kraken {
         this->contact_surface_layer = { "glob_phys", "contact_surface_layer", 0.01,   true,  0,     1.0        };
         this->cfm                   = { "glob_phys", "cfm",                   0.0001, true,  0,     1.0        };
         this->erp                   = { "glob_phys", "erp",                   0.1,    true,  0,     1.0        };
+        this->wares                 = { "constants", "wares",                 0,      true,  0,     1          };
         Config::INSTANCE = this;
 
         this->Load();
@@ -70,6 +71,7 @@ namespace kraken {
         this->LoadValue(&this->erp);
         this->LoadValue(&this->tactics);
         this->LoadValue(&this->tactics_lock);
+        this->LoadValue(&this->wares);
     };
 
     void Config::Dump() {
@@ -97,6 +99,7 @@ namespace kraken {
         this->DumpValue(&this->erp);
         this->DumpValue(&this->tactics);
         this->DumpValue(&this->tactics_lock);
+        this->DumpValue(&this->wares);
     };
 
     template<typename T>
