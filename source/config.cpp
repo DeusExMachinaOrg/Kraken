@@ -189,7 +189,7 @@ namespace kraken {
                 value->value.emplace_back(buffer);
             }
         }
-        else if constexpr (std::is_same_v<std::unordered_map<std::string, uint32_t>, T>) {
+        else if constexpr (std::is_same_v<std::unordered_map<std::string, uint32_t, std::hash<std::string_view>, std::equal_to<>>, T>) {
             value->value.clear();
             char keysBuffer[32768];
             DWORD keysLength = GetPrivateProfileStringA(value->section, NULL, "", keysBuffer, sizeof(keysBuffer), CONFIG_PATH);
@@ -275,7 +275,7 @@ namespace kraken {
                 WritePrivateProfileStringA(value->section, key, value->value[i].c_str(), CONFIG_PATH);
             }
         }
-        else if constexpr (std::is_same_v<std::unordered_map<std::string, uint32_t>, T>) {
+        else if constexpr (std::is_same_v<std::unordered_map<std::string, uint32_t, std::hash<std::string_view>, std::equal_to<>>, T>) {
             char val[128];
             for(const auto& [k, v] : value->value) {
                 std::sprintf(val, "%ld", v);

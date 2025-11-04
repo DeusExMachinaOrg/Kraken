@@ -27,21 +27,19 @@ enum GadgetId : __int32 // borrowed from CabinWnd::GadgetId
   GADGET_NUM_GADGETS = 0xA,
 };
 
-std::unordered_set<std::string> significant_modifiers = {
-    "Durability", "MaxDurability", // cargo and cabin
-    "MaxTorque", "MaxSpeed", // cabin
-    "MaxHealth", // chassis
-    "Damage", "FiringRate", "ReChargingTime", "Accuracy", "FiringRange", // guns
-    "GadgetAntiMissileRadius", // common
-};
+namespace {
+    const std::unordered_set<std::string_view> significant_modifiers = {
+        "Durability", "MaxDurability", // cargo and cabin
+        "MaxTorque", "MaxSpeed", // cabin
+        "MaxHealth", // chassis
+        "Damage", "FiringRate", "ReChargingTime", "Accuracy", "FiringRange", // guns
+        "GadgetAntiMissileRadius", // common
+    };
+}
 
 namespace kraken::fix::complexschwarz {
-    static inline ai::PrototypeManager*& thePrototypeManager = *(ai::PrototypeManager**)0x00A18AA8;
-    static inline ai::DynamicScene*& gDynamicScene = *(ai::DynamicScene**)0x00A12958;
-    static inline ai::Player*& thePlayer = *(ai::Player**)0x00A135E4;
-
-
-    std::unordered_map<std::string, uint32_t> schwarz_overrides;
+    std::unordered_map<std::string, uint32_t,
+        std::hash<std::string_view>, std::equal_to<>> schwarz_overrides;
     bool complex_schwarz{false};
     float gun_gadgets_max_schwarz_part{};
     float common_gadgets_max_schwarz_part{};
@@ -55,7 +53,7 @@ namespace kraken::fix::complexschwarz {
     {
         unsigned int gprice = gadget->GetPrice(0);
         const ai::GadgetPrototypeInfo* gprotinfo = gadget->GetPrototypeInfo();
-        CStr modificator = gprotinfo->m_modifications[0].m_propertyName;
+        const CStr& modificator = gprotinfo->m_modifications[0].m_propertyName;
 
         LOG_INFO("--- Common Gadget #%d (1st mod: %s), RawPrice: %d ---",
             gadget->m_slotNum,
@@ -65,7 +63,7 @@ namespace kraken::fix::complexschwarz {
         // TODO: allow to skip
         for (auto& modification : gprotinfo->m_modifications)
         {
-            if (significant_modifiers.find((std::string)modification.m_propertyName) != significant_modifiers.end())
+            if (significant_modifiers.find(modification.m_propertyName) != significant_modifiers.end())
             {
                 return gprice;
             }
@@ -98,7 +96,7 @@ namespace kraken::fix::complexschwarz {
     {
         uint32_t gprice = gadget->GetPrice(0);
         const ai::GadgetPrototypeInfo* gprotinfo = gadget->GetPrototypeInfo();
-        CStr modificator = gprotinfo->m_modifications[0].m_propertyName;
+        const CStr& modificator = gprotinfo->m_modifications[0].m_propertyName;
 
         LOG_INFO("--- Weapon Gadget id #%d (1st mod: %s), RawPrice: %d ---",
             gadget->m_slotNum,
@@ -109,7 +107,7 @@ namespace kraken::fix::complexschwarz {
         // TODO: allow to skip
         for (auto& modification : gprotinfo->m_modifications)
         {
-            if (significant_modifiers.find((std::string)modification.m_propertyName) != significant_modifiers.end())
+            if (significant_modifiers.find(modification.m_propertyName) != significant_modifiers.end())
             {
                 return gprice;
             }
@@ -125,8 +123,8 @@ namespace kraken::fix::complexschwarz {
 
     uint32_t GetOverridenPrice(ai::Obj* object)
     {
-        CStr prot_name = object->GetPrototypeInfo()->m_prototypeName;
-        auto overriden_schwarz = schwarz_overrides.find((std::string)prot_name);
+        const CStr& prot_name = object->GetPrototypeInfo()->m_prototypeName;
+        auto overriden_schwarz = schwarz_overrides.find(prot_name);
         if (overriden_schwarz != schwarz_overrides.end())
         {
             LOG_DEBUG("Override price provided: %d", overriden_schwarz->second);
@@ -168,8 +166,8 @@ namespace kraken::fix::complexschwarz {
                 if (shell_prot_id != -1)
                 {
                     ai::PrototypeInfo* shell_prototype;
-                    if ( !thePrototypeManager->m_prototypes.empty() && shell_prot_id < thePrototypeManager->m_prototypes.size() )
-                        shell_prototype = thePrototypeManager->m_prototypes[shell_prot_id];
+                    if ( !ai::PrototypeManager::Instance->m_prototypes.empty() && shell_prot_id < ai::PrototypeManager::Instance->m_prototypes.size() )
+                        shell_prototype = ai::PrototypeManager::Instance->m_prototypes[shell_prot_id];
                     else
                         shell_prototype = 0;
 
@@ -225,8 +223,8 @@ namespace kraken::fix::complexschwarz {
             if (shell_prot_id != -1)
             {
                 ai::PrototypeInfo* shell_prototype;
-                if ( !thePrototypeManager->m_prototypes.empty() && shell_prot_id < thePrototypeManager->m_prototypes.size() )
-                    shell_prototype = thePrototypeManager->m_prototypes[shell_prot_id];
+                if ( !ai::PrototypeManager::Instance->m_prototypes.empty() && shell_prot_id < ai::PrototypeManager::Instance->m_prototypes.size() )
+                    shell_prototype = ai::PrototypeManager::Instance->m_prototypes[shell_prot_id];
                 else
                     shell_prototype = 0;
 
@@ -333,7 +331,7 @@ namespace kraken::fix::complexschwarz {
         uint32_t guns_schwarz{};
 
         for (const auto& [part_name, veh_part] : vehicle->m_vehicleParts) {
-            LOG_INFO("--- [%s] %s ---", part_name.m_charPtr, veh_part->GetPrototypeInfo()->m_prototypeName);
+            LOG_INFO("--- [%s] %s ---", part_name.m_charPtr, veh_part->GetPrototypeInfo()->m_prototypeName.m_charPtr);
 
             if (part_name.Equal("CHASSIS"))
             {
@@ -450,15 +448,15 @@ namespace kraken::fix::complexschwarz {
         int32_t calculated_from_player{};
       
         const ai::DynamicQuestPeacePrototypeInfo* protInfo = quest->GetPrototypeInfo();
-        if ( !gDynamicScene->GetVehicleControlledByPlayer() )
+        if ( !ai::DynamicScene::Instance()->GetVehicleControlledByPlayer() )
             return protInfo->m_minReward;
-        if ( !thePlayer )
+        if ( !ai::Player::Instance )
             return 0;
         
         if (peace_price_from_schwarz)
-            calculated_from_player = (int32_t)(thePlayer->GetSchwarz() * protInfo->m_playerMoneyPart);
+            calculated_from_player = (int32_t)(ai::Player::Instance->GetSchwarz() * protInfo->m_playerMoneyPart);
         else
-            calculated_from_player = (int32_t)(thePlayer->GetMoney() * protInfo->m_playerMoneyPart);
+            calculated_from_player = (int32_t)(ai::Player::Instance->GetMoney() * protInfo->m_playerMoneyPart);
             
 
         return -min(calculated_from_player, protInfo->m_minReward);
