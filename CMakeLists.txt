@@ -19,6 +19,7 @@ set(SOURCES
     include/hta/ai/AI.cpp
     include/hta/ai/Obj.cpp
     include/hta/ai/ObjContainer.cpp
+    include/hta/ai/StaticAutoGun.cpp
     include/hta/m3d/RoadNode.cpp
     include/hta/m3d/CWorld.cpp
     include/hta/m3d/WeatherManager.cpp
@@ -104,6 +105,7 @@ set(HEADERS
     include/hta/ai/PrototypeManager.h
     include/hta/ai/Player.h
     include/hta/ai/ObjContainer.hpp
+    include/hta/ai/StaticAutoGun.hpp
     include/hta/m3d/Object.h
     include/hta/m3d/RefCountedBase.h
     include/hta/m3d/Application.h

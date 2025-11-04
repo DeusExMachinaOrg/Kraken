@@ -67,18 +67,16 @@ namespace m3d
 		virtual Class* GetClass() const;
 		virtual const char* GetClassNameA() const;
 		bool IsKindOf(const char*) const;
-		bool IsKindOf(const Class*) const;
+		bool IsKindOf(const Class* cls) const
+		{
+			FUNC(0x006161E0, bool, __thiscall, _IsKindOf, const Object*, const Class*);
+			return _IsKindOf(this, cls);
+		}
 		Object(const Object&);
 		Object();
 		virtual ~Object();
 		
 		static Class* GetBaseClass();
 		static Object* CreateObject();
-
-		bool IsKindOf(int cls)
-		{
-			FUNC(0x006161E0, bool, __thiscall, _IsKindOf, Object*, int);
-			return _IsKindOf(this, cls);
-		}
 	};
 }
