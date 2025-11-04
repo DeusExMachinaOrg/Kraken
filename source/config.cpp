@@ -11,40 +11,39 @@ namespace kraken {
     Config::Config() {
         assert(Config::INSTANCE == nullptr && "Config already created!");
 
-        this->save_width            = { "graphics",  "save_width",            512,   true,  256,   2048        };
-        this->save_height           = { "graphics",  "save_height",           256,   true,  128,   1024        };
-        this->view_resolution       = { "graphics",  "view_resolution",       2048,  true,  128,   4096        };
-        this->gravity               = { "constants", "gravity",               -9.81, true,  -100,  0           };
-        this->price_fuel            = { "constants", "price_fuel",            50,    true,  1,     10000       };
-        this->price_paint           = { "constants", "price_paint",           50,    true,  1,     10000       };
-        this->keep_throttle         = { "constants", "keep_throttle",         1.0,   true,  0.0,   1.0         };
-        this->handbrake_power       = { "constants", "handbrake_power",       1.0,   true,  0.0,   1.0         };
-        this->brake_power           = { "constants", "brake_power",           -1.0,  true,  -1.0,  0.0         };
-        this->friend_damage         = { "constants", "friend_damage",         0,     true,  0,     1           };
-        this->auto_brake_angle      = { "constants", "auto_brake_angle",      50,    true,  0,     180         };
-        this->lua_enabled           = { "lua_binds", "Enabled",               0,     true,  0,     1           };
-        this->lua_scripts           = { "lua_binds", "Script_"                                                 };
-        this->posteffectreload      = { "constants", "posteffectreload",      0,      true,  0,     1          };
-        this->ultrawide             = { "constants", "ultrawide",             0,      true,  0,     1          };
-        this->objcontupgrade        = { "constants", "obj_cont_upgrade",      1,      true,  0,     1          };
-        this->show_load_every       = { "constants", "show_load_every",       100,    true,  0,     UINT32_MAX };
-        this->cardan_fix            = { "constants", "cardan_fix",            1,      true,  0,     1          };
-        this->tactics               = { "tactics",   "enabled",               1,      true,  0,     1          };
-        this->tactics_lock          = { "tactics",   "lock_on_player",        1,      true,  0,     1          };
-        this->contact_surface_layer = { "glob_phys", "contact_surface_layer", 0.01,   true,  0,     1.0        };
-        this->cfm                   = { "glob_phys", "cfm",                   0.0001, true,  0,     1.0        };
-        this->erp                   = { "glob_phys", "erp",                   0.1,    true,  0,     1.0        };
-
-        this->peace_price_from_schwarz          = { "schwarz", "calc_peace_price_from_schwarz",   false };
-        this->no_money_in_player_schwarz        = { "schwarz", "no_money_in_player_schwarz",      true };
-        
-        this->complex_schwarz                   = { "schwarz", "complex_schwarz",                 true };
-        this->schwarz_overrides                 = { "schwarz_overrides"};
-        this->gun_gadgets_max_schwarz_part      = { "schwarz", "gun_gadgets_max_schwarz_part",    0.2, true, 0.0, 10.0 };
-        this->common_gadgets_max_schwarz_part   = { "schwarz", "common_gadgets_max_schwarz_part", 0.2, true, 0.0, 10.0 };
-        this->wares_max_schwarz_part            = { "schwarz", "wares_max_schwarz_part",          0.2, true, 0.0, 10.0 };
+        this->save_width                        = { "graphics",  "save_width",                      512,   true,  256,   2048        };
+        this->save_height                       = { "graphics",  "save_height",                     256,   true,  128,   1024        };
+        this->view_resolution                   = { "graphics",  "view_resolution",                 2048,  true,  128,   4096        };
+        this->gravity                           = { "constants", "gravity",                         -9.81, true,  -100,  0           };
+        this->price_fuel                        = { "constants", "price_fuel",                      50,    true,  1,     10000       };
+        this->price_paint                       = { "constants", "price_paint",                     50,    true,  1,     10000       };
+        this->keep_throttle                     = { "constants", "keep_throttle",                   1.0,   true,  0.0,   1.0         };
+        this->handbrake_power                   = { "constants", "handbrake_power",                 1.0,   true,  0.0,   1.0         };
+        this->brake_power                       = { "constants", "brake_power",                     -1.0,  true,  -1.0,  0.0         };
+        this->friend_damage                     = { "constants", "friend_damage",                   0,     true,  0,     1           };
+        this->auto_brake_angle                  = { "constants", "auto_brake_angle",                50,    true,  0,     180         };
+        this->lua_enabled                       = { "lua_binds", "Enabled",                         0,     true,  0,     1           };
+        this->lua_scripts                       = { "lua_binds", "Script_"                                                           };
+        this->posteffectreload                  = { "constants", "posteffectreload",                0,      true,  0,     1          };
+        this->ultrawide                         = { "constants", "ultrawide",                       0,      true,  0,     1          };
+        this->objcontupgrade                    = { "constants", "obj_cont_upgrade",                1,      true,  0,     1          };
+        this->show_load_every                   = { "constants", "show_load_every",                 100,    true,  0,     UINT32_MAX };
+        this->cardan_fix                        = { "constants", "cardan_fix",                      1,      true,  0,     1          };
+        this->tactics                           = { "tactics",   "enabled",                         1,      true,  0,     1          };
+        this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,      true,  0,     1          };
+        this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,   true,  0,     1.0        };
+        this->cfm                               = { "glob_phys", "cfm",                             0.0001, true,  0,     1.0        };
+        this->erp                               = { "glob_phys", "erp",                             0.1,    true,  0,     1.0        };
+        this->peace_price_from_schwarz          = { "schwarz",   "calc_peace_price_from_schwarz",   false                            };
+        this->no_money_in_player_schwarz        = { "schwarz",   "no_money_in_player_schwarz",      true                             };
+        this->complex_schwarz                   = { "schwarz",   "complex_schwarz",                 true                             };
+        this->schwarz_overrides                 = { "schwarz_overrides"                                                              };
+        this->gun_gadgets_max_schwarz_part      = { "schwarz",   "gun_gadgets_max_schwarz_part",    0.2, true, 0.0, 10.0             };
+        this->common_gadgets_max_schwarz_part   = { "schwarz",   "common_gadgets_max_schwarz_part", 0.2, true, 0.0, 10.0             };
+        this->wares_max_schwarz_part            = { "schwarz",    "wares_max_schwarz_part",         0.2, true, 0.0, 10.0             };
 
 
+        this->wares                 = { "constants", "wares",                 0,      true,  0,     1          };
         Config::INSTANCE = this;
 
         this->Load();
@@ -82,7 +81,6 @@ namespace kraken {
         this->LoadValue(&this->erp);
         this->LoadValue(&this->tactics);
         this->LoadValue(&this->tactics_lock);
-
         this->LoadValue(&this->complex_schwarz);
         this->LoadValue(&this->gun_gadgets_max_schwarz_part);
         this->LoadValue(&this->common_gadgets_max_schwarz_part);
@@ -90,6 +88,7 @@ namespace kraken {
         this->LoadValue(&this->peace_price_from_schwarz);
         this->LoadValue(&this->no_money_in_player_schwarz);
         this->LoadValue(&this->schwarz_overrides);
+        this->LoadValue(&this->wares);
     };
 
     void Config::Dump() {
@@ -117,7 +116,6 @@ namespace kraken {
         this->DumpValue(&this->erp);
         this->DumpValue(&this->tactics);
         this->DumpValue(&this->tactics_lock);
-
         this->DumpValue(&this->complex_schwarz);
         this->DumpValue(&this->gun_gadgets_max_schwarz_part);
         this->DumpValue(&this->common_gadgets_max_schwarz_part);
@@ -125,6 +123,7 @@ namespace kraken {
         this->DumpValue(&this->peace_price_from_schwarz);
         this->DumpValue(&this->no_money_in_player_schwarz);
         this->DumpValue(&this->schwarz_overrides);
+        this->DumpValue(&this->wares);
     };
 
     template<typename T>

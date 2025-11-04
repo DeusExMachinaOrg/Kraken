@@ -66,6 +66,7 @@ namespace kraken {
         ConfigValue<uint32_t>                 cardan_fix;
         ConfigValue<uint32_t>                 tactics;
         ConfigValue<uint32_t>                 tactics_lock;
+        ConfigValue<uint32_t>                 wares;
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;
