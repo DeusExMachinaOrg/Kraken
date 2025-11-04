@@ -19,32 +19,34 @@ namespace m3d {
     struct SceneGraph;
     struct GraphItemsForSgNode;
 
-    enum SgNodeRenderFlags : int32_t {
-        NRF_DEFAULT = 0x0000,
-        NRF_RMUL_BY_MAT = 0x0001,
-        NRF_LMUL_BY_MAT = 0x0002,
-        NRF_NO_LIGHTING = 0x0004,
+    enum TransparencyType
+    {
+        TT_NONE = 0x0,
+        TT_VISIBILITY = 0x1,
+        TT_PERMANENT = 0x2,
     };
 
-    enum TransparencyType : int32_t {
-        TT_NONE = 0x0000,
-        TT_VISIBILITY = 0x0001,
-        TT_PERMANENT = 0x0002,
-    };
-
-    struct TransparencyParams {
+    struct TransparencyParams
+    {
         float value;
         float startDist;
         float objectWidth;
     };
 
+    enum SgNodeRenderFlags
+    {
+        NRF_DEFAULT = 0x0,
+        NRF_RMUL_BY_MAT = 0x1,
+        NRF_LMUL_BY_MAT = 0x2,
+        NRF_NO_LIGHTING = 0x4,
+    };
 
     struct SgNode : public Object { /* Size=0x1d4 */
         enum Ritual : int32_t {
-            RITUAL_NONE = 0x0000,
-            RITUAL_THINK_NODE = 0x0001,
-            RITUAL_REGISTERED_NODE = 0x0002,
-            RITUAL_THINK_AND_REGISTERED_NODE = 0x0003,
+            RITUAL_NONE = 0x0,
+            RITUAL_THINK_NODE = 0x1,
+            RITUAL_REGISTERED_NODE = 0x2,
+            RITUAL_THINK_AND_REGISTERED_NODE = 0x3,
         };
         /* 0x0000: fields for Object */
         /* 0x0034 */ protected: int32_t m_nextThinkTime;
@@ -150,5 +152,18 @@ namespace m3d {
 
         public: static Object* CreateObject();
         public: static Class* GetBaseClass();
+
+		void SetRotation(const Quaternion* quat)
+		{
+			FUNC(0x0040C1B0, void, __thiscall, _SetRotation, m3d::SgNode*, const Quaternion*);
+			_SetRotation(this, quat);
+		}
+
+		Quaternion* GetRotation()
+		{
+			FUNC(0x00616D80, Quaternion*, __thiscall, _GetRotation, m3d::SgNode*);
+			return _GetRotation(this);
+		}
+
     };
 };

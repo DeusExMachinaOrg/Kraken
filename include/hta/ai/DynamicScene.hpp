@@ -5,6 +5,7 @@
 #include "hta/CStr.h"
 #include "hta/m3d/Class.h"
 #include "hta/m3d/Object.h"
+#include "Vehicle.hpp"
 
 #include <stdint.h>
 
@@ -62,7 +63,7 @@ namespace ai {
         virtual m3d::Class* GetClass() const;
         void DeleteAll();
         void PurgeBodies();
-        Vehicle* GetVehicleControlledByPlayer() const;
+        // Vehicle* GetVehicleControlledByPlayer() const;
         bool LoadSceneFromXml(m3d::cmn::XmlFile*, const m3d::cmn::XmlNode*, const std::vector<m3d::Class *,std::allocator<m3d::Class *> >&);
         bool SaveSceneToXml(m3d::cmn::XmlFile*, m3d::cmn::XmlNode*);
         bool LoadSceneFromFile(const char*, const std::vector<m3d::Class *,std::allocator<m3d::Class *> >&);
@@ -108,5 +109,12 @@ namespace ai {
         static void CollideBullet(const Bullet&);
 
         static DynamicScene* Instance();
+
+        Vehicle* GetVehicleControlledByPlayer() const
+        {
+            FUNC(0x005C7920, Vehicle*, __thiscall, _GetVehicleControlledByPlayer, const DynamicScene*);
+            return _GetVehicleControlledByPlayer(this);
+        }
+
     };
 };

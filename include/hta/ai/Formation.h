@@ -16,7 +16,7 @@ namespace ai {
     float m_angularVelocity;
     CVector m_position;
     CVector m_direction;
-    std::vector<CVector2> m_positions;
+    stable_size_vector<CVector2> m_positions;
     ai::Path* m_pPath;
     int m_numPathPoint;
     stable_size_list<ai::Vehicle*> m_vehicles;

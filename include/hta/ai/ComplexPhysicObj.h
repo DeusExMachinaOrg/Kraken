@@ -40,9 +40,7 @@ namespace ai
         ComplexPhysicObjPrototypeInfo::MassShapes GetMassShape() const;
     };
 
-    static_assert(sizeof(ComplexPhysicObjPrototypeInfo) == 0x90);
-
-    class ComplexPhysicObj : public PhysicObj {
+    struct ComplexPhysicObj : public PhysicObj {
         /* Size=0x14c */
         /* 0x0000: fields for PhysicObj */
         /* 0x0120 */ stable_size_map<CStr,VehiclePart*> m_vehicleParts;

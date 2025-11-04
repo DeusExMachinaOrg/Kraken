@@ -15,12 +15,13 @@ namespace m3d
 	struct Object;
 
 	struct Object : RefCountedBase {
+		public:
 		/* Size=0x34 */
 		/* 0x0000: fields for RefCountedBase */
-		/* 0x0008 */ protected: CStr m_name;
+		/* 0x0008 */ CStr m_name; // protected:
 		/* 0x0014 */ protected: bool m_persistant;
 		/* 0x0015 */ protected: bool m_isChildDirty;
-		/* 0x0018 */ private: Object* m_parent;
+		/* 0x0018 */ public: Object* m_parent; // private: 
 		/* 0x001c */ private: Object* m_firstChild;
 		/* 0x0020 */ private: Object* m_lastChild;
 		/* 0x0024 */ private: Object* m_nextSibling;

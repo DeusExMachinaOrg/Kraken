@@ -2,6 +2,7 @@
 #include "hta/scoped_ptr.hpp"
 #include "hta/CVector2.hpp"
 #include "hta/m3d/SgSoundSourceNode.hpp"
+#include "hta/m3d/SgNode.hpp"
 #include "hta/ai/ComplexPhysicObj.h"
 #include "hta/ai/IzvratRepository.h"
 #include "hta/ai/ActionType.h"
@@ -20,14 +21,6 @@ namespace ai
     struct VehicleRecollection;
     struct GeomRepositoryItem;
     struct Team;
-
-    enum DamageType : int32_t {
-        DAMAGE_PIERCING = 0x0000,
-        DAMAGE_BLAST = 0x0001,
-        DAMAGE_ENERGY = 0x0002,
-        DAMAGE_WATER = 0x0003,
-        DAMAGE_NUM_TYPES = 0x0004,
-    };
 
     struct VehicleRole : Obj // sizeof=0xCC
     {
