@@ -1,7 +1,11 @@
 #include "utils.hpp"
 #include "config.hpp"
+#include "ext/logger.hpp"
 #include <assert.h>
 #include <string>
+
+using kraken::logger::eLogDebug;
+using kraken::logger::eLogPanic;
 
 namespace kraken {
     const char* CONFIG_PATH = "./data/kraken.ini";
@@ -11,6 +15,7 @@ namespace kraken {
     Config::Config() {
         assert(Config::INSTANCE == nullptr && "Config already created!");
 
+        this->log_debug                         = { "logging",   "log_debug",                       1,     true,  eLogDebug, eLogPanic + 1};
         this->save_width                        = { "graphics",  "save_width",                      512,   true,  256,   2048        };
         this->save_height                       = { "graphics",  "save_height",                     256,   true,  128,   1024        };
         this->view_resolution                   = { "graphics",  "view_resolution",                 2048,  true,  128,   4096        };
@@ -24,26 +29,24 @@ namespace kraken {
         this->auto_brake_angle                  = { "constants", "auto_brake_angle",                50,    true,  0,     180         };
         this->lua_enabled                       = { "lua_binds", "Enabled",                         0,     true,  0,     1           };
         this->lua_scripts                       = { "lua_binds", "Script_"                                                           };
-        this->posteffectreload                  = { "constants", "posteffectreload",                0,      true,  0,     1          };
-        this->ultrawide                         = { "constants", "ultrawide",                       0,      true,  0,     1          };
-        this->objcontupgrade                    = { "constants", "obj_cont_upgrade",                1,      true,  0,     1          };
-        this->show_load_every                   = { "constants", "show_load_every",                 100,    true,  0,     UINT32_MAX };
-        this->cardan_fix                        = { "constants", "cardan_fix",                      1,      true,  0,     1          };
-        this->tactics                           = { "tactics",   "enabled",                         1,      true,  0,     1          };
-        this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,      true,  0,     1          };
-        this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,   true,  0,     1.0        };
-        this->cfm                               = { "glob_phys", "cfm",                             0.0001, true,  0,     1.0        };
-        this->erp                               = { "glob_phys", "erp",                             0.1,    true,  0,     1.0        };
+        this->posteffectreload                  = { "constants", "posteffectreload",                0,     true,  0,     1           };
+        this->ultrawide                         = { "constants", "ultrawide",                       0,     true,  0,     1           };
+        this->objcontupgrade                    = { "constants", "obj_cont_upgrade",                1,     true,  0,     1           };
+        this->show_load_every                   = { "constants", "show_load_every",                 100,   true,  0,     UINT32_MAX  };
+        this->cardan_fix                        = { "constants", "cardan_fix",                      1,     true,  0,     1           };
+        this->wares                             = { "constants", "wares",                           0,     true,  0,     1           };
+        this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
+        this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
+        this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
+        this->cfm                               = { "glob_phys", "cfm",                             0.0001,true,  0,     1.0         };
+        this->erp                               = { "glob_phys", "erp",                             0.1,   true,  0,     1.0         };
         this->peace_price_from_schwarz          = { "schwarz",   "calc_peace_price_from_schwarz",   false                            };
-        this->no_money_in_player_schwarz        = { "schwarz",   "no_money_in_player_schwarz",      true                             };
-        this->complex_schwarz                   = { "schwarz",   "complex_schwarz",                 true                             };
+        this->no_money_in_player_schwarz        = { "schwarz",   "no_money_in_player_schwarz",      false                            };
+        this->complex_schwarz                   = { "schwarz",   "complex_schwarz",                 false                            };
         this->schwarz_overrides                 = { "schwarz_overrides"                                                              };
-        this->gun_gadgets_max_schwarz_part      = { "schwarz",   "gun_gadgets_max_schwarz_part",    0.2, true, 0.0, 10.0             };
-        this->common_gadgets_max_schwarz_part   = { "schwarz",   "common_gadgets_max_schwarz_part", 0.2, true, 0.0, 10.0             };
-        this->wares_max_schwarz_part            = { "schwarz",    "wares_max_schwarz_part",         0.2, true, 0.0, 10.0             };
-
-
-        this->wares                 = { "constants", "wares",                 0,      true,  0,     1          };
+        this->gun_gadgets_max_schwarz_part      = { "schwarz",   "gun_gadgets_max_schwarz_part",    0.0,   true,  0.0,   10.0        };
+        this->common_gadgets_max_schwarz_part   = { "schwarz",   "common_gadgets_max_schwarz_part", 0.0,   true,  0.0,   10.0        };
+        this->wares_max_schwarz_part            = { "schwarz",    "wares_max_schwarz_part",         0.0,   true,  0.0,   10.0        };
         Config::INSTANCE = this;
 
         this->Load();
@@ -57,6 +60,7 @@ namespace kraken {
     };
 
     void Config::Load() {
+        this->LoadValue(&this->log_debug);
         this->LoadValue(&this->save_width);
         this->LoadValue(&this->save_height);
         this->LoadValue(&this->view_resolution);
@@ -92,6 +96,7 @@ namespace kraken {
     };
 
     void Config::Dump() {
+        this->DumpValue(&this->log_debug);
         this->DumpValue(&this->save_width);
         this->DumpValue(&this->save_height);
         this->DumpValue(&this->view_resolution);

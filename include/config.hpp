@@ -67,6 +67,7 @@ namespace kraken {
         ConfigValue<uint32_t>                 tactics;
         ConfigValue<uint32_t>                 tactics_lock;
         ConfigValue<uint32_t>                 wares;
+        ConfigValue<uint32_t>                 log_debug; // 0 - debug, 1 - info, 2 - warning, 3 - error, 4 - panic, 5 - none
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;
