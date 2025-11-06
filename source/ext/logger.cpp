@@ -1,5 +1,7 @@
 #include "ext/logger.hpp"
 
+#include "config.hpp"
+
 #include <fstream>
 #include <chrono>
 #include <io.h>
@@ -16,6 +18,7 @@ namespace kraken::logger {
         bool          is_file       { false          };
         bool          is_ready      { false          };
         std::ofstream handle        {                };
+        size_t        log_debug     { 0              };
     } self;
 
     bool _InitFile() {
@@ -97,13 +100,19 @@ namespace kraken::logger {
         if (self.is_ready)
             return;
 
+        const kraken::Config& config = kraken::Config::Get();
+
         self.is_file   = _InitFile();
         self.is_stream = _InitStream();
         self.is_ready  = self.is_file || self.is_stream;
+        self.log_debug = config.log_debug.value;
     };
 
     void Print(Log level, const char* alias, const char* fmt, ...) {
         if (!self.is_ready)
+            return;
+
+        if (level < self.log_debug)
             return;
 
         va_list args;

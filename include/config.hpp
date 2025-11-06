@@ -67,6 +67,7 @@ namespace kraken {
         ConfigValue<uint32_t>                 tactics;
         ConfigValue<uint32_t>                 tactics_lock;
         ConfigValue<uint32_t>                 wares;
+        ConfigValue<uint32_t>                 log_debug; // 0 - debug, 1 - info, 2 - warning, 3 - error, 4 - panic, 5 - none
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;
@@ -75,7 +76,7 @@ namespace kraken {
         ConfigValue<float>                    wares_max_schwarz_part;
         ConfigValue<bool>                     peace_price_from_schwarz;
         ConfigValue<bool>                     no_money_in_player_schwarz;
-        ConfigValue<std::unordered_map<std::string, uint32_t>> schwarz_overrides;
+        ConfigValue<std::unordered_map<std::string, uint32_t, std::hash<std::string_view>, std::equal_to<>>> schwarz_overrides;
 
     public:
          Config();

@@ -14,12 +14,14 @@ struct CStr
 
 	}
 
-	CStr(const char* str)
-	{
-		allocSz = strlen(str) + 1;
-		m_charPtr = new char[allocSz];
-		strcpy(m_charPtr, str);
-	}
+	CStr(const CStr& other) = delete;
+
+	CStr(const char* str) = delete;
+	// {
+	// 	allocSz = strlen(str) + 1;
+	// 	m_charPtr = new char[allocSz];
+	// 	strcpy(m_charPtr, str);
+	// }
 
 	bool Equal(char* str) const
 	{
@@ -57,6 +59,10 @@ struct CStr
         return (m_charPtr && allocSz) ? std::string(m_charPtr) : std::string();
     }
 
+    operator std::string_view() const noexcept
+    {
+        return std::string_view(m_charPtr);
+    }
 };
 
 inline bool operator<(const CStr& lhs, const CStr& rhs)
@@ -72,14 +78,3 @@ inline bool operator==(const CStr& lhs, const CStr& rhs)
 	return strcmp(lhs.m_charPtr, rhs.m_charPtr) == 0;
 }
 
-namespace std {
-	template<>
-	struct hash<CStr> {
-		size_t operator()(const CStr& str) const {
-			if (!str.allocSz || !str.m_charPtr) {
-				return 0;
-			}
-			return hash<string_view>{}(string_view(str.m_charPtr));
-		}
-	};
-}
