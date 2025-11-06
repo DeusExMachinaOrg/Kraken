@@ -42,6 +42,7 @@ namespace kraken {
         routines::Override(sizeof(float),    (void*) 0x00602D4E, (char*) &G_CONFIG->contact_surface_layer.value);
         routines::Override(sizeof(float),    (void*) 0x00602D5E, (char*) &G_CONFIG->cfm.value);
         routines::Override(sizeof(float),    (void*) 0x00602D6E, (char*) &G_CONFIG->erp.value);
+        routines::OverrideValue((void*) 0x0056BF09, (uint8_t) 0xEB); // Render all quest icons on radar
 
         // TODO: [Invesigation] Repaint Price
         // That's not work. Need to more deep research for fix it.
