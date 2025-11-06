@@ -109,8 +109,8 @@ namespace ai {
         int64_t GetGameTimeInt64() const;
         float GetGameTimeDiff() const;
         void SetGameTime(int32_t, int32_t, int32_t, int32_t, int32_t);
-        m3d::AIParam GetGameTime() const;
-        m3d::AIParam Get24HourTime() const;
+        //m3d::AIParam GetGameTime() const;
+        //m3d::AIParam Get24HourTime() const;
         void PauseGameTime();
         void UnpauseGameTime();
         void SaveNodeStatesToXml(m3d::cmn::XmlFile*, m3d::cmn::XmlNode*) const;
@@ -143,6 +143,20 @@ namespace ai {
 
         static m3d::Object* CreateObject();
         static m3d::Class* GetBaseClass();
+
+        m3d::AIParam GetGameTime() const
+        {
+            FUNC(0x00631C50, m3d::AIParam, __thiscall, _GetGameTime, const ObjContainer*);
+            return _GetGameTime(this);
+        }
+
+        m3d::AIParam Get24HourTime() const
+        {
+    		FUNC(0x00631C70, m3d::AIParam, __thiscall, _Get24HourTime, const ObjContainer*);
+    		return _Get24HourTime(this);
+        }
+
+
     };
     ASSERT_SIZE(ObjContainer, 0x0120);
 }

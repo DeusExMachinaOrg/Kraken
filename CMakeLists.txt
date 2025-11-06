@@ -44,6 +44,7 @@ set(SOURCES
     source/fix/cardan.cpp
     source/fix/tactics.cpp
     source/fix/complexschwarz.cpp
+    source/fix/timeofday.cpp
 )
 
 # Header files
@@ -64,6 +65,7 @@ set(HEADERS
     include/fix/cardan.hpp
     include/fix/tactics.hpp
     include/fix/complexschwarz.hpp
+    include/fix/timeofday.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
@@ -88,6 +90,7 @@ set(HEADERS
     include/hta/ai/dMass.h
     include/hta/ai/FuncPtr.hpp
     include/hta/ai/Gadget.hpp
+    include/hta/ai/GameTime.hpp
     include/hta/ai/Geom.h
     include/hta/ai/GeometryInfo.h
     include/hta/ai/GeomRepository.h

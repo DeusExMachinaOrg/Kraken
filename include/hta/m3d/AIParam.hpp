@@ -92,5 +92,12 @@ namespace m3d {
         static int32_t CompareInt(const void*, const void*);
         static int32_t CompareStr(const void*, const void*);
         static int32_t CompareRepEl(const void*, const void*);
+
+        stable_size_vector<int> GetAsIdList()
+        {
+    		FUNC(0x00615040, stable_size_vector<int>, __thiscall, _GetAsIdList, AIParam*);
+    		return _GetAsIdList(this);
+        }
+
     };
 };
