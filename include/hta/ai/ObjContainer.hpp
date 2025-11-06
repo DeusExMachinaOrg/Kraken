@@ -144,16 +144,16 @@ namespace ai {
         static m3d::Object* CreateObject();
         static m3d::Class* GetBaseClass();
 
-        m3d::AIParam GetGameTime() const
+        m3d::AIParam* GetGameTime(m3d::AIParam* result) const
         {
-            FUNC(0x00631C50, m3d::AIParam, __thiscall, _GetGameTime, const ObjContainer*);
-            return _GetGameTime(this);
+            FUNC(0x00631C50, m3d::AIParam*, __thiscall, _GetGameTime, const ObjContainer*, m3d::AIParam*);
+            return _GetGameTime(this, result);
         }
 
-        m3d::AIParam Get24HourTime() const
+        m3d::AIParam* Get24HourTime(m3d::AIParam* result) const
         {
-    		FUNC(0x00631C70, m3d::AIParam, __thiscall, _Get24HourTime, const ObjContainer*);
-    		return _Get24HourTime(this);
+    		FUNC(0x00631C70, m3d::AIParam*, __thiscall, _Get24HourTime, const ObjContainer*, m3d::AIParam*);
+    		return _Get24HourTime(this, result);
         }
 
 

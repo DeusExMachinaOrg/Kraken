@@ -24,7 +24,7 @@ namespace kraken::fix::timeofday {
     void __fastcall UpdateSun(m3d::CWorld* world, void* _)
     {
         m3d::GlobalTimeParams m_curDayTime;
-        float m_sunAscention;
+        float m_sunAscention = 0;
 
         m_curDayTime = world->m_weatherManager.m_curDayTime;
         if ( m_curDayTime == m3d::GlobalTimeParams::GTP_SUNRISE_TIME )
@@ -33,13 +33,13 @@ namespace kraken::fix::timeofday {
             m_sunAscention = world->m_level->m_sunDayAscention;
         else if ( m_curDayTime == m3d::GlobalTimeParams::GTP_SUNSET_TIME )
             m_sunAscention = world->m_level->m_sunSetAscention;
-        else
-            world->m_sunAscention = 0.0;
-
+           
         world->m_sunAscention = m_sunAscention;
 
-        m3d::AIParam game_time = ai::ObjContainer::theObjects->GetGameTime();
-        m3d::AIParam game_time24 = ai::ObjContainer::theObjects->Get24HourTime();
+        m3d::AIParam game_time;
+        ai::ObjContainer::theObjects->GetGameTime(&game_time);
+        m3d::AIParam game_time24;
+        ai::ObjContainer::theObjects->Get24HourTime(&game_time24);
         ai::GameTime& gametimeai = ai::ObjContainer::theObjects->m_GameTime;
 
         stable_size_vector<int>& newTime = game_time.GetAsIdList();
