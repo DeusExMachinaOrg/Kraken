@@ -22,6 +22,7 @@
 #include "fix/cardan.hpp"
 #include "fix/tactics.hpp"
 #include "fix/complexschwarz.hpp"
+#include "fix/skinfix.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -72,5 +73,6 @@ namespace kraken {
         fix::cardan::Apply();
         fix::tactics::Apply();
         fix::complexschwarz::Apply();
+        fix::skinfix::Apply();
     };
 };

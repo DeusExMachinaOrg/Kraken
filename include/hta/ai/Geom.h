@@ -5,6 +5,10 @@ namespace m3d::cmn {
     struct XmlNode;
 }
 
+struct dxGeom;
+struct dxBody;
+struct dxSpace;
+
 namespace ai {
     enum GeomType : int32_t {
         GEOM_TYPE_NONE = 0x0000,

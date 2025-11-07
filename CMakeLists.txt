@@ -44,6 +44,7 @@ set(SOURCES
     source/fix/cardan.cpp
     source/fix/tactics.cpp
     source/fix/complexschwarz.cpp
+    source/fix/skinfix.cpp
 )
 
 # Header files
@@ -64,6 +65,7 @@ set(HEADERS
     include/fix/cardan.hpp
     include/fix/tactics.hpp
     include/fix/complexschwarz.hpp
+    include/fix/skinfix.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
@@ -71,6 +73,7 @@ set(HEADERS
     include/hta/Game.h
     include/hta/Quaternion.h
     include/hta/DragDropItemsWnd.h
+    include/hta/Enums.hpp
     include/hta/ai/ActionType.h
     include/hta/ai/BaseFunction.hpp
     include/hta/ai/Basket.h
