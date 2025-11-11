@@ -4,7 +4,7 @@
 #include "fix/wareuse.hpp"
 #include "hta/m3d/CMiracle3d.h"
 #include "hta/ai/PrototypeManager.h"
-#include "hta/ai/Player.h"
+#include "hta/ai/Player.hpp"
 #include "configstructs.hpp"
 #include "routines.hpp"
 
@@ -81,7 +81,7 @@ namespace kraken::fix::wareuse {
             if (repositoryItem.IsValid())
             {
                 auto repositoryObj = repositoryItem.GetObj();
-                if (repositoryObj && repositoryObj->IsKindOf(0x00A0238C)) // Ware class
+                if (repositoryObj && repositoryObj->IsKindOf((m3d::Class*)0x00A0238C)) // Ware class
                 {
                     CStr name;
                     ai::PrototypeManager::Instance->GetPrototypeName(&name, repositoryObj->m_prototypeId);
@@ -116,5 +116,10 @@ namespace kraken::fix::wareuse {
             }
         }
         kraken::routines::OverrideValue(reinterpret_cast<void*>(0x009CB32C), (void*)&OnMouseButton0Hook);
+        if (config.wares.value)
+        {
+            routines::Override(32, (void*) 0x0047FD7F,
+            "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90");
+        }
     }
 }

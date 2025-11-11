@@ -16,11 +16,16 @@ set(SOURCES
     include/hta/ai/Vehicle.cpp
     include/hta/ai/CServer.cpp
     include/hta/ai/DynamicScene.cpp
+    include/hta/ai/AI.cpp
+    include/hta/ai/Obj.cpp
+    include/hta/ai/ObjContainer.cpp
+    include/hta/ai/StaticAutoGun.cpp
     include/hta/m3d/RoadNode.cpp
     include/hta/m3d/CWorld.cpp
     include/hta/m3d/WeatherManager.cpp
     include/hta/m3d/Landscape.cpp
     include/hta/m3d/WheelTraceMgr.cpp
+    include/hta/m3d/AIParam.cpp
 
     source/entry.cpp
     source/config.cpp
@@ -36,6 +41,10 @@ set(SOURCES
     source/fix/ultrawide.cpp
     source/fix/fastloading.cpp
     source/fix/kineticfriction.cpp
+    source/fix/cardan.cpp
+    source/fix/tactics.cpp
+    source/fix/complexschwarz.cpp
+    source/fix/skinfix.cpp
 )
 
 # Header files
@@ -53,6 +62,10 @@ set(HEADERS
     include/fix/posteffectreload.hpp
     include/fix/ultrawide.hpp
     include/fix/fastloading.hpp
+    include/fix/cardan.hpp
+    include/fix/tactics.hpp
+    include/fix/complexschwarz.hpp
+    include/fix/skinfix.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
@@ -60,7 +73,9 @@ set(HEADERS
     include/hta/Game.h
     include/hta/Quaternion.h
     include/hta/DragDropItemsWnd.h
+    include/hta/Enums.hpp
     include/hta/ai/ActionType.h
+    include/hta/ai/BaseFunction.hpp
     include/hta/ai/Basket.h
     include/hta/ai/Cabin.h
     include/hta/ai/Chassis.h
@@ -68,20 +83,28 @@ set(HEADERS
     include/hta/ai/ComplexPhysicObj.h
     include/hta/ai/ComplexPhysicObjPartDescription.h
     include/hta/ai/Component.h
+    include/hta/ai/CompoundGun.hpp
+    include/hta/ai/CompoundVehiclePart.hpp
+    include/hta/ai/DamageInfo.hpp
     include/hta/ai/DecalData.h
+    include/hta/ai/DynamicQuestPeace.hpp
     include/hta/ai/dMass.h
+    include/hta/ai/FuncPtr.hpp
+    include/hta/ai/Gadget.hpp
     include/hta/ai/Geom.h
     include/hta/ai/GeometryInfo.h
     include/hta/ai/GeomRepository.h
     include/hta/ai/GeomRepositoryItem.h
     include/hta/ai/GeomTransform.h
     include/hta/ai/GlobalProperties.h
+    include/hta/ai/Gun.hpp
+    include/hta/ai/IPriceCoeffProvider.h
     include/hta/ai/IzvratRepository.h
     include/hta/ai/Modifier.h
     include/hta/ai/Numeric.h
     include/hta/ai/NumericInRange.h
     include/hta/ai/NumericInRangeRegenerating.h
-    include/hta/ai/Obj.h
+    include/hta/ai/Obj.hpp
     include/hta/ai/Path.h
     include/hta/ai/PhysicBody.h
     include/hta/ai/PhysicObj.h
@@ -94,7 +117,9 @@ set(HEADERS
     include/hta/ai/VehiclePrototypeInfo.h
     include/hta/ai/DrivingValues.h
     include/hta/ai/PrototypeManager.h
-    include/hta/ai/Player.h
+    include/hta/ai/Player.hpp
+    include/hta/ai/ObjContainer.hpp
+    include/hta/ai/StaticAutoGun.hpp
     include/hta/m3d/Object.h
     include/hta/m3d/RefCountedBase.h
     include/hta/m3d/Application.h
@@ -106,6 +131,7 @@ set(HEADERS
     include/hta/m3d/WeaponGroupManager.h
     include/hta/m3d/WeatherManager.h
     include/hta/m3d/CClient.h
+    include/hta/m3d/AnimInfo.hpp
 
     include/ext/logger.hpp
     source/ext/logger.cpp

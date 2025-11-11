@@ -19,6 +19,10 @@
 #include "fix/ultrawide.hpp"
 #include "fix/fastloading.hpp"
 #include "fix/kineticfriction.hpp"
+#include "fix/cardan.hpp"
+#include "fix/tactics.hpp"
+#include "fix/complexschwarz.hpp"
+#include "fix/skinfix.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -36,6 +40,10 @@ namespace kraken {
         routines::RemapPtr((void*) 0x005DAC81, &G_CONFIG->handbrake_power.value);
         routines::Override(sizeof(float), (void*) 0x004017DB, (char*) &G_CONFIG->brake_power.value);
         routines::Override(sizeof(bool),  (void*) 0x007DFADC, (char*) &G_CONFIG->friend_damage.value);
+        routines::Override(sizeof(float),    (void*) 0x00602D4E, (char*) &G_CONFIG->contact_surface_layer.value);
+        routines::Override(sizeof(float),    (void*) 0x00602D5E, (char*) &G_CONFIG->cfm.value);
+        routines::Override(sizeof(float),    (void*) 0x00602D6E, (char*) &G_CONFIG->erp.value);
+        routines::OverrideValue((void*) 0x0056BF09, (uint8_t) 0xEB); // Render all quest icons on radar
 
         // TODO: [Invesigation] Repaint Price
         // That's not work. Need to more deep research for fix it.
@@ -63,5 +71,9 @@ namespace kraken {
         fix::ultrawide::Apply();
         fix::fastloading::Apply();
         //fix::kineticfriction::Apply();
+        fix::cardan::Apply();
+        fix::tactics::Apply();
+        fix::complexschwarz::Apply();
+        fix::skinfix::Apply();
     };
 };

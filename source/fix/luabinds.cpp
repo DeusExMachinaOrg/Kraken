@@ -13,7 +13,7 @@ namespace kraken::fix::luabinds {
     void ExecuteLuaScripts()
     {
         auto impulse = (m3d::GameImpulse*)CMiracle3d::Instance->Impulse;
-        auto scriptServer = m3d::Kernel::Instance->m_scriptServer;
+        auto scriptServer = m3d::Kernel::g_Kernel->m_scriptServer;
 
         for (int impId = IM_DEBUG_0; impId <= IM_DEBUG_9; impId++) {
             if (impulse->GetImpulseStateAndReset(impId)) {
@@ -39,10 +39,10 @@ namespace kraken::fix::luabinds {
 
     void Apply(const Config* config)
     {
-        LOG_INFO("Feature enabled");
         if (config->lua_enabled.value == 0)
             return;
 
+        LOG_INFO("Feature enabled");
         g_scripts = config->lua_scripts.value;
         kraken::routines::Redirect(5, (void*)0x00401B37, (void*)&LuaScripts_Hook);
     }

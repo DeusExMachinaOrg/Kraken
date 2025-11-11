@@ -3,6 +3,7 @@
 
 #include "stdafx.hpp"
 #include <vector>
+#include <unordered_map>
 #include "configstructs.hpp"
 
 namespace kraken {
@@ -41,8 +42,13 @@ namespace kraken {
         ConfigValue<uint32_t> save_height;
         ConfigValue<uint32_t> view_resolution;
 
-        // Constants
+        // Global Physic Constants
         ConfigValue<float>                    gravity;
+        ConfigValue<float>                    contact_surface_layer;
+        ConfigValue<float>                    cfm;
+        ConfigValue<float>                    erp;
+
+        // Constants
         ConfigValue<uint32_t>                 price_fuel;
         ConfigValue<uint32_t>                 price_paint;
         ConfigValue<float>                    keep_throttle;
@@ -57,6 +63,20 @@ namespace kraken {
         ConfigValue<uint32_t>                 ultrawide;
         ConfigValue<uint32_t>                 objcontupgrade;
         ConfigValue<uint32_t>                 show_load_every; // Update loading screen each N objects (vanilla N = 1)
+        ConfigValue<uint32_t>                 cardan_fix;
+        ConfigValue<uint32_t>                 tactics;
+        ConfigValue<uint32_t>                 tactics_lock;
+        ConfigValue<uint32_t>                 wares;
+        ConfigValue<uint32_t>                 log_debug; // 0 - debug, 1 - info, 2 - warning, 3 - error, 4 - panic, 5 - none
+
+        // Schwarz
+        ConfigValue<bool>                     complex_schwarz;
+        ConfigValue<float>                    gun_gadgets_max_schwarz_part;
+        ConfigValue<float>                    common_gadgets_max_schwarz_part;
+        ConfigValue<float>                    wares_max_schwarz_part;
+        ConfigValue<bool>                     peace_price_from_schwarz;
+        ConfigValue<bool>                     no_money_in_player_schwarz;
+        ConfigValue<std::unordered_map<std::string, uint32_t, std::hash<std::string_view>, std::equal_to<>>> schwarz_overrides;
 
     public:
          Config();
