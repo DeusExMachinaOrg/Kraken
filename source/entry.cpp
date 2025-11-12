@@ -23,6 +23,7 @@
 #include "fix/tactics.hpp"
 #include "fix/complexschwarz.hpp"
 #include "fix/skinfix.hpp"
+#include "fix/watereffect.hpp"
 #include "hta/pointers.hpp"
 
 namespace kraken {
@@ -75,5 +76,6 @@ namespace kraken {
         fix::tactics::Apply();
         fix::complexschwarz::Apply();
         fix::skinfix::Apply();
+        fix::watereffect::Apply();
     };
 };

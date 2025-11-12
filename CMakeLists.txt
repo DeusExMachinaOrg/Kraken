@@ -45,6 +45,7 @@ set(SOURCES
     source/fix/tactics.cpp
     source/fix/complexschwarz.cpp
     source/fix/skinfix.cpp
+    source/fix/watereffect.cpp
 )
 
 # Header files
@@ -66,6 +67,7 @@ set(HEADERS
     include/fix/tactics.hpp
     include/fix/complexschwarz.hpp
     include/fix/skinfix.hpp
+    include/fix/watereffect.hpp
     include/hta/pointers.hpp
     include/hta/CStr.h
     include/hta/CVector.h
