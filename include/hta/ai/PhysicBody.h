@@ -84,5 +84,7 @@ namespace ai
 			FUNC(0x0061CD30, void, __thiscall, _SetAnimationStopped, ai::PhysicBody*, bool);
 			_SetAnimationStopped(this, bStopped);
 		}
+
+		void CreateEffectNode(const CStr* modelname, const CVector* pos, const Quaternion* rot, bool bInsertInRemoveIfFree, float scale, char a8, int a9);
 	};
 }
