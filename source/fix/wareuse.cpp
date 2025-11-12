@@ -2,17 +2,18 @@
 
 #include "ext/logger.hpp"
 #include "fix/wareuse.hpp"
-#include "hta/m3d/CMiracle3d.h"
-#include "hta/ai/PrototypeManager.h"
-#include "hta/ai/Player.hpp"
 #include "configstructs.hpp"
 #include "routines.hpp"
+
+#include "m3d/CMiracle3d.hpp"
+#include "ai/PrototypeManager.hpp"
+#include "ai/Player.hpp"
 
 namespace kraken::fix::wareuse {
     static std::vector<configstructs::WareUnits> RepairWares;
     static std::vector<configstructs::WareUnits> RefuelWares;
 
-    bool TryRepair(ai::Vehicle* playerVehicle, CStr& name)
+    bool TryRepair(hta::ai::Vehicle* playerVehicle, hta::CStr& name)
     {
         for (auto wu : RepairWares)
         {
@@ -41,7 +42,7 @@ namespace kraken::fix::wareuse {
         return false;
     }
 
-    bool TryRefuel(ai::Vehicle* playerVehicle, CStr& name)
+    bool TryRefuel(hta::ai::Vehicle* playerVehicle, hta::CStr& name)
     {
         for (auto wu : RefuelWares)
         {

@@ -7,9 +7,9 @@
 #include "fix/skinfix.hpp"
 
 // hta/ai
-#include "hta/ai/PhysicBody.h"
-#include "hta/ai/PhysicObj.h"
-#include "hta/ai/Gun.hpp"
+#include "ai/PhysicBody.hpp"
+#include "ai/PhysicObj.hpp"
+#include "ai/Gun.hpp"
 
 // hta
 #include "hta/Enums.hpp"
@@ -19,9 +19,9 @@
 
 namespace kraken::fix::skinfix
 {
-    void __fastcall SetSkinFixed(ai::PhysicBody* physicBody, int, int skin)
+    void __fastcall SetSkinFixed(hta::ai::PhysicBody* physicBody, int, int skin)
     {
-        ai::PhysicObj* owner = physicBody->OwnerPhysicObj;
+        hta::ai::PhysicObj* owner = physicBody->OwnerPhysicObj;
         if (owner)
         {
             owner->m_skinNumber = skin;
@@ -32,9 +32,9 @@ namespace kraken::fix::skinfix
             physicBody->Node->SetProperty(PROP_DM_SKIN, &skin);
         }
 
-        if (physicBody->IsKindOf((m3d::Class*)0x00A02354 /*TODO*/))
+        if (physicBody->IsKindOf((hta::m3d::Class*)0x00A02354 /*TODO*/))
         {
-            ai::Gun* gun = (ai::Gun*)physicBody;
+            hta::ai::Gun* gun = (hta::ai::Gun*)physicBody;
             if (gun->m_barrelNode)
             {
                 gun->m_barrelNode->SetProperty(PROP_DM_SKIN, &skin);

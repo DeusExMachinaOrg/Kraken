@@ -1,7 +1,6 @@
 #define LOGGER "ultrawide"
 
 #include "ext/logger.hpp"
-#include "fix/wareuse.hpp"
 #include "config.hpp"
 #include "routines.hpp"
 #include "ext/logger.hpp"

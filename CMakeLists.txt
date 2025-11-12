@@ -40,7 +40,7 @@ add_library(kraken
 )
 
 # Include directories
-target_include_directories(kraken PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(kraken PRIVATE include)
 
 # Windows-specific settings
 if(MSVC)

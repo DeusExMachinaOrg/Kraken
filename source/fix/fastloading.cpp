@@ -2,11 +2,13 @@
 
 #include "ext/logger.hpp"
 #include "fix/fastloading.hpp"
-#include "hta/m3d/Application.h"
 #include "routines.hpp"
 #include "config.hpp"
 
-using PresentScene_t = int (__thiscall *)(m3d::rend::IRenderer *); 
+#include "m3d/Application.hpp"
+#include "m3d/rend/IRenderer.hpp"
+
+using PresentScene_t = int (__thiscall *)(hta::m3d::rend::IRenderer *); 
 
 namespace kraken::fix::fastloading
 {
@@ -18,7 +20,7 @@ namespace kraken::fix::fastloading
         if (counter++ % limit)
             return;
 
-        m3d::rend::IRenderer* renderer = m3d::Application::Instance->Renderer;
+        hta::m3d::rend::IRenderer* renderer = hta::m3d::Application::Instance->Renderer;
         void** vtable = *(void***)renderer;
         PresentScene_t presentScene = *reinterpret_cast<PresentScene_t*>(
             reinterpret_cast<std::uintptr_t*>(vtable) + (0x378/sizeof(void*))

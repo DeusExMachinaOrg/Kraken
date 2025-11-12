@@ -4,24 +4,24 @@
 #include "routines.hpp"
 #include "config.hpp"
 
-#include "hta/CVector.h"
-#include "hta/ai/Vehicle.hpp"
-#include "hta/ai/ActionType.h"
-#include "hta/ai/Cabin.h"
-#include "hta/ai/Basket.h"
-#include "hta/m3d/AnimInfo.hpp"
+#include "CVector.hpp"
+#include "ai/Vehicle.hpp"
+#include "ActionType.hpp"
+#include "ai/Cabin.hpp"
+#include "ai/Basket.hpp"
+#include "m3d/AnimInfo.hpp"
 
 #include "fix/cardan.hpp"
 
 namespace kraken::fix::cardan {
-    void SetChassisAnimationStopped(ai::Vehicle* vehicle, bool stopped) {
+    void SetChassisAnimationStopped(hta::ai::Vehicle* vehicle, bool stopped) {
         // ----------------------------------------------
         // Cardan fix
         // stopped = true -> stop chassis animation
         // ----------------------------------------------
-        ai::Chassis* chassis = vehicle->GetChassis();
+        hta::ai::Chassis* chassis = vehicle->GetChassis();
         if (chassis) {
-            m3d::AnimInfo* info;
+            hta::m3d::AnimInfo* info;
             chassis->Node->GetProperty(1, &info);
             if (info) {
                 bool has_anim = !info->m_Empty;
@@ -32,7 +32,7 @@ namespace kraken::fix::cardan {
         }
     }
 
-    void __fastcall KeepThrottle(ai::Vehicle* vehicle, void*, bool applyActions)
+    static void __fastcall KeepThrottle(hta::ai::Vehicle* vehicle, void*, bool applyActions)
     {
         // -------------------------------------------------
         // Original function code from IDA
@@ -42,41 +42,41 @@ namespace kraken::fix::cardan {
         int v4; // eax
         int v5; // eax
         int v6; // eax
-        CVector velocity2; // eax
+        hta::CVector velocity2; // eax
         float x; // xmm2_4
         float y; // xmm1_4
         float z; // xmm0_4
         unsigned int v11; // eax
-        ActionType* v12; // eax
-        ai::Basket* v13; // eax
-        ai::Basket* v14; // edi
-        ai::Cabin* v15; // eax
-        ai::Cabin* v16; // edi
-        ActionType* v17; // eax
-        ai::Basket* v18; // edi
-        ai::Cabin* v19; // eax
-        ai::Cabin* v20; // edi
+        hta::ActionType* v12; // eax
+        hta::ai::Basket* v13; // eax
+        hta::ai::Basket* v14; // edi
+        hta::ai::Cabin* v15; // eax
+        hta::ai::Cabin* v16; // edi
+        hta::ActionType* v17; // eax
+        hta::ai::Basket* v18; // edi
+        hta::ai::Cabin* v19; // eax
+        hta::ai::Cabin* v20; // edi
         unsigned int m_flags; // eax
-        ActionType* Myfirst; // eax
-        ai::Basket* Basket; // eax
-        ai::Basket* v24; // edi
-        ai::Cabin* Cabin; // eax
-        ai::Cabin* v26; // edi
+        hta::ActionType* Myfirst; // eax
+        hta::ai::Basket* Basket; // eax
+        hta::ai::Basket* v24; // edi
+        hta::ai::Cabin* Cabin; // eax
+        hta::ai::Cabin* v26; // edi
         float wheelRpm; // [esp+8h] [ebp-28h]
         float vel; // [esp+Ch] [ebp-24h] BYREF
         float v29; // [esp+10h] [ebp-20h]
         float v30; // [esp+14h] [ebp-1Ch]
-        CVector dir; // [esp+18h] [ebp-18h] BYREF
+        hta::CVector dir; // [esp+18h] [ebp-18h] BYREF
         char v32[12]; // [esp+24h] [ebp-Ch] BYREF
 
         wheelRpm = fabs(vehicle->m_averageWheelAVel) * 9.5492964;
-        CVector velocity = vehicle->GetLinearVelocity();
+        hta::CVector velocity = vehicle->GetLinearVelocity();
 
         vel = velocity.x;
         v29 = velocity.y;
         v30 = velocity.z;
 
-        vehicle->GetDirection(&dir);
+        dir = vehicle->GetDirection();
         if (vehicle->m_bAutoBrake) {
             if (wheelRpm > 5.0
                 && (vehicle->m_engineRpm <= 0.000001 ? (vehicle->m_engineRpm >= -0.000001 ? (v3 = 0) : (v3 = -1)) : (v3 = 1),
@@ -113,20 +113,20 @@ namespace kraken::fix::cardan {
                 m_flags = vehicle->GetMoveStatus();
                 if ((m_flags & 8) == 0 && (m_flags & 2) == 0 && !vehicle->m_parentRepository) {
                     Myfirst = vehicle->m_effectActions.data();
-                    if (Myfirst && *Myfirst != AT_MOVE1) {
-                        *Myfirst = AT_MOVE1;
+                    if (Myfirst && *Myfirst != hta::AT_MOVE1) {
+                        *Myfirst = hta::AT_MOVE1;
                         Basket = vehicle->GetBasket();
                         v24 = Basket;
                         if (Basket) {
-                            Basket->SetEffectActions(&vehicle->m_effectActions);
-                            v24->SetNodeAnimAction(ActionType(2), 1);
+                            Basket->SetEffectActions(vehicle->m_effectActions);
+                            v24->SetNodeAnimAction(hta::ActionType(2), 1);
                         }
 
                         Cabin = vehicle->GetCabin();
                         v26 = Cabin;
                         if (Cabin) {
-                            Cabin->SetEffectActions(&vehicle->m_effectActions);
-                            v26->SetNodeAnimAction(ActionType(2), 1);
+                            Cabin->SetEffectActions(vehicle->m_effectActions);
+                            v26->SetNodeAnimAction(hta::ActionType(2), 1);
                         }
 
                         // Cardan fix
@@ -143,19 +143,19 @@ namespace kraken::fix::cardan {
                 if ((((x * x) + (y * y)) + (z * z)) >= 0.1) {
                     if ((v11 & 8) == 0 && (v11 & 2) == 0 && !vehicle->m_parentRepository) {
                         v17 = vehicle->m_effectActions.data();
-                        if (v17 && *v17 != AT_MOVE2) {
-                            *v17 = AT_MOVE2;
+                        if (v17 && *v17 != hta::AT_MOVE2) {
+                            *v17 = hta::AT_MOVE2;
                             v18 = vehicle->GetBasket();
                             if (v18) {
-                                v18->SetEffectActions(&vehicle->m_effectActions);
-                                v18->SetNodeAnimAction(ActionType(3), 1);
+                                v18->SetEffectActions(vehicle->m_effectActions);
+                                v18->SetNodeAnimAction(hta::ActionType(3), 1);
                             }
 
                             v19 = vehicle->GetCabin();
                             v20 = v19;
                             if (v19) {
-                                v19->SetEffectActions(&vehicle->m_effectActions);
-                                v20->SetNodeAnimAction(ActionType(3), 1);
+                                v19->SetEffectActions(vehicle->m_effectActions);
+                                v20->SetNodeAnimAction(hta::ActionType(3), 1);
                             }
 
                             // Cardan fix
@@ -166,19 +166,19 @@ namespace kraken::fix::cardan {
                 else if ((v11 & 8) == 0 && (v11 & 2) == 0 && !vehicle->m_parentRepository) {
                     v12 = vehicle->m_effectActions.data();
                     if (v12 && *v12) {
-                        *v12 = AT_STAND1;
+                        *v12 = hta::AT_STAND1;
                         v13 = vehicle->GetBasket();
                         v14 = v13;
                         if (v13) {
-                            v13->SetEffectActions(&vehicle->m_effectActions);
-                            v14->SetNodeAnimAction(ActionType(0), 1);
+                            v13->SetEffectActions(vehicle->m_effectActions);
+                            v14->SetNodeAnimAction(hta::ActionType(0), 1);
                         }
 
                         v15 = vehicle->GetCabin();
                         v16 = v15;
                         if (v15) {
-                            v15->SetEffectActions(&vehicle->m_effectActions);
-                            v16->SetNodeAnimAction(ActionType(0), 1);
+                            v15->SetEffectActions(vehicle->m_effectActions);
+                            v16->SetNodeAnimAction(hta::ActionType(0), 1);
                         }
 
                         // Cardan fix

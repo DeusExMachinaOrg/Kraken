@@ -5,18 +5,20 @@
 #include "routines.hpp"
 #include "configstructs.hpp"
 #include "ext/logger.hpp"
-#include "hta/CStr.h"
-#include "hta/ai/IPriceCoeffProvider.h"
-#include "hta/ai/PrototypeManager.h"
-#include "hta/ai/DynamicScene.hpp"
-#include "hta/ai/Vehicle.hpp"
-#include "hta/ai/VehiclePart.h"
-#include "hta/ai/ComplexPhysicObj.h"
+
+#include "CStr.hpp"
+#include "ai/IPriceCoeffProvider.hpp"
+#include "ai/PrototypeManager.hpp"
+#include "ai/DynamicScene.hpp"
+#include "ai/Vehicle.hpp"
+#include "ai/VehiclePart.hpp"
+#include "ai/ComplexPhysicObj.hpp"
+#include "ai/DynamicQuestPeace.hpp"
+#include "ai/Player.hpp"
+#include "ai/CompoundGun.hpp"
+#include "ai/ObjContainer.hpp"
+
 #include "fix/complexschwarz.hpp"
-#include "hta/ai/DynamicQuestPeace.hpp"
-#include "hta/ai/Player.hpp"
-#include "hta/ai/CompoundGun.hpp"
-#include "hta/ai/ObjContainer.hpp"
 
 enum GadgetId : __int32 // borrowed from CabinWnd::GadgetId
 {
@@ -92,11 +94,11 @@ namespace kraken::fix::complexschwarz {
     }
 
     // TODO: add option to take into account how effective the gadget is for guns config
-    uint32_t GetWeaponGadgetSchwarz(ai::Gadget* gadget, const int gadget_id)
+    uint32_t GetWeaponGadgetSchwarz(hta::ai::Gadget* gadget, const int gadget_id)
     {
         uint32_t gprice = gadget->GetPrice(0);
-        const ai::GadgetPrototypeInfo* gprotinfo = gadget->GetPrototypeInfo();
-        const CStr& modificator = gprotinfo->m_modifications[0].m_propertyName;
+        const hta::ai::GadgetPrototypeInfo* gprotinfo = gadget->GetPrototypeInfo();
+        const hta::CStr& modificator = gprotinfo->m_modifications[0].m_propertyName;
 
         LOG_INFO("--- Weapon Gadget id #%d (1st mod: %s), RawPrice: %d ---",
             gadget->m_slotNum,
@@ -121,9 +123,9 @@ namespace kraken::fix::complexschwarz {
 
     }
 
-    uint32_t GetOverridenPrice(ai::Obj* object)
+    uint32_t GetOverridenPrice(hta::ai::Obj* object)
     {
-        const CStr& prot_name = object->GetPrototypeInfo()->m_prototypeName;
+        const hta::CStr& prot_name = object->GetPrototypeInfo()->m_prototypeName;
         auto overriden_schwarz = schwarz_overrides.find(prot_name);
         if (overriden_schwarz != schwarz_overrides.end())
         {
@@ -133,7 +135,7 @@ namespace kraken::fix::complexschwarz {
         return 0;
     }
 
-    uint32_t GetCompoundGunPartPrice(ai::CompoundGun* gun)
+    uint32_t GetCompoundGunPartPrice(hta::ai::CompoundGun* gun)
     {
         float part_durability = gun->GetDurability();
         float part_max_durability = gun->GetMaxDurability();
@@ -165,9 +167,9 @@ namespace kraken::fix::complexschwarz {
                 uint32_t shell_prot_id = gun->GetShellPrototypeId();
                 if (shell_prot_id != -1)
                 {
-                    ai::PrototypeInfo* shell_prototype;
-                    if ( !ai::PrototypeManager::Instance->m_prototypes.empty() && shell_prot_id < ai::PrototypeManager::Instance->m_prototypes.size() )
-                        shell_prototype = ai::PrototypeManager::Instance->m_prototypes[shell_prot_id];
+                    hta::ai::PrototypeInfo* shell_prototype;
+                    if ( !hta::ai::PrototypeManager::Instance->m_prototypes.empty() && shell_prot_id < hta::ai::PrototypeManager::Instance->m_prototypes.size() )
+                        shell_prototype = hta::ai::PrototypeManager::Instance->m_prototypes[shell_prot_id];
                     else
                         shell_prototype = 0;
 
@@ -192,7 +194,7 @@ namespace kraken::fix::complexschwarz {
 
     }
 
-    uint32_t GetGunPartPrice(ai::Gun* gun)
+    uint32_t GetGunPartPrice(hta::ai::Gun* gun)
     {
         float part_durability = gun->m_durability.m_value.m_value;
         float part_max_durability = gun->m_durability.m_maxValue.m_value;
@@ -222,9 +224,9 @@ namespace kraken::fix::complexschwarz {
             uint32_t shell_prot_id = gun->m_shellPrototypeId;
             if (shell_prot_id != -1)
             {
-                ai::PrototypeInfo* shell_prototype;
-                if ( !ai::PrototypeManager::Instance->m_prototypes.empty() && shell_prot_id < ai::PrototypeManager::Instance->m_prototypes.size() )
-                    shell_prototype = ai::PrototypeManager::Instance->m_prototypes[shell_prot_id];
+                hta::ai::PrototypeInfo* shell_prototype;
+                if ( !hta::ai::PrototypeManager::Instance->m_prototypes.empty() && shell_prot_id < ai::PrototypeManager::Instance->m_prototypes.size() )
+                    shell_prototype = hta::ai::PrototypeManager::Instance->m_prototypes[shell_prot_id];
                 else
                     shell_prototype = 0;
 
@@ -246,7 +248,7 @@ namespace kraken::fix::complexschwarz {
         return base_price + shells_price;
     }
 
-    uint32_t GetPartPrice(ai::VehiclePart* veh_part)
+    uint32_t GetPartPrice(hta::ai::VehiclePart* veh_part)
     {
         uint32_t overriden_base_schwarz = GetOverridenPrice(veh_part);
         if (overriden_base_schwarz != 0)
@@ -256,7 +258,7 @@ namespace kraken::fix::complexschwarz {
         return (uint32_t)veh_part->m_price.m_value;
     }
 
-    uint32_t GetGadgetPrice(ai::Gadget* gadget)
+    uint32_t GetGadgetPrice(hta::ai::Gadget* gadget)
     {
         uint32_t overriden_base_schwarz = GetOverridenPrice(gadget);
         if (overriden_base_schwarz != 0)
@@ -266,7 +268,7 @@ namespace kraken::fix::complexschwarz {
         return gadget->GetPrototypeInfo()->m_price;
     }
 
-    uint32_t GetDurablePartSchwarz(ai::VehiclePart* veh_part)
+    uint32_t GetDurablePartSchwarz(hta::ai::VehiclePart* veh_part)
     {
         float part_max_durability = veh_part->m_durability.m_maxValue.m_value;
         if (part_max_durability < 0.001)
@@ -289,7 +291,7 @@ namespace kraken::fix::complexschwarz {
         return (uint32_t)(base_price * condition_coeff);
     }
 
-    uint32_t GetSchwarzOld(ai::Vehicle* vehicle)
+    uint32_t GetSchwarzOld(hta::ai::Vehicle* vehicle)
     {
         LOG_DEBUG("> GetSchwarz Original <");
 
@@ -313,7 +315,7 @@ namespace kraken::fix::complexschwarz {
         return vanilla_schwarz;
     }
 
-    uint32_t __fastcall GetComplexSchwarz(ai::Vehicle* vehicle, void* _)
+    uint32_t __fastcall GetComplexSchwarz(hta::ai::Vehicle* vehicle, void* _)
     {
         if (!complex_schwarz)
         {
@@ -353,14 +355,14 @@ namespace kraken::fix::complexschwarz {
             {
                 basket_price += GetDurablePartSchwarz(veh_part);
             }
-            else if (veh_part->IsKindOf((m3d::Class*)0x00A024D0)) //ai::CompoundGun*
+            else if (veh_part->IsKindOf((hta::m3d::Class*)0x00A024D0)) //ai::CompoundGun*
             {
-                guns_schwarz += GetCompoundGunPartPrice(reinterpret_cast<ai::CompoundGun*>(veh_part));
+                guns_schwarz += GetCompoundGunPartPrice(reinterpret_cast<hta::ai::CompoundGun*>(veh_part));
             }
             else // a normal gun
             {
                 // m3d::Class* pclass = veh_part->GetClass();
-                guns_schwarz += GetGunPartPrice(reinterpret_cast<ai::Gun*>(veh_part));
+                guns_schwarz += GetGunPartPrice(reinterpret_cast<hta::ai::Gun*>(veh_part));
             }
         }
 

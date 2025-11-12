@@ -4,25 +4,25 @@
 #include "routines.hpp"
 #include "config.hpp"
 
-#include "hta/ai/Event.hpp"
-#include "hta/ai/Team.h"
-#include "hta/ai/ObjContainer.hpp"
-#include "hta/ai/StaticAutoGun.hpp"
+#include "ai/Event.hpp"
+#include "ai/Team.hpp"
+#include "ai/ObjContainer.hpp"
+#include "ai/StaticAutoGun.hpp"
 
 #include "fix/tactics.hpp"
 
 namespace kraken::fix::tactics {
-    void __fastcall Fixed_AttackNow(ai::Team* team, int, int id)
+    void __fastcall Fixed_AttackNow(hta::ai::Team* team, int, int id)
     {
-        ai::AI* pAI = &team->m_AI;
+        hta::ai::AI* pAI = &team->m_AI;
 
         team->_AdjustRoles(id);
 
-        m3d::AIParam Param1 = {};
-        m3d::AIParam Param2 = {};
-        m3d::AIParam Param3 = {};
+        hta::m3d::AIParam Param1 = {};
+        hta::m3d::AIParam Param2 = {};
+        hta::m3d::AIParam Param3 = {};
 
-        Param1.Type = m3d::eAIParamType::AIPARAM_ID;
+        Param1.Type = hta::m3d::eAIParamType::AIPARAM_ID;
         Param1.id = id;
 
         pAI->InsCommand(2, Param1, Param2, Param3);
@@ -34,20 +34,20 @@ namespace kraken::fix::tactics {
 
     static bool g_lockOnPlayer = false;
 
-    float GetCurrentHealthPercent(ai::Vehicle* vehicle)
+    float GetCurrentHealthPercent(hta::ai::Vehicle* vehicle)
     {
         return vehicle->GetHealth() / vehicle->GetMaxHealth();
     }
 
-    float GetCurrentHealth(m3d::Object* obj)
+    float GetCurrentHealth(hta::m3d::Object* obj)
     {
         if (obj) {
-            if (obj->IsKindOf(ai::Vehicle::m_classVehicle)) {
-                ai::Vehicle* vehicle = (ai::Vehicle*)obj;
+            if (obj->IsKindOf(hta::ai::Vehicle::m_classVehicle)) {
+                hta::ai::Vehicle* vehicle = (hta::ai::Vehicle*)obj;
                 return vehicle->GetHealth();
             }
-            else if (obj->IsKindOf(ai::StaticAutoGun::m_classStaticAutoGun)) {
-                ai::StaticAutoGun* autoGun = (ai::StaticAutoGun*)obj;
+            else if (obj->IsKindOf(hta::ai::StaticAutoGun::m_classStaticAutoGun)) {
+                hta::ai::StaticAutoGun* autoGun = (hta::ai::StaticAutoGun*)obj;
                 return autoGun->Health().m_value.m_value;
             }
             else
@@ -56,29 +56,29 @@ namespace kraken::fix::tactics {
         return FLT_MAX;
     }
 
-    ai::Vehicle* GetVehicle(m3d::Object* obj)
+    hta::ai::Vehicle* GetVehicle(hta::m3d::Object* obj)
     {
         if (obj) {
-            if (obj->IsKindOf(ai::Vehicle::m_classVehicle))
-                return (ai::Vehicle*)obj;
+            if (obj->IsKindOf(hta::ai::Vehicle::m_classVehicle))
+                return (hta::ai::Vehicle*)obj;
             else
                 return nullptr; // Not vehicle (breakpoint)
         }
         return nullptr;
     }
 
-    bool isSameAttacker(ai::Team* team, const ai::Event* evn, bool lock_on_player)
+    bool isSameAttacker(hta::ai::Team* team, const hta::ai::Event* evn, bool lock_on_player)
     {
-        const CStr& stateName = team->m_AI.GetCurState2Name();
+        const hta::CStr& stateName = team->m_AI.GetCurState2Name();
         if (!stateName.m_charPtr || !stateName.Equal("Attack"))
             return false;
 
         int attacked_vehicle_id = evn->m_senderObjId;
-        ai::Vehicle* attacked_vehicle = GetVehicle(ai::ObjContainer::theObjects->GetEntityByObjId(attacked_vehicle_id));
+        hta::ai::Vehicle* attacked_vehicle = GetVehicle(hta::ai::ObjContainer::theObjects->GetEntityByObjId(attacked_vehicle_id));
         if (!attacked_vehicle || attacked_vehicle->m_roleId == -1)
             return false;
 
-        ai::VehicleRole* role = (ai::VehicleRole*)ai::ObjContainer::theObjects->GetEntityByObjId(attacked_vehicle->m_roleId);
+        hta::ai::VehicleRole* role = (hta::ai::VehicleRole*)hta::ai::ObjContainer::theObjects->GetEntityByObjId(attacked_vehicle->m_roleId);
         if (!role)
             return false;
 
@@ -97,8 +97,8 @@ namespace kraken::fix::tactics {
                 return false;
         }
 
-        ai::Obj* attacker = ai::ObjContainer::theObjects->GetEntityByObjId(attacker_id);
-        ai::Obj* current_target = ai::ObjContainer::theObjects->GetEntityByObjId(current_target_id);
+        hta::ai::Obj* attacker = hta::ai::ObjContainer::theObjects->GetEntityByObjId(attacker_id);
+        hta::ai::Obj* current_target = hta::ai::ObjContainer::theObjects->GetEntityByObjId(current_target_id);
         if (!attacker || !current_target)
             return false;
 
@@ -116,13 +116,13 @@ namespace kraken::fix::tactics {
     {
         int result; // eax
 
-        result = ((ai::Obj*)team)->ai::Obj::OnEvent(*evn);
+        result = ((hta::ai::Obj*)team)->ai::Obj::OnEvent(*evn);
         switch (evn->m_eventId) {
-        case ai::GE_OBJECT_DIE:
+        case hta::ai::GE_OBJECT_DIE:
             team->_OnObjectDie(evn);
             result = 1;
             break;
-        case ai::GE_UNDER_ATTACK:
+        case hta::ai::GE_UNDER_ATTACK:
         {
             // AdjustRoles only if the attacker is different from the current target
             if (isSameAttacker(team, evn, g_lockOnPlayer)) {
@@ -133,11 +133,11 @@ namespace kraken::fix::tactics {
             result = 1;
             break;
         }
-        case ai::GE_NOTICE_ENEMY:
+        case hta::ai::GE_NOTICE_ENEMY:
             team->_OnNoticeEnemy(evn);
             result = 1;
             break;
-        case ai::GE_PLAYER_VEHICLE_CHANGED:
+        case hta::ai::GE_PLAYER_VEHICLE_CHANGED:
             result = 1;
             team->m_needAdjustBehaviour = 1;
             break;

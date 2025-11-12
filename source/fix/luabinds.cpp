@@ -3,10 +3,11 @@
 #include "ext/logger.hpp"
 #include "fix/luabinds.hpp"
 #include "fix/impulse.hpp"
-#include "hta/m3d/GameImpulse.h"
-#include "hta/m3d/Kernel.h"
-#include "hta/m3d/CMiracle3d.h"
 #include "routines.hpp"
+
+#include "m3d/GameImpulse.hpp"
+#include "m3d/Kernel.hpp"
+#include "m3d/CMiracle3d.hpp"
 
 namespace kraken::fix::luabinds {
     static std::vector<std::string> g_scripts;
