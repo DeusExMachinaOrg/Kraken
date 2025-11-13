@@ -5,9 +5,9 @@
 #include "fix/impulse.hpp"
 #include "routines.hpp"
 
-#include "m3d/GameImpulse.hpp"
-#include "m3d/Kernel.hpp"
-#include "m3d/CMiracle3d.hpp"
+#include "hta/m3d/GameImpulse.hpp"
+#include "hta/m3d/Kernel.hpp"
+#include "hta/m3d/CMiracle3d.hpp"
 
 namespace kraken::fix::luabinds {
     static std::vector<std::string> g_scripts;

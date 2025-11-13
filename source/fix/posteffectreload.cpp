@@ -6,11 +6,12 @@
 #include "config.hpp"
 
 #include "vc3/vector"
-#include "m3d/Kernel.hpp"
-#include "m3d/EngineConfig.hpp"
-#include "ai/CServer.hpp"
-#include "m3d/CClient.hpp"
-#include "m3d/WeatherManager.hpp"
+
+#include "hta/m3d/Kernel.hpp"
+#include "hta/m3d/EngineConfig.hpp"
+#include "hta/ai/CServer.hpp"
+#include "hta/m3d/CClient.hpp"
+#include "hta/m3d/WeatherManager.hpp"
 
 void UpdateWeather_Hook();
 

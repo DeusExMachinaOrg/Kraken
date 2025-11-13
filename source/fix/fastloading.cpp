@@ -5,8 +5,8 @@
 #include "routines.hpp"
 #include "config.hpp"
 
-#include "m3d/Application.hpp"
-#include "m3d/rend/IRenderer.hpp"
+#include "hta/m3d/Application.hpp"
+#include "hta/m3d/rend/IRenderer.hpp"
 
 using PresentScene_t = int (__thiscall *)(hta::m3d::rend::IRenderer *); 
 

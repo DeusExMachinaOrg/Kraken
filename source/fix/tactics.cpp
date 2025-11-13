@@ -4,10 +4,11 @@
 #include "routines.hpp"
 #include "config.hpp"
 
-#include "ai/Event.hpp"
-#include "ai/Team.hpp"
-#include "ai/ObjContainer.hpp"
-#include "ai/StaticAutoGun.hpp"
+#include "hta/ai/Event.hpp"
+#include "hta/ai/Team.hpp"
+#include "hta/ai/Vehicle.hpp"
+#include "hta/ai/ObjContainer.hpp"
+#include "hta/ai/StaticAutoGun.hpp"
 
 #include "fix/tactics.hpp"
 
@@ -112,7 +113,7 @@ namespace kraken::fix::tactics {
         return false;
     }
 
-    int __fastcall Fixed_TeamOnEvent(ai::Team* team, void*, const ai::Event* evn)
+    int __fastcall Fixed_TeamOnEvent(hta::ai::Team* team, void*, const hta::ai::Event* evn)
     {
         int result; // eax
 

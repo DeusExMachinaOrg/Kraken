@@ -5,9 +5,9 @@
 #include "configstructs.hpp"
 #include "routines.hpp"
 
-#include "m3d/CMiracle3d.hpp"
-#include "ai/PrototypeManager.hpp"
-#include "ai/Player.hpp"
+#include "hta/m3d/CMiracle3d.hpp"
+#include "hta/ai/PrototypeManager.hpp"
+#include "hta/ai/Player.hpp"
 
 namespace kraken::fix::wareuse {
     static std::vector<configstructs::WareUnits> RepairWares;

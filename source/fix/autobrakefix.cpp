@@ -1,13 +1,14 @@
 ﻿#define LOGGER "autobrakefix"
 
 #include "fix/autobrakefix.hpp"
-#include "CVector.hpp"
-#include "ai/Path.hpp"
-#include "ai/Shared.hpp"
-#include "ai/Vehicle.hpp"
 #include "config.hpp"
 #include "ext/logger.hpp"
 #include "routines.hpp"
+
+#include "hta/CVector.hpp"
+#include "hta/ai/Path.hpp"
+#include "hta/ai/Shared.hpp"
+#include "hta/ai/Vehicle.hpp"
 
 namespace kraken::fix::autobrakefix {
     static int g_auto_brake_angle = 50;
@@ -32,7 +33,7 @@ namespace kraken::fix::autobrakefix {
         }
 
         // TODO: Move it to `hta/ai/Shared.[hc]pp`
-        static auto CalcDrivingValues = (void (__fastcall*)(const hta::ai::Vehicle&, const hta::CVector&, const hta::CVector&, bool, hta::ai::DrivingValues&))(0x005D57A0);
+        static auto CalcDrivingValues = (void(__fastcall*)(const hta::ai::Vehicle&, const hta::CVector&, const hta::CVector&, bool, hta::ai::DrivingValues&))(0x005D57A0);
         CalcDrivingValues(*vehicle, curPoint, nextPoint, true, dv);
 
         float nextAngle = abs(dv.nextAngle);

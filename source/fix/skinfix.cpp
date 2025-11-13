@@ -1,21 +1,13 @@
 #define LOGGER "skinfix"
 
-// ext
 #include "ext/logger.hpp"
-
-// fix
 #include "fix/skinfix.hpp"
-
-// hta/ai
-#include "ai/PhysicBody.hpp"
-#include "ai/PhysicObj.hpp"
-#include "ai/Gun.hpp"
-
-// hta
-#include "hta/Enums.hpp"
-
-// local
 #include "routines.hpp"
+
+#include "hta/ai/PhysicBody.hpp"
+#include "hta/ai/PhysicObj.hpp"
+#include "hta/ai/Gun.hpp"
+#include "hta/Enums.hpp"
 
 namespace kraken::fix::skinfix
 {

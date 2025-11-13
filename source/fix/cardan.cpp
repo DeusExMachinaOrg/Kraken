@@ -4,12 +4,13 @@
 #include "routines.hpp"
 #include "config.hpp"
 
-#include "CVector.hpp"
-#include "ai/Vehicle.hpp"
-#include "ActionType.hpp"
-#include "ai/Cabin.hpp"
-#include "ai/Basket.hpp"
-#include "m3d/AnimInfo.hpp"
+#include "hta/CVector.hpp"
+#include "hta/ai/Vehicle.hpp"
+#include "hta/ActionType.hpp"
+#include "hta/ai/Cabin.hpp"
+#include "hta/ai/Basket.hpp"
+#include "hta/m3d/AnimInfo.hpp"
+#include "hta/Shared.hpp"
 
 #include "fix/cardan.hpp"
 
@@ -22,7 +23,7 @@ namespace kraken::fix::cardan {
         hta::ai::Chassis* chassis = vehicle->GetChassis();
         if (chassis) {
             hta::m3d::AnimInfo* info;
-            chassis->Node->GetProperty(1, &info);
+            chassis->m_Node->GetProperty(1, &info);
             if (info) {
                 bool has_anim = !info->m_Empty;
                 if (has_anim) {
@@ -112,7 +113,7 @@ namespace kraken::fix::cardan {
             if (vehicle->m_brake <= 0.0001) {
                 m_flags = vehicle->GetMoveStatus();
                 if ((m_flags & 8) == 0 && (m_flags & 2) == 0 && !vehicle->m_parentRepository) {
-                    Myfirst = vehicle->m_effectActions.data();
+                    Myfirst = &vehicle->m_effectActions[0];
                     if (Myfirst && *Myfirst != hta::AT_MOVE1) {
                         *Myfirst = hta::AT_MOVE1;
                         Basket = vehicle->GetBasket();
@@ -142,7 +143,7 @@ namespace kraken::fix::cardan {
                 v11 = vehicle->GetMoveStatus();
                 if ((((x * x) + (y * y)) + (z * z)) >= 0.1) {
                     if ((v11 & 8) == 0 && (v11 & 2) == 0 && !vehicle->m_parentRepository) {
-                        v17 = vehicle->m_effectActions.data();
+                        v17 = &vehicle->m_effectActions[0];
                         if (v17 && *v17 != hta::AT_MOVE2) {
                             *v17 = hta::AT_MOVE2;
                             v18 = vehicle->GetBasket();
@@ -164,7 +165,7 @@ namespace kraken::fix::cardan {
                     }
                 }
                 else if ((v11 & 8) == 0 && (v11 & 2) == 0 && !vehicle->m_parentRepository) {
-                    v12 = vehicle->m_effectActions.data();
+                    v12 = &vehicle->m_effectActions[0];
                     if (v12 && *v12) {
                         *v12 = hta::AT_STAND1;
                         v13 = vehicle->GetBasket();
