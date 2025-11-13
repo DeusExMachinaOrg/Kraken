@@ -414,7 +414,7 @@ namespace kraken::fix::complexschwarz {
     }
 
     void Apply() {
-        const kraken::Config& config = kraken::Config::Get();
+        const kraken::Config& config = kraken::Config::Instance();
 
         LOG_INFO("Feature enabled");
 

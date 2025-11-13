@@ -13,15 +13,15 @@ namespace kraken::fix::skinfix
 {
     void __fastcall SetSkinFixed(hta::ai::PhysicBody* physicBody, int, int skin)
     {
-        hta::ai::PhysicObj* owner = physicBody->OwnerPhysicObj;
+        hta::ai::PhysicObj* owner = physicBody->m_ownerPhysicObj;
         if (owner)
         {
             owner->m_skinNumber = skin;
         }
 
-        if (physicBody->Node)
+        if (physicBody->m_Node)
         {
-            physicBody->Node->SetProperty(PROP_DM_SKIN, &skin);
+            physicBody->m_Node->SetProperty(hta::PROP_DM_SKIN, &skin);
         }
 
         if (physicBody->IsKindOf((hta::m3d::Class*)0x00A02354 /*TODO*/))
@@ -29,7 +29,7 @@ namespace kraken::fix::skinfix
             hta::ai::Gun* gun = (hta::ai::Gun*)physicBody;
             if (gun->m_barrelNode)
             {
-                gun->m_barrelNode->SetProperty(PROP_DM_SKIN, &skin);
+                gun->m_barrelNode->SetProperty(hta::PROP_DM_SKIN, &skin);
             }
         }
     }

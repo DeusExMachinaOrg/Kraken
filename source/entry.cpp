@@ -23,7 +23,6 @@
 #include "fix/tactics.hpp"
 #include "fix/complexschwarz.hpp"
 #include "fix/skinfix.hpp"
-#include "hta/pointers.hpp"
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;

@@ -8,7 +8,7 @@
 namespace kraken::fix::ultrawide {
     void Apply()
     {
-        const kraken::Config& config = kraken::Config::Get();
+        const kraken::Config& config = kraken::Config::Instance();
         if (config.ultrawide.value == 0)
             return;
 

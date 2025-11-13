@@ -34,7 +34,7 @@ namespace kraken::fix::posteffectreload {
 
         clearWeatherStorage(&weather_manager.m_curWeatherStorage);
 
-        const hta::m3d::EngineConfig& cfg = hta::m3d::Kernel::g_Kernel->GetEngineCfg();
+        const hta::m3d::EngineConfig& cfg = hta::m3d::Kernel::Instance()->GetEngineCfg();
         weather_manager.ReadFromXmlFile(cfg.m_weather_ConfigFile.m_s.m_charPtr);
         weather_manager.SetActiveWeather(current_weather_index);
         weather_manager.UpdateDayTime();

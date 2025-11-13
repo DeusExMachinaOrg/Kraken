@@ -1,20 +1,20 @@
 #define LOGGER "tactics"
 
+#include "config.hpp"
 #include "ext/logger.hpp"
 #include "routines.hpp"
-#include "config.hpp"
 
 #include "hta/ai/Event.hpp"
-#include "hta/ai/Team.hpp"
-#include "hta/ai/Vehicle.hpp"
 #include "hta/ai/ObjContainer.hpp"
 #include "hta/ai/StaticAutoGun.hpp"
+#include "hta/ai/Team.hpp"
+#include "hta/ai/Vehicle.hpp"
+#include "hta/m3d/Kernel.hpp"
 
 #include "fix/tactics.hpp"
 
 namespace kraken::fix::tactics {
-    void __fastcall Fixed_AttackNow(hta::ai::Team* team, int, int id)
-    {
+    void __fastcall Fixed_AttackNow(hta::ai::Team* team, int, int id) {
         hta::ai::AI* pAI = &team->m_AI;
 
         team->_AdjustRoles(id);
@@ -35,30 +35,25 @@ namespace kraken::fix::tactics {
 
     static bool g_lockOnPlayer = false;
 
-    float GetCurrentHealthPercent(hta::ai::Vehicle* vehicle)
-    {
+    float GetCurrentHealthPercent(hta::ai::Vehicle* vehicle) {
         return vehicle->GetHealth() / vehicle->GetMaxHealth();
     }
 
-    float GetCurrentHealth(hta::m3d::Object* obj)
-    {
+    float GetCurrentHealth(hta::m3d::Object* obj) {
         if (obj) {
             if (obj->IsKindOf(hta::ai::Vehicle::m_classVehicle)) {
                 hta::ai::Vehicle* vehicle = (hta::ai::Vehicle*)obj;
                 return vehicle->GetHealth();
-            }
-            else if (obj->IsKindOf(hta::ai::StaticAutoGun::m_classStaticAutoGun)) {
+            } else if (obj->IsKindOf(hta::ai::StaticAutoGun::m_classStaticAutoGun)) {
                 hta::ai::StaticAutoGun* autoGun = (hta::ai::StaticAutoGun*)obj;
                 return autoGun->Health().m_value.m_value;
-            }
-            else
+            } else
                 return FLT_MAX; // Not vehicle (breakpoint)
         }
         return FLT_MAX;
     }
 
-    hta::ai::Vehicle* GetVehicle(hta::m3d::Object* obj)
-    {
+    hta::ai::Vehicle* GetVehicle(hta::m3d::Object* obj) {
         if (obj) {
             if (obj->IsKindOf(hta::ai::Vehicle::m_classVehicle))
                 return (hta::ai::Vehicle*)obj;
@@ -68,8 +63,7 @@ namespace kraken::fix::tactics {
         return nullptr;
     }
 
-    bool isSameAttacker(hta::ai::Team* team, const hta::ai::Event* evn, bool lock_on_player)
-    {
+    bool isSameAttacker(hta::ai::Team* team, const hta::ai::Event* evn, bool lock_on_player) {
         const hta::CStr& stateName = team->m_AI.GetCurState2Name();
         if (!stateName.m_charPtr || !stateName.Equal("Attack"))
             return false;
@@ -97,7 +91,6 @@ namespace kraken::fix::tactics {
             if (attacker_id == 1) // Attack player
                 return false;
         }
-
         hta::ai::Obj* attacker = hta::ai::ObjContainer::theObjects->GetEntityByObjId(attacker_id);
         hta::ai::Obj* current_target = hta::ai::ObjContainer::theObjects->GetEntityByObjId(current_target_id);
         if (!attacker || !current_target)
@@ -113,29 +106,27 @@ namespace kraken::fix::tactics {
         return false;
     }
 
-    int __fastcall Fixed_TeamOnEvent(hta::ai::Team* team, void*, const hta::ai::Event* evn)
-    {
+    int __fastcall Fixed_TeamOnEvent(hta::ai::Team* team, void*, const hta::ai::Event* evn) {
         int result; // eax
 
-        result = ((hta::ai::Obj*)team)->ai::Obj::OnEvent(*evn);
+        result = team->OnEvent(*evn);
         switch (evn->m_eventId) {
         case hta::ai::GE_OBJECT_DIE:
-            team->_OnObjectDie(evn);
+            team->_OnObjectDie(*evn);
             result = 1;
             break;
-        case hta::ai::GE_UNDER_ATTACK:
-        {
+        case hta::ai::GE_UNDER_ATTACK: {
             // AdjustRoles only if the attacker is different from the current target
             if (isSameAttacker(team, evn, g_lockOnPlayer)) {
                 result = 1;
                 break;
             }
-            team->_OnUnderAttack(evn);
+            team->_OnUnderAttack(*evn);
             result = 1;
             break;
         }
         case hta::ai::GE_NOTICE_ENEMY:
-            team->_OnNoticeEnemy(evn);
+            team->_OnNoticeEnemy(*evn);
             result = 1;
             break;
         case hta::ai::GE_PLAYER_VEHICLE_CHANGED:
@@ -148,9 +139,8 @@ namespace kraken::fix::tactics {
         return result;
     }
 
-    void Apply()
-    {
-        const kraken::Config& config = kraken::Config::Get();
+    void Apply() {
+        const kraken::Config& config = kraken::Config::Instance();
         if (config.tactics.value == 0)
             return;
 
@@ -159,13 +149,12 @@ namespace kraken::fix::tactics {
         if (config.tactics_lock.value != 0) {
             LOG_INFO("Lock on player enabled");
             g_lockOnPlayer = true;
-        }
-        else {
+        } else {
             LOG_INFO("Lock on player disabled");
             g_lockOnPlayer = false;
         }
 
-        //kraken::routines::Redirect(0xBF, (void*) 0x00658B50, Fixed_AttackNow);
-        kraken::routines::Redirect(0x79, (void*) 0x00657FF0, Fixed_TeamOnEvent);
+        // kraken::routines::Redirect(0xBF, (void*) 0x00658B50, Fixed_AttackNow);
+        kraken::routines::Redirect(0x79, (void*)0x00657FF0, Fixed_TeamOnEvent);
     }
 };

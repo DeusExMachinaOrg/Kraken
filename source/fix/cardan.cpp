@@ -84,7 +84,7 @@ namespace kraken::fix::cardan {
                     vehicle->m_throttle <= 0.000001 ? (vehicle->m_throttle >= -0.000001 ? (v4 = 0) : (v4 = -1)) : (v4 = 1),
                     v3 * v4 <= 0)
                 || wheelRpm <= 5.0
-                && ((v5 = RoughSign(vehicle->m_throttle)) == 0
+                && ((v5 = hta::RoughSign(vehicle->m_throttle)) == 0
                     || ((((dir.z * v30) + (dir.y * v29)) + (dir.x * vel)) * v5) < -1.5707964)) {
                 vehicle->m_throttle = 0.0;
                 vehicle->m_brake = 1.0f;
@@ -193,7 +193,7 @@ namespace kraken::fix::cardan {
     void Apply()
     {
         LOG_INFO("Feature enabled");
-        const kraken::Config& config = kraken::Config::Get();
+        const kraken::Config& config = kraken::Config::Instance();
         if (config.cardan_fix.value == 0)
             return;
 

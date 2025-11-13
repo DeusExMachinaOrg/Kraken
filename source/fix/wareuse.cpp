@@ -5,7 +5,7 @@
 #include "configstructs.hpp"
 #include "routines.hpp"
 
-#include "hta/m3d/CMiracle3d.hpp"
+#include "hta/CMiracle3d.hpp"
 #include "hta/ai/PrototypeManager.hpp"
 #include "hta/ai/Player.hpp"
 
