@@ -122,6 +122,7 @@ set(HEADERS
     include/hta/ai/Player.hpp
     include/hta/ai/ObjContainer.hpp
     include/hta/ai/StaticAutoGun.hpp
+    include/hta/ai/JointedObj.hpp
     include/hta/m3d/Object.h
     include/hta/m3d/RefCountedBase.h
     include/hta/m3d/Application.h

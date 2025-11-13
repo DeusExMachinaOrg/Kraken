@@ -85,6 +85,11 @@ namespace ai
 			_SetAnimationStopped(this, bStopped);
 		}
 
-		void CreateEffectNode(const CStr* modelname, const CVector* pos, const Quaternion* rot, bool bInsertInRemoveIfFree, float scale, char a8, int a9);
+		static m3d::SgNode* CreateEffectNode(const CStr* modelname, const CVector* pos, const Quaternion* rot, bool bInsertInRemoveIfFree, float scale, bool insertInGraph = 1, int a9 = 0)
+		{
+			FUNC(0x00617450, m3d::SgNode*, __stdcall, _CreateEffectNode, const CStr*, const CVector*, const Quaternion*, bool, float, bool, int);
+			return _CreateEffectNode(modelname, pos, rot, bInsertInRemoveIfFree, scale, insertInGraph, a9);
+		}
+
 	};
 }

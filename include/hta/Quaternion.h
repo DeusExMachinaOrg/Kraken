@@ -8,6 +8,8 @@ struct Quaternion
     float z;
     float w;
 
+    inline static Quaternion& IdentityQuaternion_28 = *(Quaternion*)0x00A04D80;
+
     Quaternion()
     {
         this->Zero();

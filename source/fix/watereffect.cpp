@@ -6,38 +6,15 @@
 
 #include "hta/m3d/Object.h"
 #include "hta/ai/PhysicObj.h"
+#include "hta/ai/PhysicBody.h"
+#include "hta/Quaternion.h"
+#include "hta/ai/ObjContainer.hpp"
+#include "hta/ai/JointedObj.hpp"
 #include "ode/ode.hpp"
 
 #include "fix/watereffect.hpp"
 
 namespace kraken::fix::watereffect {
-    __declspec(naked) void Hook_CollidePOAndWater()
-    {
-        __asm {
-            // Вход: ecx = obj1, edx = obj2, стек: [esp] = ret, [esp+4]=contacts, [esp+8]=numContacts, [esp+0Ch]=reverse
-            push    ebp
-            mov     ebp, esp
-
-            mov     eax, [ebp + 0Ch]    // reverse
-            push    eax
-
-            mov     eax, [ebp + 8]      // numContacts
-            push    eax
-
-            mov     eax, [ebp + 4]      // contacts
-            push    eax
-
-            push    edx                 // obj2
-            push    ecx                 // obj1
-
-            call    CollidePOAndWater
-
-            mov     esp, ebp
-            pop     ebp
-            ret     0Ch
-        }
-    }
-
     int __fastcall CollidePOAndWater(
     m3d::Object* obj1, // ecx
     m3d::Object* obj2, // edx
@@ -46,10 +23,37 @@ namespace kraken::fix::watereffect {
     bool reverse)
     {
         if (obj1->IsKindOf((m3d::Class*)0x00A00B6C)) {
-            CVector vec = ((ai::PhysicObj*)obj1)->GetLinearVelocity();
+            const CVector vec = ((ai::PhysicObj*)obj1)->GetLinearVelocity();
             if (sqrtf(vec.x * vec.x + vec.y * vec.y + vec.z * vec.z) >= 1.0f) {
                 CVector pos(contacts->geom.pos[0], contacts->geom.pos[1], contacts->geom.pos[2]);
-                
+                //CStr modelname("ET_PS_SPLINTER_WATERSPLASH"); // original
+                CStr modelname("ET_PS_PLASMAWATERSPLASH");
+                const Quaternion* quat = &Quaternion::IdentityQuaternion_28;
+                float scale = 1.0f;
+                bool bInsert = true;
+                int a9 = 0;
+                bool insertInGraph = true;
+
+                m3d::SgNode* node;
+
+                __asm {
+                    // ECX = modelname, EDX = pos
+                    lea     ecx, modelname
+                    lea     edx, pos
+
+                    // Параметры на стек (userpurge)
+                    push    scale             // float scale
+                    push    bInsert           // bool bInsertInRemoveIfFree
+                    push    quat              // const Quaternion* rot
+
+                    // Вызов оригинальной функции
+                    mov     eax, 0x00617450
+                    call    eax        // адрес CreateEffectNode
+
+                    // Сохраняем результат
+                    mov     node, eax
+                }
+
             }
         }
         return 0;

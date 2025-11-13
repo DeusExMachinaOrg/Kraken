@@ -16,12 +16,18 @@ struct CStr
 
 	CStr(const CStr& other) = delete;
 
-	CStr(const char* str) = delete;
-	// {
-	// 	allocSz = strlen(str) + 1;
-	// 	m_charPtr = new char[allocSz];
-	// 	strcpy(m_charPtr, str);
-	// }
+	CStr(const char* str)
+	{
+		allocSz = strlen(str) + 1;
+		m_charPtr = new char[allocSz];
+		strcpy(m_charPtr, str);
+	}
+
+	~CStr()
+	{
+		if (allocSz && m_charPtr)
+			delete[] m_charPtr;
+	}
 
 	bool Equal(char* str) const
 	{
