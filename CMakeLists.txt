@@ -49,6 +49,7 @@ if(MSVC)
         /W3
         /arch:AVX2    # AVX2 поддержка
         /fp:fast      # Быстрая float арифметика
+        /MP
     )
     
     # Set runtime library
