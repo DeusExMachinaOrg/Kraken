@@ -68,6 +68,7 @@ namespace hta::m3d::ui {
             AuxInfo();
             ~AuxInfo();
         };
+        static_assert(sizeof(GarageWnd::AuxInfo) == 0x1f4);
 
         /* 0x0000: fields for ChildPanel */
         /* 0x0224 */ m3d::ui::ButtonWnd* m_btnCabins;
@@ -188,8 +189,8 @@ namespace hta::m3d::ui {
         static help::Color GetValueColor(int32_t, int32_t);
         static m3d::Object* CreateObject();
         static m3d::Class* GetBaseClass();
-        static void StaticRepair(int32_t units);
-        static void StaticRefuel(int32_t units);
+        CUSTOM static void StaticRepair(int32_t units);
+        CUSTOM static void StaticRefuel(int32_t units);
     };
     static_assert(sizeof(GarageWnd) == 0x2C8);
 }

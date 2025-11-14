@@ -4,7 +4,7 @@
 namespace hta::m3d::ui {
     NATIVE(0x0044BB40, void GarageWnd::Refuel (int32_t));
 
-    void GarageWnd::StaticRefuel(int32_t units)
+    CUSTOM void GarageWnd::StaticRefuel(int32_t units)
     {
         static constexpr auto _Refuel = 0x0044BB40;
 
@@ -16,7 +16,7 @@ namespace hta::m3d::ui {
         }
     }
 
-    void GarageWnd::StaticRepair(int32_t units)
+    CUSTOM void GarageWnd::StaticRepair(int32_t units)
     {
         static constexpr auto _Repair = 0x0044BBD0;
 

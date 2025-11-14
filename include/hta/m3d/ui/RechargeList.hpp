@@ -19,4 +19,5 @@ namespace hta::m3d::ui {
         static m3d::Object* CreateObject();
         static m3d::Class* GetBaseClass();
     };
+    static_assert(sizeof(RechargeList) == 0x248);
 }
