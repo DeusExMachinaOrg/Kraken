@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.10)
 project(kraken VERSION 0.1.1 LANGUAGES CXX)
 
 # Set C++ standard
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Platform check
@@ -24,7 +24,7 @@ add_library(kraken SHARED
     source/fix/posteffectreload.cpp
     source/fix/fileserver.cpp
     source/fix/luabinds.cpp
-    source/fix/wareuse.cpp
+    #source/fix/wareuse.cpp
     source/fix/recollectionfix.cpp
     source/fix/ultrawide.cpp
     source/fix/fastloading.cpp

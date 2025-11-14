@@ -24,7 +24,7 @@ namespace kraken::fix::autobrakefix {
         hta::CVector curPoint, nextPoint;
 
         // TODO: Move it to `hta/ai/Shared.[hc]pp`
-        static auto GetPathItem = (char(__fastcall*)(hta::ai::Path*, uint32_t, hta::CVector*))(0x006A9D60);
+        static auto GetPathItem = (char(__fastcall*)(hta::ai::Path*, int32_t, hta::CVector*))(0x006A9D60);
         GetPathItem(vehicle->m_pPath, vehicle->m_pathNum, &curPoint);
         GetPathItem(vehicle->m_pPath, vehicle->m_pathNum + 1, &nextPoint);
 
@@ -33,8 +33,8 @@ namespace kraken::fix::autobrakefix {
         }
 
         // TODO: Move it to `hta/ai/Shared.[hc]pp`
-        static auto CalcDrivingValues = (void(__fastcall*)(const hta::ai::Vehicle&, const hta::CVector&, const hta::CVector&, bool, hta::ai::DrivingValues&))(0x005D57A0);
-        CalcDrivingValues(*vehicle, curPoint, nextPoint, true, dv);
+        static auto CalcDrivingValues = (void(__fastcall*)(const hta::ai::Vehicle*, const hta::CVector*, const hta::CVector*, bool, hta::ai::DrivingValues*))(0x005D57A0);
+        CalcDrivingValues(vehicle, &curPoint, &nextPoint, true, &dv);
 
         float nextAngle = abs(dv.nextAngle);
         if (fabsf(nextAngle - 3.1415) < 0.01) {
