@@ -14,7 +14,7 @@ add_subdirectory(extern/lim)
 add_subdirectory(extern/hta)
 
 # Create the DLL
-add_library(kraken
+add_library(kraken SHARED
     source/entry.cpp
     source/config.cpp
     source/fix/physic.cpp
