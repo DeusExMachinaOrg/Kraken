@@ -7,6 +7,7 @@
 
 #include "hta/CMiracle3d.hpp"
 #include "hta/ai/PrototypeManager.hpp"
+#include "hta/m3d/ui/drop"
 #include "hta/ai/Player.hpp"
 
 namespace kraken::fix::wareuse {
@@ -17,7 +18,7 @@ namespace kraken::fix::wareuse {
     {
         for (auto wu : RepairWares)
         {
-            if (name.Equal(wu.Ware.c_str()))
+            if (name == wu.Ware.c_str())
             {
                 float current = playerVehicle->GetHealth();
                 float max = playerVehicle->GetMaxHealth();
@@ -46,7 +47,7 @@ namespace kraken::fix::wareuse {
     {
         for (auto wu : RefuelWares)
         {
-            if (name.Equal(wu.Ware.c_str()))
+            if (name == wu.Ware.c_str())
             {
                 float current = playerVehicle->GetFuel();
                 float max = playerVehicle->GetMaxFuel();
@@ -104,7 +105,7 @@ namespace kraken::fix::wareuse {
     void Apply()
     {
         LOG_INFO("Feature enabled");
-        const kraken::Config& config = kraken::Config::Get();
+        const kraken::Config& config = kraken::Config::Instance();
         for (const auto& wu : config.ware_units.value)
         {
             if (wu.Type == configstructs::WareType::REPAIR)

@@ -1,4 +1,3 @@
-#include "utils.hpp"
 #include "config.hpp"
 #include "ext/logger.hpp"
 #include <assert.h>
@@ -9,6 +8,13 @@ using kraken::logger::eLogPanic;
 
 namespace kraken {
     const char* CONFIG_PATH = "./data/kraken.ini";
+
+    template <typename T>
+    inline T clamp(T v, T min, T max) {
+        if (v < min) return min;
+        if (v > max) return max;
+        return v;
+    };
 
     Config* Config::INSTANCE = nullptr;
 

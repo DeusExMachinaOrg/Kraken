@@ -18,6 +18,7 @@
 #include "hta/ai/PrototypeManager.hpp"
 #include "hta/ai/Vehicle.hpp"
 #include "hta/ai/VehiclePart.hpp"
+#include "hta/ai/CServer.hpp"
 
 #include "fix/complexschwarz.hpp"
 
@@ -66,7 +67,7 @@ namespace kraken::fix::complexschwarz {
 
         // TODO: allow to skip
         for (auto& modification : gprotinfo->m_modifications) {
-            if (significant_modifiers.find(modification.m_propertyName) != significant_modifiers.end()) {
+            if (significant_modifiers.find(modification.m_propertyName.c_str()) != significant_modifiers.end()) {
                 return gprice;
             } else {
                 continue;
@@ -100,7 +101,7 @@ namespace kraken::fix::complexschwarz {
 
         // TODO: allow to skip
         for (auto& modification : gprotinfo->m_modifications) {
-            if (significant_modifiers.find(modification.m_propertyName) != significant_modifiers.end()) {
+            if (significant_modifiers.find(modification.m_propertyName.c_str()) != significant_modifiers.end()) {
                 return gprice;
             } else {
                 continue;
@@ -112,7 +113,7 @@ namespace kraken::fix::complexschwarz {
 
     uint32_t GetOverridenPrice(hta::ai::Obj* object) {
         const hta::CStr& prot_name = object->GetPrototypeInfo()->m_prototypeName;
-        auto overriden_schwarz = schwarz_overrides.find(prot_name);
+        auto overriden_schwarz = schwarz_overrides.find(prot_name.c_str());
         if (overriden_schwarz != schwarz_overrides.end()) {
             LOG_DEBUG("Override price provided: %d", overriden_schwarz->second);
             return overriden_schwarz->second;
@@ -140,13 +141,14 @@ namespace kraken::fix::complexschwarz {
         }
 
         uint32_t shells_price{};
+        hta::ai::PrototypeManager* pm = hta::ai::PrototypeManager::Instance();
         if (gun->IsWithCharging()) {
             if (gun->IsWithShellsPoolLimit()) {
                 uint32_t shell_prot_id = gun->GetShellPrototypeId();
                 if (shell_prot_id != -1) {
                     hta::ai::PrototypeInfo* shell_prototype;
-                    if (!hta::ai::PrototypeManager::Instance->m_prototypes.empty() && shell_prot_id < hta::ai::PrototypeManager::Instance->m_prototypes.size())
-                        shell_prototype = hta::ai::PrototypeManager::Instance->m_prototypes[shell_prot_id];
+                    if (!pm->m_prototypes.empty() && shell_prot_id < pm->m_prototypes.size())
+                        shell_prototype = pm->m_prototypes[shell_prot_id];
                     else
                         shell_prototype = 0;
 
@@ -188,8 +190,8 @@ namespace kraken::fix::complexschwarz {
             uint32_t shell_prot_id = gun->m_shellPrototypeId;
             if (shell_prot_id != -1) {
                 hta::ai::PrototypeInfo* shell_prototype;
-                if (!hta::ai::PrototypeManager::Instance->m_prototypes.empty() && shell_prot_id < ai::PrototypeManager::Instance->m_prototypes.size())
-                    shell_prototype = hta::ai::PrototypeManager::Instance->m_prototypes[shell_prot_id];
+                if (!hta::ai::PrototypeManager::Instance()->m_prototypes.empty() && shell_prot_id < hta::ai::PrototypeManager::Instance()->m_prototypes.size())
+                    shell_prototype = hta::ai::PrototypeManager::Instance()->m_prototypes[shell_prot_id];
                 else
                     shell_prototype = 0;
 
@@ -276,14 +278,14 @@ namespace kraken::fix::complexschwarz {
         for (const auto& [part_name, veh_part] : vehicle->m_vehicleParts) {
             LOG_INFO("--- [%s] %s ---", part_name.m_charPtr, veh_part->GetPrototypeInfo()->m_prototypeName.m_charPtr);
 
-            if (part_name.Equal("CHASSIS")) {
+            if (part_name == "CHASSIS") {
                 float condition_coeff = vehicle->GetHealth() / vehicle->GetMaxHealth();
                 uint32_t base_price = GetPartPrice(veh_part); // TODO: remove additional vars with debug logs
                 chassis_price += (uint32_t)(base_price * condition_coeff);
                 LOG_DEBUG("[Final: %.0f, Base: %d] HP: %.2f, MaxHP: %.2f, PriceCoeff: %.2f", base_price * condition_coeff, base_price, vehicle->GetHealth(), vehicle->GetMaxHealth(), condition_coeff);
-            } else if (part_name.Equal("CABIN")) {
+            } else if (part_name == "CABIN") {
                 cab_price += GetDurablePartSchwarz(veh_part);
-            } else if (part_name.Equal("BASKET")) {
+            } else if (part_name == "BASKET") {
                 basket_price += GetDurablePartSchwarz(veh_part);
             } else if (veh_part->IsKindOf((hta::m3d::Class*)0x00A024D0)) // ai::CompoundGun*
             {
@@ -362,13 +364,15 @@ namespace kraken::fix::complexschwarz {
         const hta::ai::DynamicQuestPeacePrototypeInfo* protInfo = quest->GetPrototypeInfo();
         if (!hta::ai::DynamicScene::Instance()->GetVehicleControlledByPlayer())
             return protInfo->m_minReward;
-        if (!hta::ai::Player::Instance)
+
+        hta::ai::Player* player = hta::ai::Player::Instance();
+        if (!player)
             return 0;
 
         if (peace_price_from_schwarz)
-            calculated_from_player = (int32_t)(hta::ai::Player::Instance->GetSchwarz() * protInfo->m_playerMoneyPart);
+            calculated_from_player = (int32_t)(player->GetSchwarz() * protInfo->m_playerMoneyPart);
         else
-            calculated_from_player = (int32_t)(hta::ai::Player::Instance->GetMoney() * protInfo->m_playerMoneyPart);
+            calculated_from_player = (int32_t)(player->GetMoney() * protInfo->m_playerMoneyPart);
 
         return -min(calculated_from_player, protInfo->m_minReward);
     }
@@ -389,6 +393,7 @@ namespace kraken::fix::complexschwarz {
         float condition_coeff{};
         float raw_price;
 
+        hta::ai::ObjContainer* objcont = hta::ai::CServer::Instance()->m_pObjects;
         raw_price = veh_part->m_price.m_value;
         if (veh_part->m_durability.m_maxValue.m_value >= 0.001f) // use durability by default
             condition_coeff = veh_part->m_durability.m_value.m_value / veh_part->m_durability.m_maxValue.m_value;
@@ -396,7 +401,7 @@ namespace kraken::fix::complexschwarz {
         {
             if (veh_part->m_parentId != -1) // for hp condition checks we need parent vehicle
             {
-                hta::ai::Obj* parent_obj = (hta::ai::Obj*)hta::ai::ObjContainer::theObjects->GetEntityByObjId(veh_part->m_parentId);
+                hta::ai::Obj* parent_obj = objcont->GetEntityByObjId(veh_part->m_parentId);
                 if (parent_obj->IsKindOf((hta::m3d::Class*)0x00A00914)) // ai::Vehicle*
                 {
                     float health = reinterpret_cast<hta::ai::Vehicle*>(parent_obj)->GetHealth();
