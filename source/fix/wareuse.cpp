@@ -7,8 +7,10 @@
 
 #include "hta/CMiracle3d.hpp"
 #include "hta/ai/PrototypeManager.hpp"
-#include "hta/m3d/ui/drop"
 #include "hta/ai/Player.hpp"
+#include "hta/m3d/ui/GarageWnd.hpp"
+#include "hta/m3d/ui/DragDropItemsWnd.hpp"
+#include "hta/m3d/GameImpulse.hpp"
 
 namespace kraken::fix::wareuse {
     static std::vector<configstructs::WareUnits> RepairWares;
@@ -35,7 +37,7 @@ namespace kraken::fix::wareuse {
                 }
 
 
-                Repair(amount);
+                hta::m3d::ui::GarageWnd::StaticRepair(amount);
                 return true;
             }
         }
@@ -63,7 +65,7 @@ namespace kraken::fix::wareuse {
                     amount = max - current;
                 }
 
-                Refuel(nullptr, amount);
+                hta::m3d::ui::GarageWnd::StaticRefuel(amount);
                 return true;
             }
         }
@@ -71,35 +73,33 @@ namespace kraken::fix::wareuse {
         return false;
     }
 
-    int __fastcall OnMouseButton0Hook(DragDropItemsWnd* dragDropItemsWnd, int, unsigned int state, const PointBase<float>* at)
+    int __fastcall OnMouseButton0Hook(hta::m3d::ui::DragDropItemsWnd* dragDropItemsWnd, int, unsigned int state, const PointBase<float>* at)
     {
-        auto app = CMiracle3d::Instance;
-        auto impulse = (m3d::GameImpulse*)app->Impulse;
+        hta::CMiracle3d* app = hta::CMiracle3d::Instance();
+        hta::m3d::GameImpulse* impulse = (hta::m3d::GameImpulse*)app->m_pImpulses;
 
-        if (!DragDropItemsWnd::DragSlot && impulse->CurKeys.IsThere(0x105)) // ctrl
+        if (!hta::m3d::ui::DragDropItemsWnd::m_dragSlot && impulse->m_curKeys.IsThere(0x105)) // ctrl
         {
-            ai::GeomRepositoryItem repositoryItem;
-            dragDropItemsWnd->GetItemFromOrigin(&repositoryItem, at);
+            hta::ai::GeomRepositoryItem repositoryItem = dragDropItemsWnd->GetItemFromOrigin(*at);
             if (repositoryItem.IsValid())
             {
                 auto repositoryObj = repositoryItem.GetObj();
-                if (repositoryObj && repositoryObj->IsKindOf((m3d::Class*)0x00A0238C)) // Ware class
+                if (repositoryObj && repositoryObj->IsKindOf((hta::m3d::Class*)0x00A0238C)) // Ware class
                 {
-                    CStr name;
-                    ai::PrototypeManager::Instance->GetPrototypeName(&name, repositoryObj->m_prototypeId);
+                    hta::CStr name = hta::ai::PrototypeManager::Instance()->GetPrototypeName(repositoryObj->m_prototypeId);
 
-                    auto playerVehicle = ai::Player::Instance->GetVehicle();
+                    auto playerVehicle = hta::ai::Player::Instance()->GetVehicle();
                     if (TryRepair(playerVehicle, name) || TryRefuel(playerVehicle, name))
                     {
-                        playerVehicle->m_repository->GiveUpThingByObjId(repositoryItem.ObjId);
-                        app->UiManager->RemoveWindow(0x24); // Info window
+                        playerVehicle->m_repository->GiveUpThingByObjId(repositoryItem.m_objId);
+                        app->m_pInterfaceManager->RemoveWindow(0x24); // Info window
                         return 1;
                     }
                 }
             }
         }
 
-        return dragDropItemsWnd->OnMouseButton0(state, at);
+        return dragDropItemsWnd->OnMouseButton0(state, *at);
     }
 
     void Apply()

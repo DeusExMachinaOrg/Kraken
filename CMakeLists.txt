@@ -34,6 +34,8 @@ add_library(kraken
     source/fix/complexschwarz.cpp
     source/fix/skinfix.cpp
 
+    source/hta/m3d/ui/GarageWnd.cpp
+
     source/ext/logger.cpp
     source/ext/impulse.cpp
     source/ext/runtime.cpp
