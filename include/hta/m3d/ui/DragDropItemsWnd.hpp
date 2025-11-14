@@ -53,4 +53,5 @@ namespace hta::m3d::ui {
         static void RemoveDragSlot();
         static m3d::Class* GetBaseClass();
     };
+    static_assert(sizeof(DragDropItemsWnd) == 0x224);
 }

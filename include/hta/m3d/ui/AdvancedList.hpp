@@ -14,6 +14,7 @@ namespace hta::m3d::ui {
             /* 0x0000 */ public: float m_space;
             public: AuxInfo();
         };
+        static_assert(sizeof(AdvancedList::AuxInfo) == 0x4);
 
         /* 0x0000: fields for m3d::ui::Wnd */
         /* 0x0220 */ protected: vc3::vector<AdvancedButton *> m_items;
@@ -49,4 +50,5 @@ namespace hta::m3d::ui {
 
         static m3d::Class* GetBaseClass();
     };
+    static_assert(sizeof(AdvancedList) == 0x248);
 }

@@ -32,6 +32,8 @@ namespace hta::m3d::ui {
             AuxInfo();
             ~AuxInfo();
         };
+        static_assert(sizeof(CBButton::AuxInfo) == 0x78);
+
         /* 0x0000: fields for m3d::ui::Wnd */
         /* 0x0220 */ int32_t m_cbId;
         /* 0x0224 */ m3d::ui::Wnd* m_wndName;
@@ -69,4 +71,5 @@ namespace hta::m3d::ui {
         static m3d::Object* CreateObject();
         static m3d::Class* GetBaseClass();
     };
+    static_assert(sizeof(CBButton) == 0x250);
 }

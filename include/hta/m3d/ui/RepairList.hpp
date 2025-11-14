@@ -19,4 +19,5 @@ namespace hta::m3d::ui {
         static m3d::Object* CreateObject();
         static m3d::Class* GetBaseClass();
     };
+    static_assert(sizeof(RepairList) == 0x248);
 }

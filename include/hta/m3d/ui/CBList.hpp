@@ -25,6 +25,7 @@ namespace hta::m3d::ui {
             AuxInfo();
             ~AuxInfo();
         };
+        static_assert(sizeof(CBList::AuxInfo) == 0x2c);
 
         /* 0x0000: fields for m3d::ui::Wnd */
         /* 0x0220 */ protected: m3d::ui::ButtonWnd* m_btnNext;
@@ -78,4 +79,5 @@ namespace hta::m3d::ui {
 
         static m3d::Class* GetBaseClass();
     };
+    static_assert(sizeof(CBList) == 0x28c);
 }

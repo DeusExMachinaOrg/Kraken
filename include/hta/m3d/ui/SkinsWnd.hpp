@@ -24,6 +24,8 @@ namespace hta::m3d::ui {
             AuxInfo();
             ~AuxInfo();
         };
+        static_assert(sizeof(SkinsWnd::AuxInfo) == 0x30);
+
         /* 0x0000: fields for m3d::ui::Wnd */
         /* 0x0220 */ SkinSwitcher* m_skinSwitcher;
         /* 0x0224 */ m3d::ui::ButtonWnd* m_btnPrev;
@@ -56,4 +58,5 @@ namespace hta::m3d::ui {
         static m3d::Object* CreateObject();
         static m3d::Class* GetBaseClass();
     };
+    static_assert(sizeof(SkinsWnd) == 0x26c);
 }
