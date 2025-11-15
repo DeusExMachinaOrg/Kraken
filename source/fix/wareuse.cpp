@@ -77,13 +77,13 @@ namespace kraken::fix::wareuse {
         return false;
     }
 
-    int __fastcall OnMouseButton0Hook(hta::m3d::ui::DragDropItemsWnd* dragDropItemsWnd, void* tmp, uint32_t state, const hta::PointBase<float>* at) {
+    int __fastcall OnMouseButton0Hook(hta::m3d::ui::DragDropItemsWnd* self, void* _, uint32_t state, const hta::PointBase<float>* at) {
         auto app = hta::CMiracle3d::Instance();
         auto impulse = (hta::m3d::GameImpulse*)app->m_pImpulses;
 
         if (!hta::m3d::ui::DragDropItemsWnd::m_dragSlot && impulse->m_curKeys.IsThere(0x105)) // ctrl
         {
-            hta::ai::GeomRepositoryItem repositoryItem = dragDropItemsWnd->GetItemFromOrigin(*at);
+            hta::ai::GeomRepositoryItem repositoryItem = self->GetItemFromOrigin(*at);
             if (repositoryItem.IsValid()) {
                 auto repositoryObj = repositoryItem.GetObj();
                 if (repositoryObj && repositoryObj->IsKindOf((hta::m3d::Class*)0x00A0238C)) // Ware class
@@ -100,7 +100,9 @@ namespace kraken::fix::wareuse {
             }
         }
 
-        return dragDropItemsWnd->OnMouseButton0(state, *at);
+        auto OnMouseButton0 = (int (__fastcall*)(hta::m3d::ui::DragDropItemsWnd* dragDropItemsWnd, void* _, uint32_t state, const hta::PointBase<float>* at))0x00443840;
+
+        return OnMouseButton0(self, _, state, at);
     }
 
     void Apply() {
