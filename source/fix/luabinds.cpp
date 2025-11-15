@@ -1,32 +1,32 @@
 #define LOGGER "luabinds"
 
-#include "ext/logger.hpp"
 #include "fix/luabinds.hpp"
-#include "fix/impulse.hpp"
-#include "hta/m3d/GameImpulse.h"
-#include "hta/m3d/Kernel.h"
-#include "hta/m3d/CMiracle3d.h"
+#include "ext/logger.hpp"
 #include "routines.hpp"
+
+#include "hta/CMiracle3d.hpp"
+#include "hta/Impulse.hpp"
+#include "hta/m3d/GameImpulse.hpp"
+#include "hta/m3d/Kernel.hpp"
+#include "hta/m3d/ScriptServer.hpp"
 
 namespace kraken::fix::luabinds {
     static std::vector<std::string> g_scripts;
-    void ExecuteLuaScripts()
-    {
-        auto impulse = (m3d::GameImpulse*)CMiracle3d::Instance->Impulse;
-        auto scriptServer = m3d::Kernel::g_Kernel->m_scriptServer;
+    void ExecuteLuaScripts() {
+        auto impulse = (hta::m3d::GameImpulse*)hta::CMiracle3d::Instance()->m_pImpulses;
+        auto scriptServer = hta::m3d::Kernel::Instance()->m_scriptServer;
 
-        for (int impId = IM_DEBUG_0; impId <= IM_DEBUG_9; impId++) {
+        for (int impId = hta::IM_DEBUG_0; impId <= hta::IM_DEBUG_9; impId++) {
             if (impulse->GetImpulseStateAndReset(impId)) {
-                int scriptIndex = impId - IM_DEBUG_0;
+                int scriptIndex = impId - hta::IM_DEBUG_0;
                 if (scriptIndex < 0 || scriptIndex >= g_scripts.size())
                     continue;
-                scriptServer->Execute(g_scripts[scriptIndex].c_str(), "Kraken");
+                scriptServer->execute(g_scripts[scriptIndex].c_str(), "Kraken");
             }
         }
     }
 
-    void __declspec(naked) LuaScripts_Hook()
-    {
+    void __declspec(naked) LuaScripts_Hook() {
         __asm
         {
             pushad;
@@ -37,8 +37,7 @@ namespace kraken::fix::luabinds {
         }
     }
 
-    void Apply(const Config* config)
-    {
+    void Apply(const Config* config) {
         if (config->lua_enabled.value == 0)
             return;
 

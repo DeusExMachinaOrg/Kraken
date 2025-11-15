@@ -35,7 +35,7 @@ namespace kraken {
     private:
         static Config* INSTANCE;
     public:
-        static Config& Get(void) { return *Config::INSTANCE; };
+        static Config& Instance(void) { return *Config::INSTANCE; };
     public:
         // Graphics
         ConfigValue<uint32_t> save_width;
