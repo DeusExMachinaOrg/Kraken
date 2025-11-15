@@ -101,7 +101,7 @@ namespace kraken::fix::tactics {
     int __fastcall Fixed_TeamOnEvent(hta::ai::Team* team, void*, const hta::ai::Event* evn) {
         int result; // eax
 
-        result = static_cast<hta::ai::Obj*>(team)->OnEvent(*evn);
+        result = team->Obj::OnEvent(*evn);
         switch (evn->m_eventId) {
         case hta::ai::GE_OBJECT_DIE:
             team->_OnObjectDie(*evn);
