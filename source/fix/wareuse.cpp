@@ -13,6 +13,7 @@
 #include "hta/ai/PrototypeManager.hpp"
 #include "hta/m3d/ui/DragDropItemsWnd.hpp"
 #include "hta/m3d/ui/GarageWnd.hpp"
+#include "hta/m3d/GameImpulse.hpp"
 
 namespace kraken::fix::wareuse {
     static std::vector<configstructs::WareUnits> RepairWares;
@@ -78,9 +79,9 @@ namespace kraken::fix::wareuse {
 
     int __fastcall OnMouseButton0Hook(hta::m3d::ui::DragDropItemsWnd* dragDropItemsWnd, void* tmp, uint32_t state, const hta::PointBase<float>* at) {
         auto app = hta::CMiracle3d::Instance();
-        auto impulse = (m3d::GameImpulse*)app->Impulse;
+        auto impulse = (hta::m3d::GameImpulse*)app->m_pImpulses;
 
-        if (!hta::DragSlot && impulse->CurKeys.IsThere(0x105)) // ctrl
+        if (!hta::m3d::ui::DragDropItemsWnd::m_dragSlot && impulse->m_curKeys.IsThere(0x105)) // ctrl
         {
             hta::ai::GeomRepositoryItem repositoryItem = dragDropItemsWnd->GetItemFromOrigin(*at);
             if (repositoryItem.IsValid()) {
@@ -91,7 +92,7 @@ namespace kraken::fix::wareuse {
 
                     auto playerVehicle = hta::ai::Player::Instance()->GetVehicle();
                     if (TryRepair(playerVehicle, name) || TryRefuel(playerVehicle, name)) {
-                        playerVehicle->m_repository->GiveUpThingByObjId(repositoryItem.m_ObjId);
+                        playerVehicle->m_repository->GiveUpThingByObjId(repositoryItem.m_objId);
                         app->m_pInterfaceManager->RemoveWindow(0x24); // Info window
                         return 1;
                     }
@@ -99,7 +100,7 @@ namespace kraken::fix::wareuse {
             }
         }
 
-        return dragDropItemsWnd->OnMouseButton0(state, at);
+        return dragDropItemsWnd->OnMouseButton0(state, *at);
     }
 
     void Apply() {

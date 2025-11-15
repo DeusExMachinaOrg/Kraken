@@ -24,7 +24,7 @@ add_library(kraken SHARED
     source/fix/posteffectreload.cpp
     source/fix/fileserver.cpp
     source/fix/luabinds.cpp
-    #source/fix/wareuse.cpp
+    source/fix/wareuse.cpp
     source/fix/recollectionfix.cpp
     source/fix/ultrawide.cpp
     source/fix/fastloading.cpp
