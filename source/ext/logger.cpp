@@ -100,7 +100,7 @@ namespace kraken::logger {
         if (self.is_ready)
             return;
 
-        const kraken::Config& config = kraken::Config::Get();
+        const kraken::Config& config = kraken::Config::Instance();
 
         self.is_file   = _InitFile();
         self.is_stream = _InitStream();

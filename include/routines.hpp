@@ -31,7 +31,7 @@ namespace kraken::routines {
         VirtualProtect(src, size, protection, &protection);
     };
 
-    inline void Override(size_t size, void* src, char* data) {
+    inline void Override(size_t size, void* src, const char* data) {
         DWORD protection;
 
         VirtualProtect(src, size, PAGE_EXECUTE_READWRITE, &protection);

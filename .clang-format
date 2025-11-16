@@ -1,0 +1,9 @@
+BasedOnStyle: LLVM
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Empty
+CompactNamespaces: false
+ColumnLimit: 240 # Temp width
+NamespaceIndentation: All
+IndentWidth: 4
+FixNamespaceComments: false
+PointerAlignment: Left

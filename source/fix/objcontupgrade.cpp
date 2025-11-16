@@ -11,7 +11,7 @@ namespace kraken::fix::objcontupgrade {
     void Apply()
     {
         LOG_INFO("Feature enabled");
-        const kraken::Config& config = kraken::Config::Get();
+        const kraken::Config& config = kraken::Config::Instance();
         if (config.objcontupgrade.value == 0)
             return;
 

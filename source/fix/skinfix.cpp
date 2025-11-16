@@ -1,43 +1,35 @@
 #define LOGGER "skinfix"
 
-// ext
 #include "ext/logger.hpp"
-
-// fix
 #include "fix/skinfix.hpp"
-
-// hta/ai
-#include "hta/ai/PhysicBody.h"
-#include "hta/ai/PhysicObj.h"
-#include "hta/ai/Gun.hpp"
-
-// hta
-#include "hta/Enums.hpp"
-
-// local
 #include "routines.hpp"
+
+#include "hta/ai/PhysicBody.hpp"
+#include "hta/ai/PhysicObj.hpp"
+#include "hta/ai/Gun.hpp"
+#include "hta/Enums.hpp"
 
 namespace kraken::fix::skinfix
 {
-    void __fastcall SetSkinFixed(ai::PhysicBody* physicBody, int, int skin)
+    void __fastcall SetSkinFixed(hta::ai::PhysicBody* physicBody, int, int skin)
     {
-        ai::PhysicObj* owner = physicBody->OwnerPhysicObj;
+        hta::ai::PhysicObj* owner = physicBody->m_ownerPhysicObj;
         if (owner)
         {
             owner->m_skinNumber = skin;
         }
 
-        if (physicBody->Node)
+        if (physicBody->m_Node)
         {
-            physicBody->Node->SetProperty(PROP_DM_SKIN, &skin);
+            physicBody->m_Node->SetProperty(hta::PROP_DM_SKIN, &skin);
         }
 
-        if (physicBody->IsKindOf((m3d::Class*)0x00A02354 /*TODO*/))
+        if (physicBody->IsKindOf((hta::m3d::Class*)0x00A02354 /*TODO*/))
         {
-            ai::Gun* gun = (ai::Gun*)physicBody;
+            hta::ai::Gun* gun = (hta::ai::Gun*)physicBody;
             if (gun->m_barrelNode)
             {
-                gun->m_barrelNode->SetProperty(PROP_DM_SKIN, &skin);
+                gun->m_barrelNode->SetProperty(hta::PROP_DM_SKIN, &skin);
             }
         }
     }

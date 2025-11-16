@@ -6,10 +6,12 @@
 
 #include <filesystem>
 
-namespace kraken::fix::fileserver {
-    auto FileServer_AddFile = (void (__fastcall*)(m3d::FileServer* self, void* _, const char* path))0x00663690;
+#include "hta/m3d/fs/FileServer.hpp"
 
-    int __fastcall Fixed_AddFile(m3d::FileServer* self, void* _, const char* folder, const char* mask, bool recursive) {
+namespace kraken::fix::fileserver {
+    auto FileServer_AddFile = (void (__fastcall*)(hta::m3d::fs::FileServer* self, void* _, const char* path))0x00663690;
+
+    int __fastcall Fixed_AddFile(hta::m3d::fs::FileServer* self, void* _, const char* folder, const char* mask, bool recursive) {
         auto source = std::filesystem::path(folder);
 
         for (const auto& path : std::filesystem::recursive_directory_iterator(source)) {
