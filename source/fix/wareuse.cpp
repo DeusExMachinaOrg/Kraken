@@ -34,14 +34,14 @@ namespace kraken::fix::wareuse {
     bool TryRepair(hta::ai::Vehicle* playerVehicle, hta::CStr& name) {
         for (auto wu : RepairWares) {
             if (name == wu.Ware.c_str()) {
-                float current = playerVehicle->GetHealth();
-                float max = playerVehicle->GetMaxHealth();
+                const int current = playerVehicle->GetHealth();
+                const int max = playerVehicle->GetMaxHealth();
 
                 if (current >= max) {
                     return false;
                 }
 
-                float amount = wu.Units;
+                int amount = wu.Units;
                 if (current + amount > max) {
                     amount = max - current;
                 }
@@ -57,14 +57,14 @@ namespace kraken::fix::wareuse {
     bool TryRefuel(hta::ai::Vehicle* playerVehicle, hta::CStr& name) {
         for (auto wu : RefuelWares) {
             if (name == wu.Ware.c_str()) {
-                float current = playerVehicle->GetFuel();
-                float max = playerVehicle->GetMaxFuel();
+                const int current = playerVehicle->GetFuel();
+                const int max = playerVehicle->GetMaxFuel();
 
                 if (current >= max) {
                     return false;
                 }
 
-                float amount = wu.Units;
+                int amount = wu.Units;
                 if (current + amount > max) {
                     amount = max - current;
                 }
