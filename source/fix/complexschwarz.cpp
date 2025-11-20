@@ -1,6 +1,5 @@
 #define LOGGER "schwarz"
 
-#include "configstructs.hpp"
 #include "ext/logger.hpp"
 #include "routines.hpp"
 
@@ -73,7 +72,7 @@ namespace kraken::fix::complexschwarz {
                 continue;
             }
         }
-        LOG_WARNING("Common Gadget ignored in schwarz, doesn't have significant modifiers");
+        LOG_DEBUG("Common Gadget ignored in schwarz, doesn't have significant modifiers");
         return 0;
 
         // | GADGETS AFFECTING BALANCE |
@@ -107,7 +106,7 @@ namespace kraken::fix::complexschwarz {
                 continue;
             }
         }
-        LOG_WARNING("Weapon Gadget ignored in schwarz, doesn't have significant modifiers");
+        LOG_DEBUG("Weapon Gadget ignored in schwarz, doesn't have significant modifiers");
         return 0;
     }
 
@@ -128,7 +127,7 @@ namespace kraken::fix::complexschwarz {
         float condition = part_durability / part_max_durability;
 
         if (condition <= 0.01) {
-            LOG_WARNING("Ignoring in Schwarz calculation, very low condition");
+            LOG_DEBUG("Ignoring in Schwarz calculation, very low condition");
             return 0;
         }
 
@@ -173,7 +172,7 @@ namespace kraken::fix::complexschwarz {
         float condition = part_durability / part_max_durability;
 
         if (condition <= 0.01) {
-            LOG_WARNING("Ignoring in Schwarz calculation, very low condition");
+            LOG_DEBUG("Ignoring in Schwarz calculation, very low condition");
             return 0;
         }
 
@@ -256,7 +255,7 @@ namespace kraken::fix::complexschwarz {
 
         vanilla_schwarz = (uint32_t)(vanilla_base_price * full_dur_price_coeff);
 
-        LOG_WARNING("----- Vanilla Schwarz: %d, Base Price: %d, dur_coeff: %.2f (~%.2f/%.2f) -----", vanilla_schwarz, vanilla_base_price, full_dur_price_coeff, full_cur_durability, full_max_durability);
+        LOG_INFO("----- Vanilla Schwarz: %d, Base Price: %d, dur_coeff: %.2f (~%.2f/%.2f) -----", vanilla_schwarz, vanilla_base_price, full_dur_price_coeff, full_cur_durability, full_max_durability);
         return vanilla_schwarz;
     }
 
@@ -266,7 +265,7 @@ namespace kraken::fix::complexschwarz {
         }
 
         LOG_DEBUG("> GetComplexSchwarz <");
-        LOG_WARNING("----- %s -----", vehicle->m_name.m_charPtr);
+        LOG_DEBUG("----- %s -----", vehicle->m_name.m_charPtr);
 
         uint32_t intermediate_schwarz{};
 
@@ -276,7 +275,7 @@ namespace kraken::fix::complexschwarz {
         uint32_t guns_schwarz{};
 
         for (const auto& [part_name, veh_part] : vehicle->m_vehicleParts) {
-            LOG_INFO("--- [%s] %s ---", part_name.m_charPtr, veh_part->GetPrototypeInfo()->m_prototypeName.m_charPtr);
+            LOG_DEBUG("--- [%s] %s ---", part_name.m_charPtr, veh_part->GetPrototypeInfo()->m_prototypeName.m_charPtr);
 
             if (part_name == "CHASSIS") {
                 float condition_coeff = vehicle->GetHealth() / vehicle->GetMaxHealth();
@@ -351,7 +350,7 @@ namespace kraken::fix::complexschwarz {
         intermediate_schwarz += guns_schwarz;
 
         GetSchwarzOld(vehicle);
-        LOG_WARNING("----- New Schwarz: %d (Schwarz Parts: CAB %d + BASKET %d + CHASSIS %d + GUNS %d + GADGETS %d + WARES %d) -----", intermediate_schwarz, cab_price, basket_price, chassis_price, guns_schwarz, total_gadgets_schwarz,
+        LOG_INFO("----- New Schwarz: %d (Schwarz Parts: CAB %d + BASKET %d + CHASSIS %d + GUNS %d + GADGETS %d + WARES %d) -----", intermediate_schwarz, cab_price, basket_price, chassis_price, guns_schwarz, total_gadgets_schwarz,
                     total_wares_schwarz);
 
         return intermediate_schwarz;

@@ -33,6 +33,7 @@ add_library(kraken SHARED
     source/fix/tactics.cpp
     source/fix/complexschwarz.cpp
     source/fix/skinfix.cpp
+    source/fix/cinematic.cpp
 
     source/hta/m3d/ui/GarageWnd.cpp
 
