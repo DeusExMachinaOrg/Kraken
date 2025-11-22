@@ -38,17 +38,18 @@ namespace kraken::fix::cinematic
         return reinterpret_cast<hta::CinemaPanel*>(&*wnd);
     }
     
-    bool CinematicFade(hta::CMiracle3d* self)
+    // CMiracle3d class method
+    CUSTOM bool CinematicFade(hta::CMiracle3d* self) // custom reimplementation
     {
         auto &m_cinematic = self->m_cinematic;
         auto &m_pInterfaceManager = self->m_pInterfaceManager;
-        // Calculate fade progress
+
         int32_t fadeTime = m_cinematic->m_playTime - m_cinematic->m_fadeStartTime;
         int32_t fadePeriod = (int32_t)(m_cinematic->GetFadePeriodForState(m_cinematic->m_state) * 1000.0);
 
         bool result{true};
 
-        // Skipped cinematic - instant fade
+        // Skipped cinematic - make fade instant
         if (m_cinematic->m_bWasSkippedInEnterFadeOut)
         {
             auto &state = m_cinematic->m_state;
@@ -71,7 +72,7 @@ namespace kraken::fix::cinematic
             return true;
         }
 
-        auto *app = hta::CMiracle3d::Instance();
+        const auto &app = hta::CMiracle3d::Instance();
         // Fade complete - handle state transitions
         switch (m_cinematic->m_state)
         {
@@ -634,7 +635,7 @@ namespace kraken::fix::cinematic
             // Setup first cinematic (camera follows submarine)
             auto cinematic = hta::m3d::Application::Instance()->m_cinematic;
             cinematic->LoadDefaults();
-            cinematic->SetFlags(1); // Old: 1 [0b01] (only fade out, no fade in?)
+            cinematic->SetFlags(19); // Old: 1 [0b01] (only fade out, no fade in?) -> 3 [0b10011]
 
             hta::m3d::AuxImpulseInfo impulseInfo(2, 1, -1, 0, 0);
             hta::CMiracle3d::Instance()->OnChangeMode(impulseInfo);
@@ -658,7 +659,7 @@ namespace kraken::fix::cinematic
             cameraStates[0].m_zoom = 1.0f;
 
             // Setup second cinematic (camera follows vehicle)
-            cinematic->SetFlags(2); // Old: 2 [0b10] (no fade out, only fade in?)
+            cinematic->SetFlags(28); // Old: 2 [0b10] (no fade out, only fade in?) -> 28 [0b11100]
             cinematic->SetLookTo(1);
             cinematic->SetAimToID(vehicle->m_objId);
             cinematic->SetWaitWhenStop(1);
