@@ -9,8 +9,10 @@
 
 #define API __declspec(dllexport)
 
+void* operator new[](size_t size);
 void* operator new(size_t size);
 
+void operator delete[](void *Block);
 void operator delete(void* Block);
 
 #endif
