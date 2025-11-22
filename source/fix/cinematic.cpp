@@ -23,20 +23,7 @@ namespace kraken::fix::cinematic
     bool enable_fix{false};
 
     // anon namespace in vanilla
-    hta::CinemaPanel* GetCinemaPanel()
-    {
-        const auto& app = hta::CMiracle3d::Instance();
-        auto wnd = app->m_pInterfaceManager->GetWindow(18);
-        if (!wnd)
-        {
-            return nullptr;
-        }
-        if (!wnd->IsKindOf((hta::m3d::Class*)0x00A07FBC)) // hta::CinemaPanel
-        {
-            return nullptr;
-        }
-        return reinterpret_cast<hta::CinemaPanel*>(&*wnd);
-    }
+
     
     // CMiracle3d class method
     CUSTOM bool CinematicFade(hta::CMiracle3d* self) // custom reimplementation
@@ -59,7 +46,7 @@ namespace kraken::fix::cinematic
             }
         }
 
-        auto panel = GetCinemaPanel();
+        auto panel = hta::GetCinemaPanel();
 
         // Fade still in progress
         if (fadeTime < fadePeriod)
@@ -90,7 +77,7 @@ namespace kraken::fix::cinematic
                 app->m_pInterfaceManager->Show(false, true);
 
                 // m3d::ui::WndStation *station = reinterpret_cast<m3d::ui::WndStation*>(&*m_cinematic)->GetStation();
-                app->CloseAllModalWithCancelRet();
+                app->CloseAllModalWithCancelRet(); // OLD: was called on station, but looks like it works without cast too
                 static bool& l_modalsJustClosed = *reinterpret_cast<bool*>(0x00A41D20);
                 l_modalsJustClosed = true;
             }
@@ -99,8 +86,8 @@ namespace kraken::fix::cinematic
             if (panel)
                 panel->Clear();
 
-            // Old: Show cinema panel window based on bit #2 in flag bit map
-            // if ((m_cinematic->m_curItem.m_flags & 0x04) == 0)
+            // Vanilla: Show cinema panel window based on bit #2 in flag bit map
+            // if ((m_cinematic->m_curItem.m_flags & 0x02) == 0)
 
             // New: Show cinema panel window based on bit #4 flag
             bool showCinemaPan  = (m_cinematic->m_curItem.m_flags >> 4) & 1;
@@ -114,7 +101,7 @@ namespace kraken::fix::cinematic
             m_cinematic->m_state = hta::m3d::CinematicState::CINEMATIC_ENTER_FADE_IN;
             hta::ai::CServer::Instance()->PostPlayerEvent(hta::ai::eGameEvent::GE_CINEMATIC_ENTER_FADE_IN);
 
-            // Old: Show fade panel if start faded are enabled (bit #0)
+            // Vanilla: Show fade panel if start faded are enabled (bit #0)
             // New: Check bit at index 1, which is start fade in
             if ((m_cinematic->m_curItem.m_flags >> 1) & 1)
             {
@@ -168,7 +155,6 @@ namespace kraken::fix::cinematic
             m_cinematic->Stop();
 
             // TODO: deprecated, fog of war is irelevant for HTA, legacy out of strategy games
-            // Re-enable fog of war (deprecated code kept for compatibility)
             // auto &engineCfg = hta::m3d::Kernel::Instance()->GetEngineCfg();
             // engineCfg.m_FogOfWar.SetI(1, false);
 
@@ -301,7 +287,7 @@ namespace kraken::fix::cinematic
                 {
                     timeToShowDlg = self->m_cinematic->GetTimeToTheEnd();
                 }
-                auto cinemaPanel = GetCinemaPanel();
+                auto cinemaPanel = hta::GetCinemaPanel();
                 if (self->m_cinematic->bWaitWhenStop() || fadePeriod < timeToShowDlg || cinemaPanel && (cinemaPanel->HasMsg()))
                 {
                     return 1;
@@ -357,7 +343,6 @@ namespace kraken::fix::cinematic
         return 1;
 
     }
-
 
     // anon namespace in vanilla
     int32_t __fastcall n_SetCinematicFadeParams(hta::m3d::sArgStack& scriptStack, void* _)
@@ -479,7 +464,7 @@ namespace kraken::fix::cinematic
         if (m_cinematic->m_state != hta::m3d::CinematicState::CINEMATIC_NOT_INITED)
         {
             m_cinematic->Stop();
-            auto panel = GetCinemaPanel();
+            auto panel = hta::GetCinemaPanel();
             if (panel)
                 panel->OnHide();
 
@@ -492,7 +477,7 @@ namespace kraken::fix::cinematic
 
             // Post end cinematic event if fade out is enabled
 
-            // Old: Fade out enabled if bit at index 1 is set
+            // Vanilla: Fade out enabled if bit at index 1 is set
             //if (m_cinematic->m_curItem.m_flags & 0x02) {
             
             // New: separate bits for start and end fade outs 
@@ -569,7 +554,7 @@ namespace kraken::fix::cinematic
         // Setup cinematic
         auto cinematic = hta::m3d::Application::Instance()->m_cinematic;
         cinematic->LoadDefaults();
-        cinematic->SetFlags(31);     // Old: 3 (0b11) -> 31 (0b11111)
+        cinematic->SetFlags(31);     // Vanilla: 3 (0b11) -> 31 (0b11111)
 
         // Change application mode (enter cinematic mode)
         hta::m3d::AuxImpulseInfo impulseInfo(2, 1, -1, 0, 0);
@@ -635,7 +620,7 @@ namespace kraken::fix::cinematic
             // Setup first cinematic (camera follows submarine)
             auto cinematic = hta::m3d::Application::Instance()->m_cinematic;
             cinematic->LoadDefaults();
-            cinematic->SetFlags(19); // Old: 1 [0b01] (only fade out, no fade in?) -> 3 [0b10011]
+            cinematic->SetFlags(19); // Vanilla: 1 [0b01] (only fade out, no fade in?) -> 3 [0b10011]
 
             hta::m3d::AuxImpulseInfo impulseInfo(2, 1, -1, 0, 0);
             hta::CMiracle3d::Instance()->OnChangeMode(impulseInfo);
@@ -659,7 +644,7 @@ namespace kraken::fix::cinematic
             cameraStates[0].m_zoom = 1.0f;
 
             // Setup second cinematic (camera follows vehicle)
-            cinematic->SetFlags(28); // Old: 2 [0b10] (no fade out, only fade in?) -> 28 [0b11100]
+            cinematic->SetFlags(28); // Vanilla: 2 [0b10] (no fade out, only fade in?) -> 28 [0b11100]
             cinematic->SetLookTo(1);
             cinematic->SetAimToID(vehicle->m_objId);
             cinematic->SetWaitWhenStop(1);
