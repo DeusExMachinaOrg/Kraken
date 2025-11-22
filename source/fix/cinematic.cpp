@@ -535,7 +535,7 @@ namespace kraken::fix::cinematic
     }
 
     // ai::Town class method
-    void __fastcall _StartCinematic(hta::ai::Town* self, void* _, hta::ai::Vehicle* pVehicle, const std::vector<hta::CVector>& points)
+    void __fastcall _StartCinematic(hta::ai::Town* self, void* _, hta::ai::Vehicle* pVehicle, const vc3::vector<hta::CVector>& points)
     {
         hta::m3d::AIParam p1 {};
         p1.id = 56;
