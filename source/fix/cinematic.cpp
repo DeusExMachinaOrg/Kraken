@@ -22,9 +22,6 @@ namespace kraken::fix::cinematic
 {
     bool enable_fix{false};
 
-    // anon namespace in vanilla
-
-    
     // CMiracle3d class method
     CUSTOM bool CinematicFade(hta::CMiracle3d* self) // custom reimplementation
     {
@@ -64,7 +61,7 @@ namespace kraken::fix::cinematic
         switch (m_cinematic->m_state)
         {
         case hta::m3d::CinematicState::CINEMATIC_ENTER_FADE_OUT:
-            {
+        {
             app->m_bGuiWasHiddenBeforeCinematic = app->m_pInterfaceManager->IsHiddenByUser();
 
             auto wndMainMenu = app->m_pInterfaceManager->GetWindow(72);
@@ -747,10 +744,6 @@ namespace kraken::fix::cinematic
         if (enable_fix)
         {
             LOG_INFO("Feature enabled");
-            // ai::Town::_StartCinematic
-            // 0x6F2996 // m3d::Cinematic::SetFlags(m_cinematic, 3); 3->15[0xF] (0b11->0b1111) [4 bytes available]
-            //routines::Override(1, (void*)0x006F2996, "\x0F");
-            
             routines::Redirect(0x012F, (void*)0x00408290, (void*)&n_SetCinematicFadeParams);
             routines::Redirect(0x00C6, (void *)0x004083C0, (void *)&n_SetCinematicCinemaPanel);
             routines::Redirect(0x008C, (void *)0x00625D30, (void *)&GetFadePeriodForState);
