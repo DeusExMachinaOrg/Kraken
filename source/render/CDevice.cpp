@@ -1114,8 +1114,8 @@ namespace kraken::render {
     ) {
         CDevice* render = CDevice::Instance();
         bool is_pixel   = PS_SHADERS.find(profile) != PS_SHADERS.end();
-        if (is_pixel && render->IsFeatureSupported(FEATURE_PS_3_0))
-            profile = PS_3_0;
+        if (is_pixel && render->IsFeatureSupported(FEATURE_PS_2_0))
+            profile = profile >= PS_2_0 ? PS_3_0 : PS_2_0;
 
         auto stream = hta::m3d::Kernel::Instance()->GetFileServer().CreateFileStream();
         if (!stream->Open(filename, hta::m3d::fs::IStream::OPEN_READ)) {
@@ -1144,6 +1144,7 @@ namespace kraken::render {
         macro.push_back({NULL, NULL});
 
         LPD3DXBUFFER object;
+        LPD3DXBUFFER errors = nullptr; 
         HRESULT error = D3DXCompileShader(
             buffer.data(),
             buffer.size(),
@@ -1153,11 +1154,15 @@ namespace kraken::render {
             SM_ALIAS[profile],
             D3DXSHADER_SKIPOPTIMIZATION,
             &object,
-            NULL,
+            &errors,
             &this->m_constantTable
         );
 
         if (FAILED(error)) {
+            if (errors) {
+                LOG_ERROR("Shader %s compile error: %s", filename, (char*)errors->GetBufferPointer());
+                errors->Release();
+            }
             if (object)
                 object->Release();
             return false;
@@ -4574,10 +4579,11 @@ namespace kraken::render {
     void CDevice::SetFog(bool enabled, bool force) {
         m_stackFog[m_stackTopFog] = enabled;
 
-        if (m_curRenderState[D3DRS_FOGENABLE] != enabled) {
+        DWORD state = enabled ? 1 : 0;
+        if (m_curRenderState[D3DRS_FOGENABLE] != state) {
             ++m_stats.swRenderStates;
-            m_curRenderState[D3DRS_FOGENABLE] = enabled;
-            m_pd3dDevice->SetRenderState(D3DRS_FOGENABLE, enabled);
+            _SetLastResult(m_pd3dDevice->SetRenderState(D3DRS_FOGENABLE, state));
+            m_pd3dDevice->GetRenderState(D3DRS_FOGENABLE, (DWORD*)&m_curRenderState[D3DRS_FOGENABLE]);
         }
     };
 
@@ -7343,6 +7349,7 @@ namespace kraken::render {
         CTexture* texture = this->mActiveTextures.GetItem(id.m_handle);
         int frame         = GetTextureCurrentFrame(texture, tsc);
 
+        assert(texture && "Tries to set freed texture!");
         setTexture(stage, texture->m_maps[frame]->m_pTex);
 
         // Get LOD bias from config
@@ -10608,26 +10615,26 @@ namespace kraken::render {
         
         // If effect is invalid, fall back to regular drawing
         if (!effectImpl || !effectImpl->IsValid()) {
-            //D3DPERF_SetMarker(D3DCOLOR_XRGB(255, 0, 0), L"INVALID EFFECT - Using FFP fallback");
+            D3DPERF_SetMarker(D3DCOLOR_XRGB(255, 0, 0), L"INVALID EFFECT - Using FFP fallback");
             return DrawIndexedPrimitive(Type, MinIndex, NumVertices, StartIndex, PrimitiveCount);
         }
 
         // Get effect info for marker
-        //const char* fileName = effectImpl->m_fileName.m_charPtr;
-        //const char* techniqueName = effectImpl->GetCurTechniqueName();
-        //swprintf(marker, 256, L"Effect: %S | Tech: %S | Prims: %d", 
-        //        fileName ? fileName : "Unknown", 
-        //        techniqueName ? techniqueName : "Default",
-        //        PrimitiveCount);
-        //D3DPERF_BeginEvent(D3DCOLOR_XRGB(255, 128, 0), marker);
+        const char* fileName = effectImpl->m_fileName.m_charPtr;
+        const char* techniqueName = effectImpl->GetCurTechniqueName();
+        swprintf(marker, 256, L"Effect: %S | Tech: %S | Prims: %d", 
+                fileName ? fileName : "Unknown", 
+                techniqueName ? techniqueName : "Default",
+                PrimitiveCount);
+        D3DPERF_BeginEvent(D3DCOLOR_XRGB(255, 128, 0), marker);
 
         // Check if render to null is enabled
         const hta::m3d::CVar& renderToNull = hta::m3d::Kernel::Instance()->GetEngineCfg().m_r_renderToNull;
         bool isRenderToNull = (renderToNull.m_type == hta::m3d::CVar::CVAR_BOOL) ? renderToNull.m_b : (renderToNull.m_i > 0);
 
         if (isRenderToNull) {
-            //D3DPERF_SetMarker(D3DCOLOR_XRGB(128, 128, 128), L"RenderToNull enabled - skipping");
-            //D3DPERF_EndEvent();
+            D3DPERF_SetMarker(D3DCOLOR_XRGB(128, 128, 128), L"RenderToNull enabled - skipping");
+            D3DPERF_EndEvent();
             return 1;
         }
 
@@ -10638,7 +10645,7 @@ namespace kraken::render {
         int numPasses = effectImpl->Begin();
 
         swprintf(marker, 256, L"Rendering %d pass(es)", numPasses);
-        //D3DPERF_SetMarker(D3DCOLOR_XRGB(0, 255, 255), marker);
+        D3DPERF_SetMarker(D3DCOLOR_XRGB(0, 255, 255), marker);
 
         assert(numPasses > 0 && "Empty draw passes!");
         
@@ -10663,7 +10670,7 @@ namespace kraken::render {
 
             effectImpl->EndPass();
             
-            //D3DPERF_EndEvent(); // End pass marker
+            D3DPERF_EndEvent(); // End pass marker
         }
 
         effectImpl->End();
@@ -10672,7 +10679,7 @@ namespace kraken::render {
         m_stats.DIPs += numPasses;
         effectImpl->m_numDIPs += numPasses;
 
-        //D3DPERF_EndEvent(); // End effect marker
+        D3DPERF_EndEvent(); // End effect marker
         
         return 1;
     }
@@ -10967,7 +10974,7 @@ namespace kraken::render {
             }
 
             // Build macro string: "NAME DEFINITION"
-            hta::CStr macroStr = hta::CStr::format_("%s %s", macroData.macro.name, macroData.macro.definition);
+            hta::CStr macroStr = hta::CStr::format_("%s %s", macroData.macro.name.c_str(), macroData.macro.definition.c_str());
 
             // Get config variable for this slot
             hta::m3d::EngineConfig& config = hta::m3d::Kernel::Instance()->GetEngineCfg();
