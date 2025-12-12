@@ -60,7 +60,7 @@ namespace kraken::fix::cinematic {
         case hta::m3d::CinematicState::CINEMATIC_ENTER_FADE_OUT: {
             app->m_bGuiWasHiddenBeforeCinematic = app->m_pInterfaceManager->IsHiddenByUser();
 
-            auto wndMainMenu = app->m_pInterfaceManager->GetWindow(72);
+            ref_ptr<hta::m3d::ui::Wnd> wndMainMenu = app->m_pInterfaceManager->GetWindow(72);
 
             bool isMainMenuChild = wndMainMenu->IsChildOf(reinterpret_cast<hta::m3d::ui::WndStation*>(&*app));
 
@@ -104,9 +104,6 @@ namespace kraken::fix::cinematic {
                         app->MoveChildToFirstPosition(cinemaFadePanel);
                 }
             }
-
-            if (wndMainMenu)
-                wndMainMenu->DecRef();
 
             return false;
         }
@@ -207,7 +204,7 @@ namespace kraken::fix::cinematic {
     };
 
     int32_t __fastcall HandleCinematic_Impl(hta::CMiracle3d* self, void* unused_edx, float dT) {
-        // volatile float dt_check = dT; // Force the compiler to read it from stack // TODO: try removing
+         volatile float dt_check = dT; // Force the compiler to read it from stack // TODO: try removing
 
         if (self->m_cinematic->bCanUpdate()) {
             self->m_cinematic->Update(self->m_curCamera, dT);
