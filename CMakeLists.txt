@@ -15,6 +15,7 @@ add_subdirectory(extern/hta)
 
 # Create the DLL
 add_library(kraken SHARED
+    source/stdafx.cpp
     source/entry.cpp
     source/config.cpp
     source/fix/physic.cpp
@@ -33,6 +34,7 @@ add_library(kraken SHARED
     source/fix/tactics.cpp
     source/fix/complexschwarz.cpp
     source/fix/skinfix.cpp
+    source/fix/cinematic.cpp
 
     source/hta/m3d/ui/GarageWnd.cpp
 

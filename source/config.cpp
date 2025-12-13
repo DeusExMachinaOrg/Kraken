@@ -52,7 +52,8 @@ namespace kraken {
         this->schwarz_overrides                 = { "schwarz_overrides"                                                              };
         this->gun_gadgets_max_schwarz_part      = { "schwarz",   "gun_gadgets_max_schwarz_part",    0.0,   true,  0.0,   10.0        };
         this->common_gadgets_max_schwarz_part   = { "schwarz",   "common_gadgets_max_schwarz_part", 0.0,   true,  0.0,   10.0        };
-        this->wares_max_schwarz_part            = { "schwarz",    "wares_max_schwarz_part",         0.0,   true,  0.0,   10.0        };
+        this->wares_max_schwarz_part            = { "schwarz",   "wares_max_schwarz_part",          0.0,   true,  0.0,   10.0        };
+        this->cinematic_extend                  = { "cinematic", "cinematic_extend",                true                             };
         Config::INSTANCE = this;
 
         this->Load();
@@ -98,6 +99,7 @@ namespace kraken {
         this->LoadValue(&this->peace_price_from_schwarz);
         this->LoadValue(&this->no_money_in_player_schwarz);
         this->LoadValue(&this->schwarz_overrides);
+        this->LoadValue(&this->cinematic_extend);
         this->LoadValue(&this->wares);
     };
 
@@ -134,6 +136,7 @@ namespace kraken {
         this->DumpValue(&this->peace_price_from_schwarz);
         this->DumpValue(&this->no_money_in_player_schwarz);
         this->DumpValue(&this->schwarz_overrides);
+        this->DumpValue(&this->cinematic_extend);
         this->DumpValue(&this->wares);
     };
 
@@ -176,10 +179,10 @@ namespace kraken {
         else if constexpr (std::is_same_v<bool, T>) {
             GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
             if (strnlen_s(buffer, sizeof(buffer)) > 0)
-                if (strcmp(buffer, "true") || strcmp(buffer, "1")) {
+                if (strcmp(buffer, "true") == 0 || strcmp(buffer, "1") == 0) {
                     value->value = true;
                 }
-                else if (strcmp(buffer, "false") || strcmp(buffer, "0")) {
+                else if (strcmp(buffer, "false") == 0 || strcmp(buffer, "0") == 0) {
                     value->value = false;
                 }
         }

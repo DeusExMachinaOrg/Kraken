@@ -78,6 +78,7 @@ namespace kraken {
         ConfigValue<bool>                     no_money_in_player_schwarz;
         ConfigValue<std::unordered_map<std::string, uint32_t, std::hash<std::string_view>, std::equal_to<>>> schwarz_overrides;
 
+        ConfigValue<bool>                     cinematic_extend;
     public:
          Config();
         ~Config();
