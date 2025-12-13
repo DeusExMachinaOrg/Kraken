@@ -11,7 +11,7 @@
 #include <d3d9.h>
 
 #include "stdafx.hpp"
-#include "render/d3d9/Common.hpp"
+#include "render/native/Common.hpp"
 
 #include "hta/CVector2.hpp"
 #include "hta/CVector.hpp"
@@ -19,16 +19,16 @@
 #include "hta/CMatrix.hpp"
 #include "hta/Quaternion.hpp"
 
-namespace kraken::render::d3d9 {
+namespace kraken::render {
     using f32vec2 = hta::CVector2;
     using f32vec3 = hta::CVector;
     using f32vec4 = hta::CVector4;
     using f32mat4 = hta::CMatrix;
     using f32quat = hta::Quaternion;
 
-    class Texture;
-    class Surface;
-    class Uniform;
+    struct Texture;
+    struct Sampler;
+    struct Uniform;
 
     enum class UniformType {
         UNKNOWN,
@@ -36,7 +36,7 @@ namespace kraken::render::d3d9 {
         FRAGMENT,
     };
 
-    class Uniform {
+    struct Uniform {
     private:
         struct Range { int32_t min, max; };
     private:
@@ -66,7 +66,7 @@ namespace kraken::render::d3d9 {
         void Set(int32_t slot, f32vec3 v);
         void Set(int32_t slot, f32vec4 v);
         void Set(int32_t slot, f32mat4 v);
-        void Set(int32_t slot, const Surface* v);
+        void Set(int32_t slot, const Sampler* v);
         void Set(int32_t slot, const Texture* v);
         void Set(int32_t slot, const bool* v, int32_t slots);
         void Set(int32_t slot, const float* v, int32_t slots);

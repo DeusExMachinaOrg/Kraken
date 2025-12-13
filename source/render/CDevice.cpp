@@ -14,18 +14,17 @@
 #include <set>
 #include <unordered_map>
 
+#define _PROTECT_UNDERFLOW(field)                                                                                                          \
+    if (field > 63) { /* Wrapped from 0 to 0xFFFFFFFF */                                                                                   \
+        LOG_WARNING(#field " stack UNDERFLOW! Setting to 1");                                                                              \
+        field = 1; /* Step back into valid range */                                                                                        \
+    }
 
-#define _PROTECT_UNDERFLOW(field)                                 \
-if (field > 63) {  /* Wrapped from 0 to 0xFFFFFFFF */             \
-    LOG_WARNING(#field " stack UNDERFLOW! Setting to 1");         \
-    field = 1;  /* Step back into valid range */                  \
-}
-
-#define _PROTECT_OVERFLOW(field)                                  \
-if (field > 63) {  /* Went from 63 to 64+ */                      \
-    LOG_WARNING(#field " stack OVERFLOW! Setting to 62");         \
-    field = 62;  /* Step back into valid range */                 \
-}
+#define _PROTECT_OVERFLOW(field)                                                                                                           \
+    if (field > 63) { /* Went from 63 to 64+ */                                                                                            \
+        LOG_WARNING(#field " stack OVERFLOW! Setting to 62");                                                                              \
+        field = 62; /* Step back into valid range */                                                                                       \
+    }
 
 namespace kraken::render {
     static CDevice* G_DEVICE = nullptr;
@@ -226,7 +225,8 @@ namespace kraken::render {
     };
 
     HRESULT StateManager::SetTexture(DWORD Stage, IDirect3DBaseTexture9* pTexture) {
-        return CDevice::Instance()->setTexture(Stage, pTexture);
+        return CDevice::Instance()->m_pd3dDevice->SetTexture(Stage, pTexture);
+        return S_OK;
     };
 
     HRESULT StateManager::SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value) {
@@ -566,7 +566,7 @@ namespace kraken::render {
             return false;
         }
 
-        this->m_fileName = filename;
+        this->mFileName = filename;
         this->m_effect->SetStateManager(&render->m_stateManager);
         this->m_hasBeenValidated = false;
         this->m_didNotValidate   = false;
@@ -667,7 +667,7 @@ namespace kraken::render {
     void EffectImpl::SetTexture(IEffect::Parameter p, const TexHandle& v) {
         auto image = CDevice::Instance()->mActiveTextures.GetItem(v.m_handle);
         int frame  = CDevice::Instance()->GetTextureCurrentFrame(image, -1.0);
-        this->m_effect->SetTexture(this->m_parameterHandles[p].d3dxHandle, image->m_maps[frame]->m_pTex);
+        this->m_effect->SetTexture(this->m_parameterHandles[p].d3dxHandle, image->m_maps[frame]->mHandleBase);
     };
 
     void EffectImpl::SetIntArray(IEffect::Parameter p, const int32_t* a, int32_t c) {
@@ -716,7 +716,9 @@ namespace kraken::render {
                 m_effect->SetMatrix(handle, (D3DXMATRIX*)param.GetMatrix44());
                 break;
             case nShaderArg::Texture:
-                m_effect->SetTexture(handle, CDevice::Instance()->mActiveTextures.GetItem(param.GetTexture()->m_handle)->m_maps[0]->m_pTex);
+                m_effect->SetTexture(
+                    handle, CDevice::Instance()->mActiveTextures.GetItem(param.GetTexture()->m_handle)->m_maps[0]->mHandleBase
+                );
                 break;
             default:
                 break;
@@ -882,27 +884,27 @@ namespace kraken::render {
             m_effect->GetTechniqueDesc(tech, &techDesc);
 
             // Validate technique
-            //if (FAILED(m_effect->ValidateTechnique(tech))) {
+            // if (FAILED(m_effect->ValidateTechnique(tech))) {
             //    LOG_ERROR("Could not validate technique '%s', skipping...", techDesc.Name);
             //    --m_numTechniques;
             //    continue;
             //}
 
             TechniqueDescInternal desc;
-            desc.handle = tech;
-            desc.publicDesc.name = techDesc.Name;
-            desc.publicDesc.numPasses = techDesc.Passes;
-            desc.publicDesc.briefDesc = getStringAnnotation(tech, "Description", "N/A");
-            desc.publicDesc.isDefault = getBoolAnnotation(tech, "Default", false);
-            desc.publicDesc.isPS20 = getBoolAnnotation(tech, "IsPs20", false);
-            desc.publicDesc.useAlpha = getBoolAnnotation(tech, "UseAlpha", true);
+            desc.handle                      = tech;
+            desc.publicDesc.name             = techDesc.Name;
+            desc.publicDesc.numPasses        = techDesc.Passes;
+            desc.publicDesc.briefDesc        = getStringAnnotation(tech, "Description", "N/A");
+            desc.publicDesc.isDefault        = getBoolAnnotation(tech, "Default", false);
+            desc.publicDesc.isPS20           = getBoolAnnotation(tech, "IsPs20", false);
+            desc.publicDesc.useAlpha         = getBoolAnnotation(tech, "UseAlpha", true);
             desc.publicDesc.tangentSpaceUsed = getBoolAnnotation(tech, "ComputeTangentSpace", false);
-            desc.publicDesc.maxInstances = getIntAnnotation(tech, "MaxInstances", 0);
+            desc.publicDesc.maxInstances     = getIntAnnotation(tech, "MaxInstances", 0);
 
             // Check PS20 requirements
             if (desc.publicDesc.isPS20) {
                 CDevice* dev = CDevice::Instance();
-                
+
                 // Check CVars and hardware support
                 // TODO: Check m_r_allowPS20 and m_r_allowPS20ForNV30 CVars
                 // For now, just check hardware:
@@ -916,8 +918,7 @@ namespace kraken::render {
             // Vertex format
             hta::CStr vfStr = getStringAnnotation(tech, "VertexFormat", "");
             if (VT_MAPPING.find(vfStr.c_str()) == VT_MAPPING.end()) {
-                LOG_ERROR("Unsupported vertex format '%s' in technique '%s', skipping...", 
-                        vfStr.c_str(), techDesc.Name);
+                LOG_ERROR("Unsupported vertex format '%s' in technique '%s', skipping...", vfStr.c_str(), techDesc.Name);
                 --m_numTechniques;
                 continue;
             }
@@ -927,7 +928,7 @@ namespace kraken::render {
         }
 
         // 2. Find default techniques (original logic)
-        m_defaultTechnique = -1;
+        m_defaultTechnique     = -1;
         m_defaultPS20Technique = -1;
 
         for (UINT i = 0; i < m_techDescs.size(); ++i) {
@@ -941,13 +942,12 @@ namespace kraken::render {
 
         // Fallback
         if (m_defaultTechnique == -1 && !m_techDescs.empty()) {
-            LOG_WARNING("No default technique found, using first one ('%s')", 
-                        m_techDescs[0].publicDesc.name.c_str());
+            LOG_WARNING("No default technique found, using first one ('%s')", m_techDescs[0].publicDesc.name.c_str());
             m_defaultTechnique = 0;
         }
 
         m_hasBeenValidated = true;
-        m_didNotValidate = false;
+        m_didNotValidate   = false;
     }
 
     void EffectImpl::UpdateParameterHandles() {
@@ -1144,8 +1144,8 @@ namespace kraken::render {
         macro.push_back({NULL, NULL});
 
         LPD3DXBUFFER object;
-        LPD3DXBUFFER errors = nullptr; 
-        HRESULT error = D3DXCompileShader(
+        LPD3DXBUFFER errors = nullptr;
+        HRESULT error       = D3DXCompileShader(
             buffer.data(),
             buffer.size(),
             macro.data(),
@@ -1179,7 +1179,7 @@ namespace kraken::render {
         this->m_constantTable->GetDesc(&desc);
         this->m_constantTable->SetDefaults(render->m_pd3dDevice);
         this->m_numConstants = desc.Constants;
-        this->m_fileName     = filename;
+        this->mFileName      = filename;
         this->m_profile      = profile;
 
         return true;
@@ -1252,7 +1252,7 @@ namespace kraken::render {
 
     void HlslShaderImpl::Apply() {
         static wchar_t marker[256];
-        swprintf(marker, 256, L"SetShader %S", this->m_fileName.c_str());
+        swprintf(marker, 256, L"SetShader %S", this->mFileName.c_str());
         D3DPERF_SetMarker(D3DCOLOR_XRGB(0, 255, 0), marker);
 
         if (this->m_profile > IHlslShader::VS_3_0)
@@ -1335,8 +1335,8 @@ namespace kraken::render {
             return false;
         }
 
-        this->m_type     = type;
-        this->m_fileName = filename;
+        this->m_type    = type;
+        this->mFileName = filename;
 
         switch (this->m_type) {
         case IAsmShader::VERTEX_SHADER:
@@ -1398,44 +1398,6 @@ namespace kraken::render {
                 compileParams.begin(), compileParams.end(), rhs.compileParams.begin(), rhs.compileParams.end()
             );
         return filename < rhs.filename;
-    };
-
-    void CDevice::CImage::freeTex() {
-        if (this->m_pTex) {
-            this->m_pTex->Release();
-            this->m_pTex = nullptr;
-        }
-    };
-
-    int32_t CDevice::CImage::addRef() {
-        return ++this->m_refs;
-    };
-
-    int32_t CDevice::CImage::release() {
-        return --this->m_refs;
-    };
-
-    bool CDevice::CImage::Is2D() const {
-        return this->m_type <= TT_2D_RENDER_TARGET;
-    };
-
-    bool CDevice::CImage::IsCube() const {
-        return this->m_type >= TT_CUBE_FROM_FILE && this->m_type <= TT_CUBE_RENDER_TARGET;
-    };
-
-    bool CDevice::CImage::Is3D() const {
-        return this->m_type >= TT_3D_FROM_FILE;
-    };
-
-    int32_t CDevice::CTexture::addRef() {
-        return ++this->m_refs;
-    };
-
-    int32_t CDevice::CTexture::release() {
-        if (this->m_refs > 1)
-            return --this->m_refs;
-        delete this;
-        return 0;
     };
 
     void CDevice::DXCursorInfo::SetUp(const TexHandle& tex, int32_t x, int32_t y, int32_t f) {
@@ -1745,25 +1707,25 @@ namespace kraken::render {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
         {0, 16, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZT1[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZNT1[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0},
         {0, 24, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZNT2[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0},
         {0, 24, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
         {0, 32, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 1},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZNT3[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
@@ -1771,43 +1733,49 @@ namespace kraken::render {
         {0, 24, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
         {0, 32, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 1},
         {0, 40, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 2},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZN[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
-    static const D3DVERTEXELEMENT9 ddXYZ[]  = {{0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0}, D3DDECL_END()};
-    static const D3DVERTEXELEMENT9 ddXYZW[] = {{0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITIONT, 0}, D3DDECL_END()};
+    static const D3DVERTEXELEMENT9 ddXYZ[] = {
+        {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
+        D3DDECL_END(),
+    };
+    static const D3DVERTEXELEMENT9 ddXYZW[] = {
+        {0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITIONT, 0},
+        D3DDECL_END(),
+    };
     static const D3DVERTEXELEMENT9 ddXYZC[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZNC[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0},
         {0, 24, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZWCT1[] = {
         {0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITIONT, 0},
         {0, 16, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
         {0, 20, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZWC[] = {
         {0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITIONT, 0},
         {0, 16, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZNCT1[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0},
         {0, 24, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
         {0, 28, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZNCT2[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
@@ -1815,14 +1783,14 @@ namespace kraken::render {
         {0, 24, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
         {0, 28, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
         {0, 36, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 1},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZCT2[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
         {0, 16, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
         {0, 24, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 1},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZNCT1T[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
@@ -1830,35 +1798,35 @@ namespace kraken::render {
         {0, 24, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
         {0, 28, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
         {0, 36, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TANGENT, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
 
-    using vXYZNT1T = hta::m3d::rend::VertexXYZNT1T;
+    using vXYZNT1T                             = hta::m3d::rend::VertexXYZNT1T;
     static const D3DVERTEXELEMENT9 ddXYZNT1T[] = {
         {0, offsetof(vXYZNT1T, position), D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
-        {0, offsetof(vXYZNT1T, normal),   D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL,   0},
-        {0, offsetof(vXYZNT1T, uv0),      D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
-        {0, offsetof(vXYZNT1T, tangent),  D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TANGENT,  0},
-        D3DDECL_END()
+        {0, offsetof(vXYZNT1T, normal), D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_NORMAL, 0},
+        {0, offsetof(vXYZNT1T, uv0), D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
+        {0, offsetof(vXYZNT1T, tangent), D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TANGENT, 0},
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZCT1_UVW[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
         {0, 16, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZCT2_UVW[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0},
         {0, 16, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
         {0, 28, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 1},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddXYZNCT1_UV2_S1[] = {
-        {0, 0, D3DDECLTYPE_FLOAT1, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},  // Single float!
+        {0, 0, D3DDECLTYPE_FLOAT1, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0}, // Single float!
         {0, 4, D3DDECLTYPE_SHORT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0}, // Unsigned shorts!
         {1, 0, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 1},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddWaterTest[] = {
         {0, 0, D3DDECLTYPE_SHORT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
@@ -1867,12 +1835,12 @@ namespace kraken::render {
     static const D3DVERTEXELEMENT9 ddGrassTest[] = {
         {0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 16, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddImpostorTest[] = {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddYNI[] = {
         {0, 0, D3DDECLTYPE_FLOAT1, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
@@ -1883,10 +1851,11 @@ namespace kraken::render {
         {0, 0, D3DDECLTYPE_FLOAT3, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
         {0, 12, D3DDECLTYPE_FLOAT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
         {0, 20, D3DDECLTYPE_SHORT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 1},
-        D3DDECL_END()
+        D3DDECL_END(),
     };
     static const D3DVERTEXELEMENT9 ddInstanceId[] = {
-        {1, 0, D3DDECLTYPE_SHORT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 1}, D3DDECL_END()
+        {1, 0, D3DDECLTYPE_SHORT2, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 1},
+        D3DDECL_END(),
     };
 
     void CDevice::InitVertexDeclarations() {
@@ -2295,7 +2264,7 @@ namespace kraken::render {
             _ResetSampler(this, idx, D3DSAMP_SRGBTEXTURE, 0);
             _ResetSampler(this, idx, D3DSAMP_ELEMENTINDEX, 0);
             _ResetSampler(this, idx, D3DSAMP_DMAPOFFSET, 256);
-        } 
+        }
         rstStacks();
     };
 
@@ -2318,9 +2287,9 @@ namespace kraken::render {
 
     void CDevice::rstTexPrepareFor() {
         for (auto [_, image] : this->mActiveImages) {
-            if (image->m_pool == D3DPOOL_DEFAULT) {
-                image->m_pTex->Release();
-                image->m_pTex = nullptr;
+            if (image->mPool == D3DPOOL_DEFAULT) {
+                image->mHandleBase->Release();
+                image->mHandleBase = nullptr;
             }
         }
     };
@@ -2329,48 +2298,42 @@ namespace kraken::render {
         uint32_t failCount = 0;
 
         for (auto [index, image] : this->mActiveImages) {
-            if (image->m_pool != D3DPOOL_DEFAULT)
+            if (image->mPool != D3DPOOL_DEFAULT)
                 continue;
 
             HRESULT hr;
             if (image->Is2D()) {
                 hr = m_pd3dDevice->CreateTexture(
-                    image->m_desc2d.Width,
-                    image->m_desc2d.Height,
+                    image->mSurface2D.Width,
+                    image->mSurface2D.Height,
                     1,
-                    image->m_usage,
-                    image->m_desc2d.Format,
-                    image->m_pool, 
-                    &image->m_pTex2d,
+                    image->mUsage,
+                    image->mSurface2D.Format,
+                    image->mPool,
+                    &image->mHandle2D,
                     nullptr
                 );
             } else if (image->IsCube()) {
                 hr = m_pd3dDevice->CreateCubeTexture(
-                    image->m_desc2d.Width,
-                    1,
-                    image->m_usage,
-                    image->m_desc2d.Format,
-                    image->m_pool,
-                    &image->m_pTexCube,
-                    nullptr
+                    image->mSurface2D.Width, 1, image->mUsage, image->mSurface2D.Format, image->mPool, &image->mHandleCube, nullptr
                 );
             } else if (image->Is3D()) {
                 hr = m_pd3dDevice->CreateVolumeTexture(
-                    image->m_desc3d.Width,
-                    image->m_desc3d.Height,
-                    image->m_desc3d.Depth,
+                    image->mSurface3D.Width,
+                    image->mSurface3D.Height,
+                    image->mSurface3D.Depth,
                     1,
-                    image->m_usage,
-                    image->m_desc3d.Format,
-                    image->m_pool,
-                    &image->m_pTex3d,
+                    image->mUsage,
+                    image->mSurface3D.Format,
+                    image->mPool,
+                    &image->mHandle3D,
                     nullptr
                 );
             }
 
             if (FAILED(hr)) {
                 LOG_ERROR("cannot restore texmap %u", index);
-                image->m_pTex = nullptr;
+                image->mHandleBase = nullptr;
                 failCount++;
             }
         }
@@ -2450,33 +2413,33 @@ namespace kraken::render {
             IDirect3DVertexDeclaration9* decl;
         };
 
-    const VertexInfo info[0x20] = {
-        {0, 12, m_vdXYZ},               // 0: VERTEX_XYZ - Pos(12)
-        {0, 20, m_vdXYZT1},           // 1: VERTEX_XYZT1 - Pos(12) + UV(8)
-        {0, 16, m_vdXYZC},             // 2: VERTEX_XYZC - Pos(12) + Color(4)
-        {0, 20, m_vdXYZWC},            // 3: VERTEX_XYZWC - PosT(16) + Color(4)
-        {0, 28, m_vdXYZWCT1},         // 4: VERTEX_XYZWCT1 - PosT(16) + Color(4) + UV(8)
-        {0, 28, m_vdXYZNC},            // 5: VERTEX_XYZNC - Pos(12) + Norm(12) + Color(4)
-        {0, 24, m_vdXYZCT1},          // 6: VERTEX_XYZCT1 - Pos(12) + Color(4) + UV(8)
-        {0, 32, m_vdXYZNT1},          // 7: VERTEX_XYZNT1 - Pos(12) + Norm(12) + UV(8)
-        {0, 36, m_vdXYZNCT1},         // 8: VERTEX_XYZNCT1 - Pos(12) + Norm(12) + Color(4) + UV(8)
-        {0, 44, m_vdXYZNCT2},         // 9: VERTEX_XYZNCT2 - Pos(12) + Norm(12) + Color(4) + UV(8) + UV2(8)
-        {0, 40, m_vdXYZNT2},          // 10: VERTEX_XYZNT2 - Pos(12) + Norm(12) + UV(8) + UV2(8)
-        {0, 48, m_vdXYZNT3},          // 11: VERTEX_XYZNT3 - Pos(12) + Norm(12) + UV(8) + UV2(8) + UV3(8)
-        {0, 28, m_vdXYZCT1_UVW},    // 12: VERTEX_XYZCT1_UVW - Pos(12) + Color(4) + UVW(12)
-        {0, 36, m_vdXYZCT2_UVW},    // 13: VERTEX_XYZCT2_UVW - Pos(12) + Color(4) + UVW(12) + UV2(8)
-        {0, 32, m_vdXYZCT2},          // 14: VERTEX_XYZCT2 - Pos(12) + Color(4) + UV(8) + UV2(8)
-        {0, 48, m_vdXYZNT1T},         // 15: VERTEX_XYZNT1T - Pos(12) + Norm(12) + Tan(16) + UV(8)
-        {0, 52, m_vdXYZNCT1T},        // 16: VERTEX_XYZNCT1T - Pos(12) + Norm(12) + Color(4) + UV(8) + Tan(16)
-        {0, 8, m_vdXYZNCT1_UV2_S1},     // 17: VERTEX_XYZNCT1_UV2_S1 - stream 0: Y(4) + NI(4)
-        {0, 8, nullptr},              // 18: VERTEX_STREAM_UV_S1 - stream 1: UV(8)
-        {0, 8, m_vdWaterTest},          // 19: VERTEX_WATERTEST - Short4(8)
-        {0, 24, m_vdGrassTest},         // 20: VERTEX_GRASSTEST - Pos4(16) + UV(8)
-        {0, 20, m_vdImpostorTest},    // 21: VERTEX_IMPOSTORTEST - Pos(12) + UV(8)
-        {0, 12, m_vdYNI},               // 22: VERTEX_YNI - Y(4) + Short4(8)
-        {0, 24, m_vdXYZT1I},          // 23: VERTEX_XYZT1I - Pos(12) + UV(8) + Short2(4)
-        {0, 4, m_vdInstanceId},         // 24: INSTANCE_ID - stream 1: Short2(4)
-    };
+        const VertexInfo info[0x20] = {
+            {0, 12, m_vdXYZ},           // 0: VERTEX_XYZ - Pos(12)
+            {0, 20, m_vdXYZT1},         // 1: VERTEX_XYZT1 - Pos(12) + UV(8)
+            {0, 16, m_vdXYZC},          // 2: VERTEX_XYZC - Pos(12) + Color(4)
+            {0, 20, m_vdXYZWC},         // 3: VERTEX_XYZWC - PosT(16) + Color(4)
+            {0, 28, m_vdXYZWCT1},       // 4: VERTEX_XYZWCT1 - PosT(16) + Color(4) + UV(8)
+            {0, 28, m_vdXYZNC},         // 5: VERTEX_XYZNC - Pos(12) + Norm(12) + Color(4)
+            {0, 24, m_vdXYZCT1},        // 6: VERTEX_XYZCT1 - Pos(12) + Color(4) + UV(8)
+            {0, 32, m_vdXYZNT1},        // 7: VERTEX_XYZNT1 - Pos(12) + Norm(12) + UV(8)
+            {0, 36, m_vdXYZNCT1},       // 8: VERTEX_XYZNCT1 - Pos(12) + Norm(12) + Color(4) + UV(8)
+            {0, 44, m_vdXYZNCT2},       // 9: VERTEX_XYZNCT2 - Pos(12) + Norm(12) + Color(4) + UV(8) + UV2(8)
+            {0, 40, m_vdXYZNT2},        // 10: VERTEX_XYZNT2 - Pos(12) + Norm(12) + UV(8) + UV2(8)
+            {0, 48, m_vdXYZNT3},        // 11: VERTEX_XYZNT3 - Pos(12) + Norm(12) + UV(8) + UV2(8) + UV3(8)
+            {0, 28, m_vdXYZCT1_UVW},    // 12: VERTEX_XYZCT1_UVW - Pos(12) + Color(4) + UVW(12)
+            {0, 36, m_vdXYZCT2_UVW},    // 13: VERTEX_XYZCT2_UVW - Pos(12) + Color(4) + UVW(12) + UV2(8)
+            {0, 32, m_vdXYZCT2},        // 14: VERTEX_XYZCT2 - Pos(12) + Color(4) + UV(8) + UV2(8)
+            {0, 48, m_vdXYZNT1T},       // 15: VERTEX_XYZNT1T - Pos(12) + Norm(12) + Tan(16) + UV(8)
+            {0, 52, m_vdXYZNCT1T},      // 16: VERTEX_XYZNCT1T - Pos(12) + Norm(12) + Color(4) + UV(8) + Tan(16)
+            {0, 8, m_vdXYZNCT1_UV2_S1}, // 17: VERTEX_XYZNCT1_UV2_S1 - stream 0: Y(4) + NI(4)
+            {0, 8, nullptr},            // 18: VERTEX_STREAM_UV_S1 - stream 1: UV(8)
+            {0, 8, m_vdWaterTest},      // 19: VERTEX_WATERTEST - Short4(8)
+            {0, 24, m_vdGrassTest},     // 20: VERTEX_GRASSTEST - Pos4(16) + UV(8)
+            {0, 20, m_vdImpostorTest},  // 21: VERTEX_IMPOSTORTEST - Pos(12) + UV(8)
+            {0, 12, m_vdYNI},           // 22: VERTEX_YNI - Y(4) + Short4(8)
+            {0, 24, m_vdXYZT1I},        // 23: VERTEX_XYZT1I - Pos(12) + UV(8) + Short2(4)
+            {0, 4, m_vdInstanceId},     // 24: INSTANCE_ID - stream 1: Short2(4)
+        };
 
         if (type >= 0 && type < ARRAYSIZE(info)) {
             fvf    = info[type].fvf;
@@ -2489,13 +2452,9 @@ namespace kraken::render {
         }
     };
 
-    HRESULT CDevice::setTexture(int32_t stage, IDirect3DBaseTexture9* tex) {
-        if (m_curTexStages[stage] == tex)
-            return S_OK;
-
-        m_curTexStages[stage] = tex;
+    HRESULT CDevice::setTexture(int32_t stage, Texture* tex) {
         m_stats.swTextures++;
-        return m_pd3dDevice->SetTexture(stage, tex);
+        return m_pd3dDevice->SetTexture(stage, *tex);
     };
 
     void CDevice::setGamma(float, float, float) {};
@@ -2557,7 +2516,7 @@ namespace kraken::render {
         }
 
         // Create texture and load frames
-        CTexture* texture = this->CreateTexture(result.m_handle);
+        Sampler* texture = this->CreateTexture(result.m_handle);
 
         if (!loadTexMaps(texture, framePattern, flags)) {
             this->DeleteTexture(result.m_handle);
@@ -2569,9 +2528,9 @@ namespace kraken::render {
             int numFrames = texture->m_maps.size();
             texture->m_maps.reserve(numFrames * 2 - 1);
             for (int i = numFrames - 2; i >= 0; --i) {
-                CImage* map = texture->m_maps[i];
+                Texture* map = texture->m_maps[i];
                 texture->m_maps.push_back(map);
-                ++map->m_refs;
+                map->AddRef();
             }
         }
 
@@ -2588,56 +2547,50 @@ namespace kraken::render {
         texture->m_lodMax        = 0;
         texture->m_looped        = looped;
         texture->m_fps           = fps;
-        texture->m_refs          = 0;
-        texture->m_fileName      = name;
+        texture->mRefs           = 0;
+        texture->mFileName       = name;
 
-        texture->addRef();
+        texture->AddRef();
 
         return result;
     };
 
-    CDevice::CTexture* CDevice::CreateTexture(int32_t& handle) {
-        handle = this->mActiveTextures.GetSlot();
-        CTexture* tex = new CTexture();
+    Sampler* CDevice::CreateTexture(int32_t& handle) {
+        handle       = this->mActiveTextures.GetSlot();
+        Sampler* tex = new Sampler();
         this->mActiveTextures.AddItem(handle, tex);
         return tex;
     };
 
     void CDevice::DeleteTexture(int32_t handle) {
-        CTexture* texture = mActiveTextures.GetItem(handle);
+        Sampler* texture = mActiveTextures.GetItem(handle);
         if (!texture)
             return;
-        
+
         // Release all maps
         for (auto& map : texture->m_maps) {
-            if (--map->m_refs == 0) {
-                // Remove from mActiveImages
+            if (map->GetRef() == 1) {
                 for (auto& [slot, img] : mActiveImages) {
                     if (img == map) {
                         mActiveImages.DelItem(slot);
                         break;
                     }
                 }
-                
-                if (map->m_pTex) {
-                    map->m_pTex->Release();
-                    map->m_pTex = nullptr;
-                }
-                delete map;
+                map->DecRef();
             }
         }
-        
+
         texture->m_maps.clear();
         mActiveTextures.DelItem(handle);
         delete texture;
     }
 
-    int32_t CDevice::loadTexMaps(CTexture* tex, const hta::CStr& pattern, uint32_t flags) {
+    int32_t CDevice::loadTexMaps(Sampler* tex, const hta::CStr& pattern, uint32_t flags) {
         hta::CStr filename = pattern;
 
         char* percentPos = strchr(filename.m_charPtr, '%');
         if (!percentPos) {
-            CImage* map = addTexMap(filename, flags);
+            Texture* map = addTexMap(filename, flags);
             if (!map)
                 return false;
             tex->m_maps.push_back(map);
@@ -2672,7 +2625,7 @@ namespace kraken::render {
             stream->Close();
 
             // Load texture
-            CImage* map = addTexMap(filename, flags);
+            Texture* map = addTexMap(filename, flags);
             if (!map)
                 break;
 
@@ -3137,8 +3090,8 @@ namespace kraken::render {
     };
 
     HRESULT CDevice::setStreamSource(int32_t stream, IDirect3DVertexBuffer9* vb, uint32_t stride) {
-        //if (this->m_curVb[stream] == vb && this->m_curStride[stream] == stride)
-        //    return 0;
+        // if (this->m_curVb[stream] == vb && this->m_curStride[stream] == stride)
+        //     return 0;
         this->m_curVb[stream]     = vb;
         this->m_curStride[stream] = stride;
         return this->m_pd3dDevice->SetStreamSource(stream, vb, 0, stride);
@@ -3196,7 +3149,7 @@ namespace kraken::render {
     };
 
     bool CDevice::IsTexValid(const TexHandle& tex) const {
-        CTexture* texture = this->mActiveTextures.GetItem(tex.m_handle);
+        Sampler* texture = this->mActiveTextures.GetItem(tex.m_handle);
         return texture && texture->m_maps.size();
     };
 
@@ -3230,15 +3183,14 @@ namespace kraken::render {
 
         for (auto& pair : this->mActiveTextures) {
             pair.second->m_maps.clear();
-            pair.second->release();
-            delete pair.second;
+            pair.second->DecRef();
         }
         this->mActiveTextures.Reset();
 
         for (auto& pair : this->mActiveImages) {
-            if (pair.second->m_pTex) {
-                pair.second->m_pTex->Release();
-                pair.second->m_pTex = nullptr;
+            if (pair.second->mHandleBase) {
+                pair.second->mHandleBase->Release();
+                pair.second->mHandleBase = nullptr;
             }
             delete pair.second;
         }
@@ -3681,7 +3633,7 @@ namespace kraken::render {
         bool hasPureDevice = (devCaps & D3DDEVCAPS_PUREDEVICE) != 0 && (devCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT) != 0;
 
         DWORD requestedBehavior = D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE;
-        DWORD actualBehavior = requestedBehavior;
+        DWORD actualBehavior    = requestedBehavior;
 
         if (!hasHwTnL) {
             actualBehavior = D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE;
@@ -5895,7 +5847,6 @@ namespace kraken::render {
         return modelViewProj;
     };
 
-
     hta::CVector CDevice::Unproject(const hta::CVector2& scr) {
         const Viewport& viewport = GetViewport();
         const hta::CMatrix& view = MatGet();
@@ -5909,22 +5860,22 @@ namespace kraken::render {
 
         hta::CVector dir = view * hta::CVector(viewX, viewY, 1.0f);
 
-        return dir.Normalized(); 
+        return dir.Normalized();
     }
 
     hta::CVector CDevice::Project(const hta::CVector& world) {
         const Viewport& viewport = GetViewport();
         const hta::CMatrix& view = MatGet();
         const hta::CMatrix& proj = MatGetProj();
-        
+
         hta::CVector viewPos = view * world;
-        
+
         float ndcX = (viewPos.x * proj.m11) / viewPos.z;
         float ndcY = (viewPos.y * proj.m22) / viewPos.z;
-        
+
         float screenX = ((ndcX / 2.0f) * viewport.m_width) + (viewport.m_width / 2.0f);
         float screenY = (viewport.m_height / 2.0f) - ((ndcY / 2.0f) * viewport.m_height);
-        
+
         return hta::CVector(screenX, screenY, viewPos.z);
     }
 
@@ -5948,13 +5899,13 @@ namespace kraken::render {
     ) {
         hta::CMatrix shift;
         shift.Identity();
-        shift(3, 0) = -tx;   // Was ._41
-        shift(3, 2) = -tz;   // Was ._43
+        shift(3, 0) = -tx; // Was ._41
+        shift(3, 2) = -tz; // Was ._43
 
         hta::CMatrix scale;
         scale.Identity();
-        scale(0, 0) = sx;    // Was ._11
-        scale(2, 2) = sz;    // Was ._33
+        scale(0, 0) = sx; // Was ._11
+        scale(2, 2) = sz; // Was ._33
 
         hta::CMatrix combined = scale * shift;
 
@@ -5963,17 +5914,17 @@ namespace kraken::render {
 
         hta::CMatrix rotation;
         rotation.Identity();
-        rotation(0, 0) = cosRot;   // Was ._11
-        rotation(0, 2) = -sinRot;  // Was ._13
-        rotation(2, 0) = sinRot;   // Was ._31
-        rotation(2, 2) = cosRot;   // Was ._33
+        rotation(0, 0) = cosRot;  // Was ._11
+        rotation(0, 2) = -sinRot; // Was ._13
+        rotation(2, 0) = sinRot;  // Was ._31
+        rotation(2, 2) = cosRot;  // Was ._33
 
         combined = rotation * combined;
 
         hta::CMatrix shiftHalf;
         shiftHalf.Identity();
-        shiftHalf(3, 0) = 0.5f;  // Was ._41
-        shiftHalf(3, 2) = 0.5f;  // Was ._43
+        shiftHalf(3, 0) = 0.5f; // Was ._41
+        shiftHalf(3, 2) = 0.5f; // Was ._43
 
         combined = shiftHalf * combined;
 
@@ -6132,8 +6083,8 @@ namespace kraken::render {
         int width, height;
         GetDims(destTex, width, height);
 
-        CTexture* texture = this->mActiveTextures.GetItem(destTex.m_handle);
-        IDirect3DBaseTexture9* pTexBase = texture->m_maps[0]->m_pTex;
+        Sampler* texture                = this->mActiveTextures.GetItem(destTex.m_handle);
+        IDirect3DBaseTexture9* pTexBase = texture->m_maps[0]->mHandleBase;
 
         m_rtsPtr = nullptr;
         _SetLastResult(static_cast<IDirect3DTexture9*>(pTexBase)->GetSurfaceLevel(0, &m_rtsPtr));
@@ -6203,16 +6154,16 @@ namespace kraken::render {
         MatDuplicateProj();
 
         Viewport newViewport;
-        newViewport.m_x0 = 0;
-        newViewport.m_y0 = 0;
-        newViewport.m_width = width;
+        newViewport.m_x0     = 0;
+        newViewport.m_y0     = 0;
+        newViewport.m_width  = width;
         newViewport.m_height = height;
-        newViewport.m_zMin = 0.0f;
-        newViewport.m_zMax = 1.0f;
+        newViewport.m_zMin   = 0.0f;
+        newViewport.m_zMax   = 1.0f;
         SetViewport(newViewport);
 
         m_activeStencilTarget = 1;
-        m_stencilLevel[1] = -1;
+        m_stencilLevel[1]     = -1;
         ++m_stats.swRenderTargets;
 
         return true;
@@ -6255,7 +6206,7 @@ namespace kraken::render {
         if (FAILED(m_pd3dDevice->GetRenderTarget(0, &srcSurf)))
             return;
 
-        IDirect3DBaseTexture9* pTexBase = this->mActiveTextures.GetItem(destTex.m_handle)->m_maps[0]->m_pTex;
+        IDirect3DBaseTexture9* pTexBase = this->mActiveTextures.GetItem(destTex.m_handle)->m_maps[0]->mHandleBase;
 
         IDirect3DSurface9* dstSurf = nullptr;
         if (SUCCEEDED(static_cast<IDirect3DTexture9*>(pTexBase)->GetSurfaceLevel(0, &dstSurf))) {
@@ -6330,7 +6281,7 @@ namespace kraken::render {
         DWORD clearFlags = (DWORD)flags;
 
         if (!pDepthStencil) {
-            if (m_rtsPtr == nullptr) {  // ✅ ADD THIS CHECK
+            if (m_rtsPtr == nullptr) { // ✅ ADD THIS CHECK
                 LOG_WARNING("ZBuffer is empty outside RTT!");
             }
             clearFlags &= ~(D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL);
@@ -6620,11 +6571,11 @@ namespace kraken::render {
         }
     };
 
-    CDevice::CImage* CDevice::addTexMap(const hta::CStr& filename, unsigned int flags) {
+    Texture* CDevice::addTexMap(const hta::CStr& filename, unsigned int flags) {
         // Check if texture already exists
         for (auto& [_, image] : this->mActiveImages) {
-            if (image->m_fileName == filename) {
-                ++image->m_refs;
+            if (image->mFileName == filename) {
+                image->AddRef();
                 return image;
             }
         }
@@ -6692,12 +6643,13 @@ namespace kraken::render {
         }
 
         // Create texture map structure
-        CImage* texMap = new CImage();
+        Texture* texMap = new Texture();
 
         // Load texture based on type
         HRESULT hr;
         if (type == TT_CUBE_FROM_FILE) {
-            hr = D3DXCreateCubeTextureFromFileInMemoryEx(
+            texMap->mDimension = Texture::eDimension_CUBE;
+            hr                 = D3DXCreateCubeTextureFromFileInMemoryEx(
                 m_pd3dDevice,
                 fileData.data(),
                 fileSize,
@@ -6711,10 +6663,11 @@ namespace kraken::render {
                 0,
                 nullptr,
                 nullptr,
-                &texMap->m_pTexCube
+                &texMap->mHandleCube
             );
         } else if (type == TT_3D_FROM_FILE) {
-            hr = D3DXCreateVolumeTextureFromFileInMemoryEx(
+            texMap->mDimension = Texture::eDimension_3D;
+            hr                 = D3DXCreateVolumeTextureFromFileInMemoryEx(
                 m_pd3dDevice,
                 fileData.data(),
                 fileSize,
@@ -6730,10 +6683,11 @@ namespace kraken::render {
                 0,
                 nullptr,
                 nullptr,
-                &texMap->m_pTex3d
+                &texMap->mHandle3D
             );
         } else {
-            hr = D3DXCreateTextureFromFileInMemoryEx(
+            texMap->mDimension = Texture::eDimension_2D;
+            hr                 = D3DXCreateTextureFromFileInMemoryEx(
                 m_pd3dDevice,
                 fileData.data(),
                 fileSize,
@@ -6748,7 +6702,7 @@ namespace kraken::render {
                 0,
                 nullptr,
                 nullptr,
-                &texMap->m_pTex2d
+                &texMap->mHandle2D
             );
         }
 
@@ -6763,27 +6717,27 @@ namespace kraken::render {
         }
 
         // Fill texture map data
-        texMap->m_fileName     = filename;
-        texMap->m_pool         = D3DPOOL_MANAGED;
-        texMap->m_usage        = 0;
-        texMap->m_fmt          = fmt;
-        texMap->m_flags        = flags;
-        texMap->m_lastFileSize = fileSize;
+        texMap->mFileName = filename;
+        texMap->mPool     = D3DPOOL_MANAGED;
+        texMap->mUsage    = 0;
+        texMap->mFormat   = fmt;
+        texMap->mFlags    = flags;
+        texMap->mFileSize = fileSize;
+        texMap->mOrigin   = Texture::eOrigin_FILESYSTEM;
 
-        FILETIME fileTime                     = stream->GetDate();
-        texMap->m_lastFileDate.dwLowDateTime  = fileTime.dwLowDateTime;
-        texMap->m_lastFileDate.dwHighDateTime = fileTime.dwHighDateTime;
+        FILETIME fileTime                = stream->GetDate();
+        texMap->mFileTime.dwLowDateTime  = fileTime.dwLowDateTime;
+        texMap->mFileTime.dwHighDateTime = fileTime.dwHighDateTime;
 
         if (type == TT_2D_FROM_FILE) {
-            texMap->m_pTex2d->GetLevelDesc(0, &texMap->m_desc2d);
+            texMap->mHandle2D->GetLevelDesc(0, &texMap->mSurface2D);
         } else if (type == TT_3D_FROM_FILE) {
-            texMap->m_pTex3d->GetLevelDesc(0, &texMap->m_desc3d);
+            texMap->mHandle3D->GetLevelDesc(0, &texMap->mSurface3D);
         } else {
-            texMap->m_pTexCube->GetLevelDesc(0, &texMap->m_desc2d);
+            texMap->mHandleCube->GetLevelDesc(0, &texMap->mSurface2D);
         }
 
-        texMap->m_type = type;
-        texMap->m_refs = 1;
+        texMap->mType = type;
 
         this->mActiveImages.PushItem(texMap);
 
@@ -6792,7 +6746,7 @@ namespace kraken::render {
         return texMap;
     };
 
-    CDevice::CImage* CDevice::addTexMap_(uint32_t, const hta::CStr&, uint32_t) {
+    Texture* CDevice::addTexMap_(uint32_t, const hta::CStr&, uint32_t) {
         throw std::runtime_error("not implemented");
     };
 
@@ -6807,41 +6761,41 @@ namespace kraken::render {
             return shaderHandle;
         }
 
-        CImage* texMap = addTexMap(filename, flags);
+        Texture* texMap = addTexMap(filename, flags);
         if (!texMap) {
             LOG_INFO("texmap failed to load: %s", filename.c_str());
             return TexHandle{-1};
         }
 
-        int32_t handle    = -1;
-        CTexture* texture = this->CreateTexture(handle);
+        int32_t handle   = -1;
+        Sampler* sampler = this->CreateTexture(handle);
 
-        texture->m_refs = 0;
-        texture->m_maps.push_back(texMap);
-        texture->m_address[0]    = D3DTADDRESS_WRAP;
-        texture->m_address[1]    = D3DTADDRESS_WRAP;
-        texture->m_address[2]    = D3DTADDRESS_WRAP;
-        texture->m_maxAnisotropy = 1;
-        texture->m_magFilter     = D3DTEXF_LINEAR;
-        texture->m_minFilter     = D3DTEXF_LINEAR;
-        texture->m_borderColor   = 0;
-        texture->m_lodBias       = 0.0f;
-        texture->m_lodMax        = 0;
-        texture->m_fps           = 0;
-        texture->m_fileName      = filename;
+        sampler->mRefs = 0;
+        sampler->m_maps.push_back(texMap);
+        sampler->m_address[0]    = D3DTADDRESS_WRAP;
+        sampler->m_address[1]    = D3DTADDRESS_WRAP;
+        sampler->m_address[2]    = D3DTADDRESS_WRAP;
+        sampler->m_maxAnisotropy = 1;
+        sampler->m_magFilter     = D3DTEXF_LINEAR;
+        sampler->m_minFilter     = D3DTEXF_LINEAR;
+        sampler->m_borderColor   = 0;
+        sampler->m_lodBias       = 0.0f;
+        sampler->m_lodMax        = 0;
+        sampler->m_fps           = 0;
+        sampler->mFileName       = filename;
 
         if ((flags & 3) != 0) {
-            texture->m_mipFilter = D3DTEXF_POINT;
+            sampler->m_mipFilter = D3DTEXF_POINT;
         } else {
-            texture->m_mipFilter = D3DTEXF_NONE;
-            texture->m_lodBias   = -16.0f;
+            sampler->m_mipFilter = D3DTEXF_NONE;
+            sampler->m_lodBias   = -16.0f;
         }
 
-        for (auto& map : texture->m_maps) {
-            map->addRef();
+        for (auto& map : sampler->m_maps) {
+            map->AddRef();
         }
 
-        ++texture->m_refs;
+        ++sampler->mRefs;
         m_isDevMemStatsValid = false;
 
         return TexHandle{handle};
@@ -6934,7 +6888,7 @@ namespace kraken::render {
         // Find first free texture slot
         int32_t idx = -1;
 
-        CDevice::CTexture* texture = this->CreateTexture(idx);
+        Sampler* texture = this->CreateTexture(idx);
 
         // Parse format flags
         bool allMips = (format & 0x8000) != 0;
@@ -7017,20 +6971,22 @@ namespace kraken::render {
         }
 
         // Create CTexMap wrapper
-        CImage* texMap = new CImage();
+        Texture* texMap = new Texture();
         this->mActiveImages.PushItem(texMap);
 
-        texMap->m_pTex2d = d3dTex;
-        d3dTex->GetLevelDesc(0, &texMap->m_desc2d);
-        texMap->m_pool     = pool;
-        texMap->m_usage    = usage;
-        texMap->m_type     = TT_2D_DYNAMIC;
-        texMap->m_refs     = 1;
-        texMap->m_fileName = texName;
-        texMap->m_flags    = (allMips ? 1 : 0) | 4;
+        texMap->mOrigin    = Texture::eOrigin_RUNTIME;
+        texMap->mDimension = Texture::eDimension_2D;
 
-        // Setup CTexture
-        texture->m_refs   = 0;
+        texMap->mHandle2D = d3dTex;
+        d3dTex->GetLevelDesc(0, &texMap->mSurface2D);
+        texMap->mPool     = pool;
+        texMap->mUsage    = usage;
+        texMap->mType     = TT_2D_DYNAMIC;
+        texMap->mFileName = texName;
+        texMap->mFlags    = (allMips ? 1 : 0) | 4;
+
+        // Setup Sampler
+        texture->mRefs = 0;
         texture->m_maps.push_back(texMap);
         texture->m_magFilter     = D3DTEXF_LINEAR;
         texture->m_minFilter     = D3DTEXF_LINEAR;
@@ -7043,13 +6999,13 @@ namespace kraken::render {
         texture->m_lodBias       = 0.0f;
         texture->m_lodMax        = 0;
         texture->m_fps           = 0;
-        texture->m_fileName      = texName;
+        texture->mFileName       = texName;
 
         for (auto& map : texture->m_maps) {
-            map->addRef();
+            map->AddRef();
         }
 
-        ++texture->m_refs;
+        ++texture->mRefs;
         m_isDevMemStatsValid = false;
 
         return TexHandle{idx};
@@ -7068,12 +7024,12 @@ namespace kraken::render {
 
     bool CDevice::ReportTexturesInfo(const char*) {
         // Categorize textures by type
-        std::vector<CImage*> texturesByType[TT_NUM_TYPES];
+        std::vector<Texture*> texturesByType[TT_NUM_TYPES];
         unsigned int numTexsByType[TT_NUM_TYPES] = {0};
 
         for (auto& [_, texMap] : this->mActiveImages) {
             if (texMap) {
-                TexType type = texMap->m_type;
+                TexType type = texMap->mType;
                 numTexsByType[type]++;
                 texturesByType[type].push_back(texMap);
             }
@@ -7095,8 +7051,8 @@ namespace kraken::render {
         for (auto& [_, texMap] : this->mActiveImages) {
             if (texMap) {
                 // Approximate size calculation
-                unsigned int size = texMap->m_desc2d.Width * texMap->m_desc2d.Height;
-                if (texMap->m_fmt >= D3DFMT_DXT1 && texMap->m_fmt <= D3DFMT_DXT5)
+                unsigned int size = texMap->mSurface2D.Width * texMap->mSurface2D.Height;
+                if (texMap->mFormat >= D3DFMT_DXT1 && texMap->mFormat <= D3DFMT_DXT5)
                     size /= 2; // DXT compression
                 totalSize += size;
             }
@@ -7126,11 +7082,11 @@ namespace kraken::render {
         return texHandle;
     };
 
-    bool CDevice::IsDynamic(const CTexture& tex) const {
+    bool CDevice::IsDynamic(const Sampler& tex) const {
         if (tex.m_maps.empty() || tex.m_maps.size() != 1)
             return false;
 
-        TexType type = tex.m_maps[0]->m_type;
+        TexType type = tex.m_maps[0]->mType;
 
         return type == TT_2D_DYNAMIC || type == TT_2D_RENDER_TARGET || type == TT_CUBE_DYNAMIC || type == TT_CUBE_RENDER_TARGET ||
                type == TT_3D_DYNAMIC;
@@ -7144,33 +7100,30 @@ namespace kraken::render {
                 continue;
 
             // Skip dynamic textures
-            TexType type = texMap->m_type;
-            if (type == TT_2D_DYNAMIC || type == TT_2D_RENDER_TARGET || 
-                type == TT_CUBE_DYNAMIC || type == TT_CUBE_RENDER_TARGET ||
+            TexType type = texMap->mType;
+            if (type == TT_2D_DYNAMIC || type == TT_2D_RENDER_TARGET || type == TT_CUBE_DYNAMIC || type == TT_CUBE_RENDER_TARGET ||
                 type == TT_3D_DYNAMIC) {
                 continue;
             }
 
             // Open file
-            hta::m3d::fs::FileServer& fs = hta::m3d::Kernel::Instance()->GetFileServer();
+            hta::m3d::fs::FileServer& fs     = hta::m3d::Kernel::Instance()->GetFileServer();
             hta::m3d::fs::FileStream* stream = fs.CreateFileStream();
             if (!stream)
                 continue;
 
-            if (!stream->Open(texMap->m_fileName.c_str(), hta::m3d::fs::IStream::OPEN_READ)) {
-                LOG_INFO("error reloading texture: cannot open %s", texMap->m_fileName.c_str());
+            if (!stream->Open(texMap->mFileName.c_str(), hta::m3d::fs::IStream::OPEN_READ)) {
+                LOG_INFO("error reloading texture: cannot open %s", texMap->mFileName.c_str());
                 delete stream;
                 continue;
             }
 
             // Check if file changed
             unsigned int fileSize = stream->GetSize();
-            FILETIME fileTime = stream->GetDate();
+            FILETIME fileTime     = stream->GetDate();
 
-            if (!m_reloadAllTextures && 
-                fileSize == texMap->m_lastFileSize &&
-                fileTime.dwHighDateTime == texMap->m_lastFileDate.dwHighDateTime &&
-                fileTime.dwLowDateTime == texMap->m_lastFileDate.dwLowDateTime) {
+            if (!m_reloadAllTextures && fileSize == texMap->mFileSize && fileTime.dwHighDateTime == texMap->mFileTime.dwHighDateTime &&
+                fileTime.dwLowDateTime == texMap->mFileTime.dwLowDateTime) {
                 delete stream;
                 continue;
             }
@@ -7181,15 +7134,15 @@ namespace kraken::render {
 
             // Determine mip levels and filter
             unsigned int mipLevels = D3DX_DEFAULT;
-            DWORD filter = D3DX_FILTER_NONE;
-            int flags = texMap->m_flags & 3;
+            DWORD filter           = D3DX_FILTER_NONE;
+            int flags              = texMap->mFlags & 3;
 
             if (flags == 1) {
                 filter = D3DX_FILTER_POINT;
             } else if (flags == 2) {
                 filter = D3DX_FILTER_LINEAR;
             } else {
-                filter = D3DX_FILTER_NONE;
+                filter    = D3DX_FILTER_NONE;
                 mipLevels = 0;
             }
 
@@ -7212,14 +7165,14 @@ namespace kraken::render {
             }
 
             // Verify type matches
-            if (newType != texMap->m_type) {
-                LOG_INFO("error reloading texture: types do not match for %s", texMap->m_fileName.c_str());
+            if (newType != texMap->mType) {
+                LOG_INFO("error reloading texture: types do not match for %s", texMap->mFileName.c_str());
                 delete stream;
                 continue;
             }
 
             // Create new texture map
-            CImage* newTexMap = new CImage();
+            Texture* newTexMap = new Texture();
 
             // Load texture based on type
             HRESULT hr;
@@ -7232,14 +7185,14 @@ namespace kraken::render {
                     D3DX_DEFAULT,
                     mipLevels,
                     0,
-                    texMap->m_fmt,
-                    texMap->m_pool,
+                    texMap->mFormat,
+                    texMap->mPool,
                     filter,
                     filter,
                     0,
                     nullptr,
                     nullptr,
-                    &newTexMap->m_pTex2d
+                    &newTexMap->mHandle2D
                 );
             } else if (newType == TT_CUBE_FROM_FILE) {
                 hr = D3DXCreateCubeTextureFromFileInMemoryEx(
@@ -7249,14 +7202,14 @@ namespace kraken::render {
                     D3DX_DEFAULT,
                     mipLevels,
                     0,
-                    texMap->m_fmt,
-                    texMap->m_pool,
+                    texMap->mFormat,
+                    texMap->mPool,
                     filter,
                     filter,
                     0,
                     nullptr,
                     nullptr,
-                    &newTexMap->m_pTexCube
+                    &newTexMap->mHandleCube
                 );
             } else {
                 hr = D3DXCreateVolumeTextureFromFileInMemoryEx(
@@ -7268,14 +7221,14 @@ namespace kraken::render {
                     D3DX_DEFAULT,
                     mipLevels,
                     0,
-                    texMap->m_fmt,
-                    texMap->m_pool,
+                    texMap->mFormat,
+                    texMap->mPool,
                     filter,
                     filter,
                     0,
                     nullptr,
                     nullptr,
-                    &newTexMap->m_pTex3d
+                    &newTexMap->mHandle3D
                 );
             }
 
@@ -7283,7 +7236,7 @@ namespace kraken::render {
                 LOG_ERROR(
                     "error reloading texture: CreateTextureFromFileInMemoryEx error: %s file: %s",
                     getD3dErrorStr(hr),
-                    texMap->m_fileName.c_str()
+                    texMap->mFileName.c_str()
                 );
                 delete newTexMap;
                 delete stream;
@@ -7291,24 +7244,27 @@ namespace kraken::render {
             }
 
             // Fill new texture map data
-            newTexMap->m_fileName = texMap->m_fileName;
-            newTexMap->m_pool = D3DPOOL_MANAGED;
-            newTexMap->m_usage = 0;
-            newTexMap->m_flags = texMap->m_flags;
-            newTexMap->m_lastFileSize = fileSize;
-            newTexMap->m_lastFileDate = fileTime;
+            newTexMap->mOrigin    = texMap->mOrigin;
+            newTexMap->mDimension = texMap->mDimension;
+
+            newTexMap->mFileName = texMap->mFileName;
+            newTexMap->mPool     = D3DPOOL_MANAGED;
+            newTexMap->mUsage    = 0;
+            newTexMap->mFlags    = texMap->mFlags;
+            newTexMap->mFileSize = fileSize;
+            newTexMap->mFileTime = fileTime;
 
             // Get level descriptors
             if (newType == TT_2D_FROM_FILE) {
-                newTexMap->m_pTex2d->GetLevelDesc(0, &newTexMap->m_desc2d);
+                newTexMap->mHandle2D->GetLevelDesc(0, &newTexMap->mSurface2D);
             } else if (newType == TT_CUBE_FROM_FILE) {
-                newTexMap->m_pTexCube->GetLevelDesc(0, &newTexMap->m_desc2d);
+                newTexMap->mHandleCube->GetLevelDesc(0, &newTexMap->mSurface2D);
             } else if (newType == TT_3D_FROM_FILE) {
-                newTexMap->m_pTex3d->GetLevelDesc(0, &newTexMap->m_desc3d);
+                newTexMap->mHandle3D->GetLevelDesc(0, &newTexMap->mSurface3D);
             }
 
-            newTexMap->m_type = newType;
-            newTexMap->m_refs = texMap->m_refs;
+            newTexMap->mType = newType;
+            newTexMap->mRefs = texMap->mRefs;
 
             // Update all references in mActiveTextures
             for (auto& [_, texture] : this->mActiveTextures) {
@@ -7321,11 +7277,11 @@ namespace kraken::render {
             // Replace in mActiveImages
             mActiveImages.DelItem(slot);
             mActiveImages.AddItem(slot, newTexMap);
-            
+
             // Free old texture and delete
-            if (texMap->m_pTex) {
-                texMap->m_pTex->Release();
-                texMap->m_pTex = nullptr;
+            if (texMap->mHandleBase) {
+                texMap->mHandleBase->Release();
+                texMap->mHandleBase = nullptr;
             }
             delete texMap;
 
@@ -7346,11 +7302,11 @@ namespace kraken::render {
         if (!IsTexValid(id))
             return false;
 
-        CTexture* texture = this->mActiveTextures.GetItem(id.m_handle);
-        int frame         = GetTextureCurrentFrame(texture, tsc);
+        Sampler* sampler = this->mActiveTextures.GetItem(id.m_handle);
+        int frame        = GetTextureCurrentFrame(sampler, tsc);
 
-        assert(texture && "Tries to set freed texture!");
-        setTexture(stage, texture->m_maps[frame]->m_pTex);
+        assert(sampler && "Tries to set freed texture!");
+        setTexture(stage, sampler->m_maps[frame]);
 
         // Get LOD bias from config
         hta::m3d::EngineConfig& cfg = hta::m3d::Kernel::Instance()->GetEngineCfg();
@@ -7358,34 +7314,34 @@ namespace kraken::render {
             (cfg.m_r_texLodBias.m_type == hta::m3d::CVar::CVAR_FLOAT) ? cfg.m_r_texLodBias.m_f : static_cast<float>(cfg.m_r_texLodBias.m_i);
 
         // Set sampler states
-        setTextureSamplerState(stage, D3DSAMP_ADDRESSU, texture->m_address[0]);
-        setTextureSamplerState(stage, D3DSAMP_ADDRESSV, texture->m_address[1]);
-        setTextureSamplerState(stage, D3DSAMP_ADDRESSW, texture->m_address[2]);
-        setTextureSamplerState(stage, D3DSAMP_MAXANISOTROPY, texture->m_maxAnisotropy);
-        setTextureSamplerState(stage, D3DSAMP_MINFILTER, texture->m_minFilter);
-        setTextureSamplerState(stage, D3DSAMP_MAGFILTER, texture->m_magFilter);
-        setTextureSamplerState(stage, D3DSAMP_MIPFILTER, texture->m_mipFilter);
-        setTextureSamplerState(stage, D3DSAMP_BORDERCOLOR, texture->m_borderColor);
+        setTextureSamplerState(stage, D3DSAMP_ADDRESSU, sampler->m_address[0]);
+        setTextureSamplerState(stage, D3DSAMP_ADDRESSV, sampler->m_address[1]);
+        setTextureSamplerState(stage, D3DSAMP_ADDRESSW, sampler->m_address[2]);
+        setTextureSamplerState(stage, D3DSAMP_MAXANISOTROPY, sampler->m_maxAnisotropy);
+        setTextureSamplerState(stage, D3DSAMP_MINFILTER, sampler->m_minFilter);
+        setTextureSamplerState(stage, D3DSAMP_MAGFILTER, sampler->m_magFilter);
+        setTextureSamplerState(stage, D3DSAMP_MIPFILTER, sampler->m_mipFilter);
+        setTextureSamplerState(stage, D3DSAMP_BORDERCOLOR, sampler->m_borderColor);
 
         // Use texture's LOD bias if set, otherwise use global config value
-        float texLodBias = (texture->m_lodBias == 0.0f) ? lodBias : texture->m_lodBias;
+        float texLodBias = (sampler->m_lodBias == 0.0f) ? lodBias : sampler->m_lodBias;
         setTextureSamplerState(stage, D3DSAMP_MIPMAPLODBIAS, *reinterpret_cast<DWORD*>(&texLodBias));
 
-        setTextureSamplerState(stage, D3DSAMP_MAXMIPLEVEL, texture->m_lodMax);
+        setTextureSamplerState(stage, D3DSAMP_MAXMIPLEVEL, sampler->m_lodMax);
 
         return true;
     };
 
     void CDevice::SetWhiteTexture(int stage) {
-        setTexture(stage, nullptr);
+        m_pd3dDevice->SetTexture(stage, nullptr);
     };
 
     void CDevice::SetBlackTexture(int stage) {
-        setTexture(stage, nullptr);
+        m_pd3dDevice->SetTexture(stage, nullptr);
     };
 
     void CDevice::SetErrorTexture(int stage) {
-        setTexture(stage, nullptr);
+        m_pd3dDevice->SetTexture(stage, nullptr);
     };
 
     void CDevice::DisableTextureStages(int stageToStartFrom) {
@@ -7411,57 +7367,50 @@ namespace kraken::render {
         if (!IsTexValid(id))
             return 0;
 
-        CTexture* texture = this->mActiveTextures.GetItem(id.m_handle);
+        Sampler* texture = this->mActiveTextures.GetItem(id.m_handle);
 
         for (auto& map : texture->m_maps) {
-            map->addRef();
+            map->AddRef();
         }
 
-        return ++texture->m_refs;
+        return ++texture->mRefs;
     };
 
     int CDevice::ReleaseTexture(TexHandle& id) {
         if (!IsTexValid(id))
             return 0;
 
-        CTexture* texture = this->mActiveTextures.GetItem(id.m_handle);
-        
-        if (--texture->m_refs == 0) {
+        Sampler* texture = this->mActiveTextures.GetItem(id.m_handle);
+
+        if (--texture->mRefs == 0) {
             // Release all maps
             for (auto& map : texture->m_maps) {
-                if (--map->m_refs == 0) {
+                if (map->GetRef() == 1) {
                     for (auto& [slot, img] : mActiveImages) {
                         if (img == map) {
                             mActiveImages.DelItem(slot);
                             break;
                         }
                     }
-                    
-                    // Release D3D texture
-                    if (map->m_pTex) {
-                        map->m_pTex->Release();
-                        map->m_pTex = nullptr;
-                    }
-                    
-                    delete map;
+                    map->DecRef();
                 }
             }
-            
+
             texture->m_maps.clear();
             this->mActiveTextures.DelItem(id.m_handle);
             delete texture;
-            
+
             id.SetInvalid();
             m_isDevMemStatsValid = false;
             return 0;
         }
-        
-        return texture->m_refs;
+
+        return texture->mRefs;
     }
 
     int32_t CDevice::GetTextureName(const TexHandle& id, hta::CStr& name) {
         if (IsTexValid(id)) {
-            name = this->mActiveTextures.GetItem(id.m_handle)->m_fileName;
+            name = this->mActiveTextures.GetItem(id.m_handle)->mFileName;
             return true;
         } else {
             name = "";
@@ -7473,7 +7422,7 @@ namespace kraken::render {
         if (!IsTexValid(id))
             return;
 
-        CTexture* texture = this->mActiveTextures.GetItem(id.m_handle);
+        Sampler* texture = this->mActiveTextures.GetItem(id.m_handle);
 
         switch (param) {
         case TM_TEX_FILTER:
@@ -7588,13 +7537,13 @@ namespace kraken::render {
         if (!destBits)
             return false;
 
-        CImage* texMap = this->mActiveTextures.GetItem(id.m_handle)->m_maps[0];
-        uint32_t width  = (texMap->m_desc2d.Width < sx) ? texMap->m_desc2d.Width : sx;
-        uint32_t height = (texMap->m_desc2d.Height < sy) ? texMap->m_desc2d.Height : sy;
+        Texture* texMap = this->mActiveTextures.GetItem(id.m_handle)->m_maps[0];
+        uint32_t width  = (texMap->mSurface2D.Width < sx) ? texMap->mSurface2D.Width : sx;
+        uint32_t height = (texMap->mSurface2D.Height < sy) ? texMap->mSurface2D.Height : sy;
 
         bool success = false;
 
-        switch (texMap->m_desc2d.Format) {
+        switch (texMap->mSurface2D.Format) {
         case D3DFMT_A8R8G8B8:
         case D3DFMT_X8R8G8B8:
             switch (incomingFormat) {
@@ -7824,7 +7773,7 @@ namespace kraken::render {
         if (!IsTexValid(id))
             return nullptr;
 
-        IDirect3DBaseTexture9* pTex = this->mActiveTextures.GetItem(id.m_handle)->m_maps[0]->m_pTex;
+        IDirect3DBaseTexture9* pTex = this->mActiveTextures.GetItem(id.m_handle)->m_maps[0]->mHandleBase;
 
         D3DLOCKED_RECT lr;
         HRESULT hr = static_cast<IDirect3DTexture9*>(pTex)->LockRect(mipLevel, &lr, nullptr, D3DLOCK_DISCARD);
@@ -7839,7 +7788,7 @@ namespace kraken::render {
     };
 
     void CDevice::UnlockTexture(const TexHandle& id) {
-        IDirect3DBaseTexture9* pTex = this->mActiveTextures.GetItem(id.m_handle)->m_maps[0]->m_pTex;
+        IDirect3DBaseTexture9* pTex = this->mActiveTextures.GetItem(id.m_handle)->m_maps[0]->mHandleBase;
         static_cast<IDirect3DTexture9*>(pTex)->UnlockRect(0);
     };
 
@@ -7855,8 +7804,8 @@ namespace kraken::render {
         if (!IsTexValid(tex))
             return false;
 
-        CTexture* texture           = this->mActiveTextures.GetItem(tex.m_handle);
-        IDirect3DBaseTexture9* pTex = texture->m_maps[0]->m_pTex;
+        Sampler* texture            = this->mActiveTextures.GetItem(tex.m_handle);
+        IDirect3DBaseTexture9* pTex = texture->m_maps[0]->mHandleBase;
 
         // Get source surface
         IDirect3DSurface9* surf = nullptr;
@@ -8031,15 +7980,15 @@ namespace kraken::render {
         if (!IsTexValid(tex))
             return;
 
-        CImage* texMap = this->mActiveTextures.GetItem(tex.m_handle)->m_maps[0];
-        TexType type    = texMap->m_type;
+        Texture* texMap = this->mActiveTextures.GetItem(tex.m_handle)->m_maps[0];
+        TexType type    = texMap->mType;
 
         if (type < TT_3D_FROM_FILE) {
-            sx = texMap->m_desc2d.Width;
-            sy = texMap->m_desc2d.Height;
+            sx = texMap->mSurface2D.Width;
+            sy = texMap->mSurface2D.Height;
         } else if (type == TT_3D_FROM_FILE || type == TT_3D_DYNAMIC) {
-            sx = texMap->m_desc3d.Width;
-            sy = texMap->m_desc3d.Height;
+            sx = texMap->mSurface3D.Width;
+            sy = texMap->mSurface3D.Height;
         }
     };
 
@@ -8047,13 +7996,13 @@ namespace kraken::render {
         if (!IsTexValid(dest) || !IsTexValid(src))
             return;
 
-        CImage* destTexMap = this->mActiveTextures.GetItem(dest.m_handle)->m_maps[0];
-        CImage* srcTexMap  = this->mActiveTextures.GetItem(src.m_handle)->m_maps[0];
+        Texture* destTexMap = this->mActiveTextures.GetItem(dest.m_handle)->m_maps[0];
+        Texture* srcTexMap  = this->mActiveTextures.GetItem(src.m_handle)->m_maps[0];
 
         int numLevels;
         if (withMips) {
-            uint32_t srcLevels  = srcTexMap->m_pTex->GetLevelCount();
-            uint32_t destLevels = destTexMap->m_pTex->GetLevelCount();
+            uint32_t srcLevels  = srcTexMap->mHandleBase->GetLevelCount();
+            uint32_t destLevels = destTexMap->mHandleBase->GetLevelCount();
             numLevels           = (srcLevels < destLevels) ? srcLevels : destLevels;
         } else {
             numLevels = 1;
@@ -8063,13 +8012,13 @@ namespace kraken::render {
             IDirect3DSurface9* srcSurf  = nullptr;
             IDirect3DSurface9* destSurf = nullptr;
 
-            HRESULT hr = static_cast<IDirect3DTexture9*>(destTexMap->m_pTex)->GetSurfaceLevel(level, &destSurf);
+            HRESULT hr = static_cast<IDirect3DTexture9*>(destTexMap->mHandleBase)->GetSurfaceLevel(level, &destSurf);
             if (FAILED(hr)) {
                 LOG_INFO("cannot acquire surfaces to copy");
                 break;
             }
 
-            hr = static_cast<IDirect3DTexture9*>(srcTexMap->m_pTex)->GetSurfaceLevel(level, &srcSurf);
+            hr = static_cast<IDirect3DTexture9*>(srcTexMap->mHandleBase)->GetSurfaceLevel(level, &srcSurf);
             if (FAILED(hr)) {
                 destSurf->Release();
                 LOG_INFO("cannot acquire surfaces to copy");
@@ -8097,16 +8046,16 @@ namespace kraken::render {
         if (!IsTexValid(tex))
             return;
 
-        CImage* texMap = this->mActiveTextures.GetItem(tex.m_handle)->m_maps[0];
+        Texture* texMap = this->mActiveTextures.GetItem(tex.m_handle)->m_maps[0];
 
         IDirect3DSurface9* baseSurf = nullptr;
-        HRESULT hr                  = static_cast<IDirect3DTexture9*>(texMap->m_pTex)->GetSurfaceLevel(0, &baseSurf);
+        HRESULT hr                  = static_cast<IDirect3DTexture9*>(texMap->mHandleBase)->GetSurfaceLevel(0, &baseSurf);
         if (FAILED(hr)) {
             LOG_INFO("cannot acquire surfaces to copy");
             return;
         }
 
-        uint32_t numLevels = texMap->m_pTex->GetLevelCount();
+        uint32_t numLevels = texMap->mHandleBase->GetLevelCount();
         if (numLevels <= 1) {
             baseSurf->Release();
             return;
@@ -8114,7 +8063,7 @@ namespace kraken::render {
 
         for (uint32_t level = 1; level < numLevels; ++level) {
             IDirect3DSurface9* mipSurf = nullptr;
-            hr                         = static_cast<IDirect3DTexture9*>(texMap->m_pTex)->GetSurfaceLevel(level, &mipSurf);
+            hr                         = static_cast<IDirect3DTexture9*>(texMap->mHandleBase)->GetSurfaceLevel(level, &mipSurf);
             if (FAILED(hr)) {
                 LOG_INFO("cannot acquire surfaces to copy");
                 break;
@@ -8144,19 +8093,19 @@ namespace kraken::render {
             if (texture->m_maps.empty())
                 continue;
 
-            CImage* texMap = texture->m_maps[0];
+            Texture* texMap = texture->m_maps[0];
 
-            if (texMap->m_type != TT_2D_FROM_FILE)
+            if (texMap->mType != TT_2D_FROM_FILE)
                 continue;
 
-            uint32_t numLevels = texMap->m_pTex->GetLevelCount();
+            uint32_t numLevels = texMap->mHandleBase->GetLevelCount();
 
             for (uint32_t level = 0; level < numLevels; ++level) {
-                if (texMap->m_type > TT_2D_RENDER_TARGET)
+                if (texMap->mType > TT_2D_RENDER_TARGET)
                     continue;
 
                 IDirect3DSurface9* dstSurf = nullptr;
-                HRESULT hr                 = static_cast<IDirect3DTexture9*>(texMap->m_pTex)->GetSurfaceLevel(level, &dstSurf);
+                HRESULT hr                 = static_cast<IDirect3DTexture9*>(texMap->mHandleBase)->GetSurfaceLevel(level, &dstSurf);
                 if (FAILED(hr)) {
                     LOG_INFO("cannot acquire surfaces to copy with mip %d", level);
                     ReleaseTexture(texMips);
@@ -8166,8 +8115,8 @@ namespace kraken::render {
                 int mipLevel = (level <= 9) ? level : 9;
 
                 IDirect3DSurface9* srcSurf = nullptr;
-                CImage* mipsTexMap        = mActiveTextures.GetItem(texMips.m_handle)->m_maps[0];
-                hr                         = static_cast<IDirect3DTexture9*>(mipsTexMap->m_pTex)->GetSurfaceLevel(mipLevel, &srcSurf);
+                Texture* mipsTexMap        = mActiveTextures.GetItem(texMips.m_handle)->m_maps[0];
+                hr                         = static_cast<IDirect3DTexture9*>(mipsTexMap->mHandleBase)->GetSurfaceLevel(mipLevel, &srcSurf);
                 if (FAILED(hr)) {
                     dstSurf->Release();
                     LOG_INFO("cannot acquire surfaces to copy with mip %d", level);
@@ -8305,7 +8254,7 @@ namespace kraken::render {
         if (freeSlot == m_ibs.size()) {
             CIndexBuffer ib;
             ib.m_ib     = nullptr;
-            ib.m_refs   = 0;
+            ib.mRefs    = 0;
             ib.m_locked = 0;
             m_ibs.push_back(ib);
         }
@@ -8331,7 +8280,7 @@ namespace kraken::render {
 
         if (SUCCEEDED(hr)) {
             ib.m_curPos          = 0;
-            ib.m_refs            = 1;
+            ib.mRefs             = 1;
             m_isDevMemStatsValid = false;
             result.m_handle      = static_cast<int>(freeSlot);
         } else {
@@ -8460,7 +8409,7 @@ namespace kraken::render {
         if (!ib.m_ib)
             return 0;
 
-        return ++ib.m_refs;
+        return ++ib.mRefs;
     };
 
     int CDevice::ReleaseIb(IbHandle& id) {
@@ -8475,7 +8424,7 @@ namespace kraken::render {
         if (!ib.m_ib)
             return 0;
 
-        if (--ib.m_refs <= 0) {
+        if (--ib.mRefs <= 0) {
             if (ib.m_ib) {
                 ib.m_ib->Release();
                 ib.m_ib = nullptr;
@@ -8485,7 +8434,7 @@ namespace kraken::render {
         }
 
         m_isDevMemStatsValid = false;
-        return ib.m_refs;
+        return ib.mRefs;
     };
 
     IbPoolField CDevice::AddIbPoolField(uint32_t Size) {
@@ -8698,7 +8647,7 @@ namespace kraken::render {
         if (freeSlot == m_vbs.size()) {
             CVertexBuffer vb;
             vb.m_vb              = nullptr;
-            vb.m_refs            = 0;
+            vb.mRefs             = 0;
             vb.m_locked          = 0;
             vb.m_lockedAtPresent = -1;
             vb.m_vertexDecl      = nullptr;
@@ -8737,7 +8686,7 @@ namespace kraken::render {
 
         if (SUCCEEDED(hr)) {
             vb.m_curPos          = 0;
-            vb.m_refs            = 1;
+            vb.mRefs             = 1;
             vb.m_vertexDecl      = vdecl;
             vb.m_vbName          = vbName;
             m_isDevMemStatsValid = false;
@@ -8782,8 +8731,17 @@ namespace kraken::render {
             this->mBindedStreams[stream] = vb.m_vb;
 
         static wchar_t marker[256];
-        swprintf(marker, 256, L"SetStream %d: %S (handle=%d, decl=%p, vtype=%d, stride=%d)", 
-                stream, vb.m_vbName.m_charPtr, id.m_handle, vb.m_vertexDecl, vb.m_vtType, vb.m_vertSz);
+        swprintf(
+            marker,
+            256,
+            L"SetStream %d: %S (handle=%d, decl=%p, vtype=%d, stride=%d)",
+            stream,
+            vb.m_vbName.m_charPtr,
+            id.m_handle,
+            vb.m_vertexDecl,
+            vb.m_vtType,
+            vb.m_vertSz
+        );
         D3DPERF_SetMarker(D3DCOLOR_XRGB(0, 255, 0), marker);
 
         if (vb.m_vb) {
@@ -8791,8 +8749,7 @@ namespace kraken::render {
                 setVertexDeclaration(vb.m_vertexDecl);
 
             _SetLastResult(setStreamSource(stream, vb.m_vb, vb.m_vertSz));
-        }
-        else {
+        } else {
             D3DPERF_SetMarker(D3DCOLOR_XRGB(255, 0, 0), L"ERROR: VB is NULL!");
         }
     };
@@ -8924,7 +8881,7 @@ namespace kraken::render {
         if (!vb.m_vb)
             return 0;
 
-        return ++vb.m_refs;
+        return ++vb.mRefs;
     };
 
     int CDevice::ReleaseVb(VbHandle& id) {
@@ -8939,7 +8896,7 @@ namespace kraken::render {
         if (!vb.m_vb)
             return 0;
 
-        if (--vb.m_refs <= 0) {
+        if (--vb.mRefs <= 0) {
             if (vb.m_vb) {
                 vb.m_vb->Release();
                 vb.m_vb = nullptr;
@@ -8951,7 +8908,7 @@ namespace kraken::render {
         vb.m_lockedAtPresent = -1;
         m_isDevMemStatsValid = false;
 
-        return vb.m_refs;
+        return vb.mRefs;
     };
 
     bool CDevice::ReportIbsInfo(const char*) {
@@ -9236,9 +9193,10 @@ namespace kraken::render {
 
         this->mVSUniforms.Commit();
         this->mFSUniforms.Commit();
-        HRESULT hr = m_pd3dDevice->DrawIndexedPrimitive(m3dPtToD3dPt[Type], m_latchedIbBaseIdx, MinIndex, NumVertices, StartIndex, PrimitiveCount);
+        HRESULT hr =
+            m_pd3dDevice->DrawIndexedPrimitive(m3dPtToD3dPt[Type], m_latchedIbBaseIdx, MinIndex, NumVertices, StartIndex, PrimitiveCount);
 
-        //m_stats.polyCount += PrimitiveCount;
+        // m_stats.polyCount += PrimitiveCount;
         //++m_stats.DIPs;
         _SetLastResult(hr);
 
@@ -9254,7 +9212,7 @@ namespace kraken::render {
         this->mFSUniforms.Commit();
         HRESULT hr = m_pd3dDevice->DrawPrimitive(m3dPtToD3dPt[PrimitiveType], StartVertex, PrimitiveCount);
 
-        //m_stats.polyCount += PrimitiveCount;
+        // m_stats.polyCount += PrimitiveCount;
         //++m_stats.DPs;
         _SetLastResult(hr);
 
@@ -9336,12 +9294,12 @@ namespace kraken::render {
     };
 
     int32_t CDevice::AddTextureFromBackBufferHandle(TexHandle srcTex) {
-        CTexture* texture              = this->mActiveTextures.GetItem(srcTex.m_handle);
+        Sampler* texture = this->mActiveTextures.GetItem(srcTex.m_handle);
 
         if (!texture)
             return false;
 
-        IDirect3DBaseTexture9* baseTex = texture->m_maps[0]->m_pTex;
+        IDirect3DBaseTexture9* baseTex = texture->m_maps[0]->mHandleBase;
 
         IDirect3DSurface9* pDstSurf = nullptr;
         HRESULT hr                  = static_cast<IDirect3DTexture9*>(baseTex)->GetSurfaceLevel(0, &pDstSurf);
@@ -9532,12 +9490,12 @@ namespace kraken::render {
     };
 
     int32_t CDevice::SaveTextureToTgaFile(TexHandle tex, const char* fileName) {
-        CTexture* texture = this->mActiveTextures.GetItem(tex.m_handle);
+        Sampler* texture = this->mActiveTextures.GetItem(tex.m_handle);
 
         if (!texture)
             return false;
 
-        IDirect3DBaseTexture9* baseTex = texture->m_maps[0]->m_pTex;
+        IDirect3DBaseTexture9* baseTex = texture->m_maps[0]->mHandleBase;
 
         IDirect3DSurface9* srcSurf = nullptr;
         HRESULT hr                 = static_cast<IDirect3DTexture9*>(baseTex)->GetSurfaceLevel(0, &srcSurf);
@@ -9554,8 +9512,8 @@ namespace kraken::render {
         if (!IsTexValid(tex))
             return false;
 
-        CTexture* texture              = this->mActiveTextures.GetItem(tex.m_handle);
-        IDirect3DBaseTexture9* baseTex = texture->m_maps[0]->m_pTex;
+        Sampler* texture               = this->mActiveTextures.GetItem(tex.m_handle);
+        IDirect3DBaseTexture9* baseTex = texture->m_maps[0]->mHandleBase;
 
         HRESULT hr = D3DXSaveTextureToFileA(fileName, static_cast<D3DXIMAGE_FILEFORMAT>(format), baseTex, nullptr);
 
@@ -9710,8 +9668,7 @@ namespace kraken::render {
         float c = plane.m_normal.z;
         float d = -plane.m_dist;
 
-        if (m_fastClipPlane.a == a && m_fastClipPlane.b == b && 
-            m_fastClipPlane.c == c && m_fastClipPlane.d == d) {
+        if (m_fastClipPlane.a == a && m_fastClipPlane.b == b && m_fastClipPlane.c == c && m_fastClipPlane.d == d) {
             return;
         }
 
@@ -9720,8 +9677,8 @@ namespace kraken::render {
         m_fastClipPlane.c = c;
         m_fastClipPlane.d = d;
 
-        const hta::CMatrix& proj = MatGetProj();
-        const hta::CMatrix& view = GetViewMatrix();
+        const hta::CMatrix& proj              = MatGetProj();
+        const hta::CMatrix& view              = GetViewMatrix();
         hta::CMatrix worldToProjInvTransposed = (view * proj).PlaneTransform();
 
         hta::CVector4 planeVec(a, b, c, d);
@@ -9831,7 +9788,7 @@ namespace kraken::render {
 
             // Effect name
             SetRect(&rect, 2, y, 0, 0);
-            hta::CStr effectName = NameFromFileName(effect->m_fileName);
+            hta::CStr effectName = NameFromFileName(effect->mFileName);
             m_pSysFont->DrawTextA(nullptr, effectName.c_str(), -1, &rect, DT_NOCLIP, 0xFFFFFFFF);
 
             // Primitives count
@@ -10000,10 +9957,10 @@ namespace kraken::render {
             return 0;
 
         // Decrement reference count
-        --mesh.m_refs;
+        --mesh.mRefs;
 
         // Only actually release when refcount reaches zero
-        if (mesh.m_refs <= 0) {
+        if (mesh.mRefs <= 0) {
             // Release D3DX resources
             if (mesh.m_mesh) {
                 mesh.m_mesh->Release();
@@ -10030,7 +9987,7 @@ namespace kraken::render {
             handle.m_handle = -1;
         }
 
-        return mesh.m_refs;
+        return mesh.mRefs;
     };
 
     void CDevice::RenderMesh(const MeshHandle& handle, float lod) {
@@ -10409,37 +10366,37 @@ namespace kraken::render {
     };
 
     static const char* StringTable[] = {
-        "WORLD_MATRIX",           // 0
-        "VIEW_MATRIX",            // 1
-        "PROJECTION_MATRIX",      // 2
-        "MODEL_VIEW_MATRIX",      // 3
-        "INV_WORLD_MATRIX",       // 4
-        "TOTAL_MATRIX",           // 5
-        "VIEW_POS",               // 6
-        "DIFFUSE_MAP_0",          // 7
-        "CUBE_MAP_0",             // 8
-        "BUMP_MAP_0",             // 9
-        "DETAIL_MAP_0",           // 10
-        "LIGHT_MAP_0",            // 11
-        "NORMAL_CUBE_MAP",        // 12
-        "TIME_LINEAR",            // 13
-        "TREE_BEND_TERM",         // 14
-        "LIGHT_AMBIENT",          // 15
-        "LIGHT_DIFFUSE",          // 16
-        "LIGHT_PLANT",            // 17
-        "LIGHT_SPECULAR",         // 18
-        "FOG_TERM",               // 19
-        "TRANSPARENCY",           // 20
-        "TRANS_START_DIST",       // 21
-        "TRANS_OBJECT_WIDTH",     // 22
-        "TMP_LIGHT0_DIR",         // 23 ✅
-        "USER_FLOAT_PARAM",       // 24
-        "USER_FLOAT_PARAM2",      // 25
-        "USER_FLOAT_PARAM3",      // 26
-        "USER_FLOAT3_PARAM",      // 27
-        "USER_FLOAT3_PARAM2",     // 28
-        "USER_FLOAT4_PARAM",      // 29
-        "USER_FLOAT4x4_PARAM"     // 30
+        "WORLD_MATRIX",       // 0
+        "VIEW_MATRIX",        // 1
+        "PROJECTION_MATRIX",  // 2
+        "MODEL_VIEW_MATRIX",  // 3
+        "INV_WORLD_MATRIX",   // 4
+        "TOTAL_MATRIX",       // 5
+        "VIEW_POS",           // 6
+        "DIFFUSE_MAP_0",      // 7
+        "CUBE_MAP_0",         // 8
+        "BUMP_MAP_0",         // 9
+        "DETAIL_MAP_0",       // 10
+        "LIGHT_MAP_0",        // 11
+        "NORMAL_CUBE_MAP",    // 12
+        "TIME_LINEAR",        // 13
+        "TREE_BEND_TERM",     // 14
+        "LIGHT_AMBIENT",      // 15
+        "LIGHT_DIFFUSE",      // 16
+        "LIGHT_PLANT",        // 17
+        "LIGHT_SPECULAR",     // 18
+        "FOG_TERM",           // 19
+        "TRANSPARENCY",       // 20
+        "TRANS_START_DIST",   // 21
+        "TRANS_OBJECT_WIDTH", // 22
+        "TMP_LIGHT0_DIR",     // 23 ✅
+        "USER_FLOAT_PARAM",   // 24
+        "USER_FLOAT_PARAM2",  // 25
+        "USER_FLOAT_PARAM3",  // 26
+        "USER_FLOAT3_PARAM",  // 27
+        "USER_FLOAT3_PARAM2", // 28
+        "USER_FLOAT4_PARAM",  // 29
+        "USER_FLOAT4x4_PARAM" // 30
     };
 
     const char* CDevice::EffectParameterToString(IEffect::Parameter p) {
@@ -10483,12 +10440,12 @@ namespace kraken::render {
             IAsmShader::Type type = shader->m_type;
 
             // Try loading with temp shader first
-            if (tempAsmShader->LoadFromFile(shader->m_fileName.m_charPtr, type)) {
+            if (tempAsmShader->LoadFromFile(shader->mFileName.m_charPtr, type)) {
                 // Reload succeeded, invalidate both and reload actual shader
                 tempAsmShader->Invalidate();
                 shader->Invalidate();
 
-                if (!shader->LoadFromFile(shader->m_fileName.m_charPtr, type)) {
+                if (!shader->LoadFromFile(shader->mFileName.m_charPtr, type)) {
                     LOG_ERROR("Failed to reload ASM shader");
                 }
             } else {
@@ -10512,13 +10469,13 @@ namespace kraken::render {
 
             // Try loading with temp shader first
             if (tempHlslShader->LoadFromFile(
-                    shader->m_fileName.m_charPtr, shader->m_entryPoint.m_charPtr, profile, shader->m_compileParams
+                    shader->mFileName.m_charPtr, shader->m_entryPoint.m_charPtr, profile, shader->m_compileParams
                 )) {
                 // Reload succeeded, invalidate both and reload actual shader
                 tempHlslShader->Invalidate();
                 shader->Invalidate();
 
-                if (!shader->LoadFromFile(shader->m_fileName.m_charPtr, shader->m_entryPoint.m_charPtr, profile, shader->m_compileParams)) {
+                if (!shader->LoadFromFile(shader->mFileName.m_charPtr, shader->m_entryPoint.m_charPtr, profile, shader->m_compileParams)) {
                     LOG_ERROR("Failed to reload HLSL shader");
                 }
             } else {
@@ -10541,12 +10498,12 @@ namespace kraken::render {
             unsigned int curTech = effect->GetCurTechnique();
 
             // Try loading with temp effect first
-            if (tempEffect->LoadFromFile(effect->m_fileName.m_charPtr, effect->m_compileParams)) {
+            if (tempEffect->LoadFromFile(effect->mFileName.m_charPtr, effect->m_compileParams)) {
                 // Reload succeeded, invalidate both and reload actual effect
                 tempEffect->Invalidate();
                 effect->Invalidate();
 
-                if (!effect->LoadFromFile(effect->m_fileName.m_charPtr, effect->m_compileParams)) {
+                if (!effect->LoadFromFile(effect->mFileName.m_charPtr, effect->m_compileParams)) {
                     LOG_ERROR("Failed to reload effect");
                 }
             } else {
@@ -10612,7 +10569,7 @@ namespace kraken::render {
 
         // Mark effect draw
         wchar_t marker[256];
-        
+
         // If effect is invalid, fall back to regular drawing
         if (!effectImpl || !effectImpl->IsValid()) {
             D3DPERF_SetMarker(D3DCOLOR_XRGB(255, 0, 0), L"INVALID EFFECT - Using FFP fallback");
@@ -10620,17 +10577,21 @@ namespace kraken::render {
         }
 
         // Get effect info for marker
-        const char* fileName = effectImpl->m_fileName.m_charPtr;
+        const char* fileName      = effectImpl->mFileName.m_charPtr;
         const char* techniqueName = effectImpl->GetCurTechniqueName();
-        swprintf(marker, 256, L"Effect: %S | Tech: %S | Prims: %d", 
-                fileName ? fileName : "Unknown", 
-                techniqueName ? techniqueName : "Default",
-                PrimitiveCount);
+        swprintf(
+            marker,
+            256,
+            L"Effect: %S | Tech: %S | Prims: %d",
+            fileName ? fileName : "Unknown",
+            techniqueName ? techniqueName : "Default",
+            PrimitiveCount
+        );
         D3DPERF_BeginEvent(D3DCOLOR_XRGB(255, 128, 0), marker);
 
         // Check if render to null is enabled
         const hta::m3d::CVar& renderToNull = hta::m3d::Kernel::Instance()->GetEngineCfg().m_r_renderToNull;
-        bool isRenderToNull = (renderToNull.m_type == hta::m3d::CVar::CVAR_BOOL) ? renderToNull.m_b : (renderToNull.m_i > 0);
+        bool isRenderToNull                = (renderToNull.m_type == hta::m3d::CVar::CVAR_BOOL) ? renderToNull.m_b : (renderToNull.m_i > 0);
 
         if (isRenderToNull) {
             D3DPERF_SetMarker(D3DCOLOR_XRGB(128, 128, 128), L"RenderToNull enabled - skipping");
@@ -10648,12 +10609,11 @@ namespace kraken::render {
         D3DPERF_SetMarker(D3DCOLOR_XRGB(0, 255, 255), marker);
 
         assert(numPasses > 0 && "Empty draw passes!");
-        
+
         for (int pass = 0; pass < numPasses; ++pass) {
-            swprintf(marker, 256, L"Pass %d/%d (Verts=%d, Prims=%d)", 
-                    pass + 1, numPasses, NumVertices, PrimitiveCount);
-            //D3DPERF_BeginEvent(D3DCOLOR_XRGB(128, 255, 128), marker);
-            
+            swprintf(marker, 256, L"Pass %d/%d (Verts=%d, Prims=%d)", pass + 1, numPasses, NumVertices, PrimitiveCount);
+            // D3DPERF_BeginEvent(D3DCOLOR_XRGB(128, 255, 128), marker);
+
             effectImpl->BeginPass(pass);
 
             // Update index buffer base
@@ -10662,14 +10622,16 @@ namespace kraken::render {
             // Draw indexed primitive
             this->mVSUniforms.Commit();
             this->mFSUniforms.Commit();
-            _SetLastResult(m_pd3dDevice->DrawIndexedPrimitive(m3dPtToD3dPt[Type], m_latchedIbBaseIdx, MinIndex, NumVertices, StartIndex, PrimitiveCount));
+            _SetLastResult(m_pd3dDevice->DrawIndexedPrimitive(
+                m3dPtToD3dPt[Type], m_latchedIbBaseIdx, MinIndex, NumVertices, StartIndex, PrimitiveCount
+            ));
 
             // Update stats
             m_stats.polyCount += PrimitiveCount;
             effectImpl->m_numPrimitives += PrimitiveCount;
 
             effectImpl->EndPass();
-            
+
             D3DPERF_EndEvent(); // End pass marker
         }
 
@@ -10680,7 +10642,7 @@ namespace kraken::render {
         effectImpl->m_numDIPs += numPasses;
 
         D3DPERF_EndEvent(); // End effect marker
-        
+
         return 1;
     }
 
@@ -10741,10 +10703,11 @@ namespace kraken::render {
         // Draw indexed primitive
         this->mVSUniforms.Commit();
         this->mFSUniforms.Commit();
-        HRESULT hr = m_pd3dDevice->DrawIndexedPrimitive(m3dPtToD3dPt[Type], m_latchedIbBaseIdx, MinIndex, NumVertices, StartIndex, PrimitiveCount);
+        HRESULT hr =
+            m_pd3dDevice->DrawIndexedPrimitive(m3dPtToD3dPt[Type], m_latchedIbBaseIdx, MinIndex, NumVertices, StartIndex, PrimitiveCount);
 
         // Update stats
-            m_stats.polyCount += PrimitiveCount;
+        m_stats.polyCount += PrimitiveCount;
         ++m_stats.DIPs;
 
         _SetLastResult(hr);
@@ -10819,7 +10782,7 @@ namespace kraken::render {
     void CDevice::OnEffectDestructor(EffectImpl* effect) {
         // Create shader identifier from effect
         ShaderIdData fxId;
-        fxId.filename      = effect->m_fileName;
+        fxId.filename      = effect->mFileName;
         fxId.compileParams = effect->m_compileParams;
         UnifyFileName(&fxId.filename);
 
@@ -10831,7 +10794,7 @@ namespace kraken::render {
     void CDevice::OnHlslShaderDestructor(HlslShaderImpl* shader) {
         // Create shader identifier from shader
         ShaderIdData shaderId;
-        shaderId.filename      = shader->m_fileName;
+        shaderId.filename      = shader->mFileName;
         shaderId.compileParams = shader->m_compileParams;
         UnifyFileName(&shaderId.filename);
 
@@ -10841,7 +10804,7 @@ namespace kraken::render {
     };
 
     void CDevice::OnAsmShaderDestructor(AsmShaderImpl* shader) {
-        hta::CStr fName = shader->m_fileName;
+        hta::CStr fName = shader->mFileName;
         UnifyFileName(&fName);
 
         auto range = m_AsmShaders.equal_range(fName);
@@ -10865,7 +10828,7 @@ namespace kraken::render {
             AsmShaderImpl* shader = pair.second;
             int refCount          = shader->GetRefCount();
 
-            LOG_WARNING("Asm shader '%s' is not released (refs = %d)", shader->m_fileName.m_charPtr, refCount);
+            LOG_WARNING("Asm shader '%s' is not released (refs = %d)", shader->mFileName.m_charPtr, refCount);
         }
     };
 
@@ -10874,7 +10837,7 @@ namespace kraken::render {
             HlslShaderImpl* shader = pair.second;
             int refCount           = shader->GetRefCount();
 
-            LOG_WARNING("Hlsl shader '%s' is not released (refs = %d)", shader->m_fileName.m_charPtr, refCount);
+            LOG_WARNING("Hlsl shader '%s' is not released (refs = %d)", shader->mFileName.m_charPtr, refCount);
         }
     };
 
@@ -10883,7 +10846,7 @@ namespace kraken::render {
             EffectImpl* effect = pair.second;
             int refCount       = effect->GetRefCount();
 
-            LOG_WARNING("fx shader '%s' is not released (refs = %d)", effect->m_fileName.m_charPtr, refCount);
+            LOG_WARNING("fx shader '%s' is not released (refs = %d)", effect->mFileName.m_charPtr, refCount);
         }
     };
 
@@ -11193,7 +11156,7 @@ namespace kraken::render {
         if (!IsTexValid(texId))
             return 0;
 
-        CTexture* texture = this->mActiveTextures.GetItem(texId.m_handle);
+        Sampler* texture = this->mActiveTextures.GetItem(texId.m_handle);
 
         if (!texture->m_maps[0]->Is2D())
             return 0;
@@ -11206,7 +11169,7 @@ namespace kraken::render {
 
         // Get surface from texture
         IDirect3DSurface9* surface = nullptr;
-        if (FAILED(texture->m_maps[validFrame]->m_pTex2d->GetSurfaceLevel(0, &surface)))
+        if (FAILED(texture->m_maps[validFrame]->mHandle2D->GetSurfaceLevel(0, &surface)))
             return 0;
 
         // Set cursor properties
@@ -11242,7 +11205,7 @@ namespace kraken::render {
         }
     };
 
-    int32_t CDevice::GetTextureCurrentFrame(CTexture* tex, double tsc) {
+    int32_t CDevice::GetTextureCurrentFrame(Sampler* tex, double tsc) {
         float normalizedTime = tsc;
 
         // Auto-calculate time for animated textures

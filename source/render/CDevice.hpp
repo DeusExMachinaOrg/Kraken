@@ -14,8 +14,9 @@
 #include <vector>
 #include <array>
 
-#include "render/d3d9/Shared.hpp"
-#include "render/d3d9/Uniform.hpp"
+#include "render/native/Shared.hpp"
+#include "render/native/Uniform.hpp"
+#include "render/native/Image.hpp"
 
 namespace kraken::render {
     using namespace hta::m3d::rend;
@@ -32,18 +33,6 @@ namespace kraken::render {
         M3DSDT_DEFAULT_DATA   = 0x0000,
         M3DSDT_INDEXED_DATA   = 0x0001,
         M3DSDT_INSTANCED_DATA = 0x0002,
-    };
-
-    enum TexType : int32_t {
-        TT_2D_FROM_FILE       = 0x0000,
-        TT_2D_DYNAMIC         = 0x0001,
-        TT_2D_RENDER_TARGET   = 0x0002,
-        TT_CUBE_FROM_FILE     = 0x0003,
-        TT_CUBE_DYNAMIC       = 0x0004,
-        TT_CUBE_RENDER_TARGET = 0x0005,
-        TT_3D_FROM_FILE       = 0x0006,
-        TT_3D_DYNAMIC         = 0x0007,
-        TT_NUM_TYPES          = 0x0008,
     };
 
     struct StateManager : public ID3DXEffectStateManager {
@@ -184,7 +173,7 @@ namespace kraken::render {
         /* Size=0xfdc */
         /* 0x0000: fields for IEffect */
         /* 0x0008 */ bool m_bApplyGlobalParams{false};
-        /* 0x000c */ hta::CStr m_fileName{};
+        /* 0x000c */ hta::CStr mFileName{};
         /* 0x0018 */ std::vector<CompileParam> m_compileParams{};
         /* 0x0028 */ ID3DXEffect* m_effect{nullptr};
         /* 0x002c */ bool m_hasBeenValidated{false};
@@ -261,7 +250,7 @@ namespace kraken::render {
         /* Size=0x44 */
         /* 0x0000: fields for IHlslShader */
         /* 0x0008 */ uint32_t m_numConstants{0};
-        /* 0x000c */ hta::CStr m_fileName{};
+        /* 0x000c */ hta::CStr mFileName{};
         /* 0x0018 */ std::vector<CompileParam> m_compileParams{};
         /* 0x0028 */ hta::CStr m_entryPoint{};
         /* 0x0034 */ IHlslShader::Profile m_profile{};
@@ -304,7 +293,7 @@ namespace kraken::render {
     struct AsmShaderImpl : public IAsmShader {
         /* Size=0x1c */
         /* 0x0000: fields for IAsmShader */
-        /* 0x0008 */ hta::CStr m_fileName{};
+        /* 0x0008 */ hta::CStr mFileName{};
         /* 0x0014 */ IAsmShader::Type m_type{};
         union {
             /* 0x0018 */ void* m_shader;
@@ -373,7 +362,7 @@ namespace kraken::render {
             /* 0x001c */ IDirect3DVertexDeclaration9* m_vertexDecl{nullptr};
             /* 0x0020 */ int32_t m_vertSz{0};
             /* 0x0024 */ int32_t m_curPos{0};
-            /* 0x0028 */ int32_t m_refs{0};
+            /* 0x0028 */ int32_t mRefs{0};
             /* 0x002c */ int32_t m_locked{0};
             /* 0x0030 */ int32_t m_lockedAtPresent{0};
             /* 0x0034 */ hta::CStr m_vbName{};
@@ -385,7 +374,7 @@ namespace kraken::render {
             /* 0x0000 */ IDirect3DIndexBuffer9* m_ib{nullptr};
             /* 0x0004 */ D3DINDEXBUFFER_DESC m_desc{};
             /* 0x0018 */ int32_t m_curPos{0};
-            /* 0x001c */ int32_t m_refs{0};
+            /* 0x001c */ int32_t mRefs{0};
             /* 0x0020 */ int32_t m_locked{0};
         };
         struct ShaderIdData {
@@ -395,62 +384,11 @@ namespace kraken::render {
             bool operator<(const ShaderIdData&) const;
             ShaderIdData() = default;
         };
-        struct CImage {
-            /* Size=0x54 */
-            /* 0x0000 */ uint32_t m_usage;
-            /* 0x0004 */ D3DPOOL m_pool;
-            /* 0x0008 */ D3DFORMAT m_fmt;
-            /* 0x000c */ uint32_t m_flags;
-            union {
-                /* 0x0010 */ D3DSURFACE_DESC m_desc2d;
-                /* 0x0010 */ D3DVOLUME_DESC m_desc3d;
-            };
-            union {
-                /* 0x0030 */ IDirect3DBaseTexture9* m_pTex;
-                /* 0x0030 */ IDirect3DTexture9* m_pTex2d;
-                /* 0x0030 */ IDirect3DCubeTexture9* m_pTexCube;
-                /* 0x0030 */ IDirect3DVolumeTexture9* m_pTex3d;
-            };
-            /* 0x0034 */ TexType m_type;
-            /* 0x0038 */ hta::CStr m_fileName;
-            /* 0x0044 */ uint32_t m_lastFileSize;
-            /* 0x0048 */ _FILETIME m_lastFileDate;
-            /* 0x0050 */ int32_t m_refs;
-
-            CImage() = default;
-            void freeTex();
-            int32_t addRef();
-            int32_t release();
-            bool Is2D() const;
-            bool IsCube() const;
-            bool Is3D() const;
-        };
-        struct CTexture {
-            /* Size=0x60 */
-            /* 0x0000 */ D3DTEXTUREADDRESS m_address[3];
-            /* 0x000c */ D3DTEXTUREFILTERTYPE m_magFilter;
-            /* 0x0010 */ D3DTEXTUREFILTERTYPE m_minFilter;
-            /* 0x0014 */ D3DTEXTUREFILTERTYPE m_mipFilter;
-            /* 0x0018 */ uint32_t m_borderColor;
-            /* 0x001c */ int32_t m_maxAnisotropy;
-            /* 0x0020 */ float m_lodBias;
-            /* 0x0024 */ int32_t m_lodMax;
-            /* 0x0028 */ int32_t m_refs;
-            /* 0x002c */ int32_t m_fps;
-            /* 0x0030 */ uint32_t m_looped;
-            /* 0x0038 */ double m_timeStamp;
-            /* 0x0040 */ hta::CStr m_fileName;
-            /* 0x004c */ std::vector<CImage*, std::allocator<CImage*>> m_maps;
-
-            CTexture() = default;
-            int32_t addRef();
-            int32_t release();
-        };
         struct CMesh {
             /* Size=0x20 */
             /* 0x0000 */ ID3DXMesh* m_mesh{nullptr};
             /* 0x0004 */ ID3DXPMesh* m_pmesh{nullptr};
-            /* 0x0008 */ int32_t m_refs{0};
+            /* 0x0008 */ int32_t mRefs{0};
             /* 0x000c */ void* m_verts{nullptr};
             /* 0x0010 */ int32_t m_numVerts{0};
             /* 0x0014 */ uint16_t* m_indices{nullptr};
@@ -473,14 +411,14 @@ namespace kraken::render {
             void SetUp(const TexHandle&, int32_t, int32_t, int32_t);
         };
 
-        d3d9::Uniform mVSUniforms { d3d9::UniformType::VERTEX   };
-        d3d9::Uniform mFSUniforms { d3d9::UniformType::FRAGMENT };
+        Uniform mVSUniforms { UniformType::VERTEX   };
+        Uniform mFSUniforms { UniformType::FRAGMENT };
 
-        Registry<CTexture>                     mActiveTextures {};
-        Registry<CImage>                       mActiveImages   {};
+        Registry<Sampler>                     mActiveTextures {};
+        Registry<Texture>                       mActiveImages   {};
         std::array<IDirect3DVertexBuffer9*, 8> mBindedStreams  {};
 
-        CTexture* CreateTexture(int32_t& handle);
+        Sampler* CreateTexture(int32_t& handle);
         void      DeleteTexture(int32_t handle);
 
         /* Size=0xf1ec */
@@ -497,8 +435,8 @@ namespace kraken::render {
         /* 0x0064 */ std::vector<IbHandle> m_IbPoolBuffers;
         /* 0x0074 */ std::list<PoolFieldInfo, std::allocator<PoolFieldInfo>> m_IbPoolFields;
         /* 0x0080 */ const uint32_t m_IbPoolSize{0x10000};
-        //           std::vector<CImage*> m_texMaps;
-        //           std::map<int32_t, CTexture*> m_textures;
+        //           std::vector<Texture*> m_texMaps;
+        //           std::map<int32_t, Sampler*> m_textures;
         //           std::vector<int32_t> m_texturesSlots;
         /* 0x00a4 */ TexHandle m_texFrameBufer;
         /* 0x00a8 */ std::map<int, TexHandle> m_texBufferedRT;
@@ -766,10 +704,10 @@ namespace kraken::render {
         void rstVbPrepareFor();
         void rstVbRestoreAfter();
         void GetVertexInfo(VertexType, uint32_t&, int32_t&, IDirect3DVertexDeclaration9*&);
-        HRESULT setTexture(int32_t, IDirect3DBaseTexture9*);
+        HRESULT setTexture(int32_t, Texture*);
         void setGamma(float, float, float);
         TexHandle readShader(const hta::CStr&, uint32_t);
-        int32_t loadTexMaps(CTexture*, const hta::CStr&, uint32_t);
+        int32_t loadTexMaps(Sampler*, const hta::CStr&, uint32_t);
         void UpdateVBMemStats();
         void UpdateIBMemStats();
         void UpdateTexMemStats();
@@ -1057,15 +995,15 @@ namespace kraken::render {
         virtual float GetMaxPointSize() override;
         virtual float GetMaxNPatchTessellationLevel() override;
         virtual int32_t GetMaxVertexShaderConst() override;
-        CImage* addTexMap(const hta::CStr&, uint32_t);
-        CImage* addTexMap_(uint32_t, const hta::CStr&, uint32_t);
+        Texture* addTexMap(const hta::CStr&, uint32_t);
+        Texture* addTexMap_(uint32_t, const hta::CStr&, uint32_t);
         virtual TexHandle AddTexture(const hta::CStr&, uint32_t) override;
         virtual TexHandle AddDynamicTexture(const char*, int32_t, int32_t, uint32_t) override;
         virtual TexHandle GetFullFrameFrameBufferTexture() override;
         virtual bool ReportTexturesInfo(const char*) override;
         virtual TexHandle AddRenderTargetTexture(const char*, int32_t, int32_t) override;
         virtual TexHandle GetBufferedTargetTexture(int32_t);
-        bool IsDynamic(const CTexture&) const;
+        bool IsDynamic(const Sampler&) const;
         virtual int32_t ReloadTextures();
         virtual int32_t SetTexture(int32_t, const TexHandle&, double);
         virtual void SetWhiteTexture(int32_t);
@@ -1218,7 +1156,7 @@ namespace kraken::render {
         virtual void SingleLayerStencilFinish();
         virtual int32_t SetupDXCursorForce(const TexHandle&, int32_t, int32_t, int32_t);
         int32_t GetTextureCurrentFrame(const TexHandle&, double);
-        int32_t GetTextureCurrentFrame(CTexture*, double);
+        int32_t GetTextureCurrentFrame(Sampler*, double);
         int32_t SetupAllFeaturesSupport(const hta::CStr&);
         void rstStencilLevels();
         virtual void ResetTextureStates();

@@ -1,9 +1,9 @@
-#include "render/d3d9/Shared.hpp"
-#include "render/d3d9/Uniform.hpp"
-#include "render/d3d9/Texture.hpp"
-#include "render/d3d9/Debug.hpp"
+#include "render/native/Shared.hpp"
+#include "render/native/Uniform.hpp"
+#include "render/native/Image.hpp"
+#include "render/native/Debug.hpp"
 
-namespace kraken::render::d3d9 {
+namespace kraken::render {
     Uniform::Uniform(UniformType target): mTarget(target) {
         this->Reset();
     };
@@ -164,7 +164,7 @@ namespace kraken::render::d3d9 {
         if (slot + 3 > mF32Range.max) mF32Range.max = slot + 3;
     };
 
-    void Uniform::Set(int32_t slot, const Surface* surf) {
+    void Uniform::Set(int32_t slot, const Sampler* surf) {
         IDirect3DBaseTexture9* d3dTex = surf ? *surf : nullptr;
 
         if (mImgData[slot] == d3dTex)

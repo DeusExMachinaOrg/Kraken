@@ -53,6 +53,9 @@ namespace kraken {
         this->gun_gadgets_max_schwarz_part      = { "schwarz",   "gun_gadgets_max_schwarz_part",    0.0,   true,  0.0,   10.0        };
         this->common_gadgets_max_schwarz_part   = { "schwarz",   "common_gadgets_max_schwarz_part", 0.0,   true,  0.0,   10.0        };
         this->wares_max_schwarz_part            = { "schwarz",    "wares_max_schwarz_part",         0.0,   true,  0.0,   10.0        };
+
+        this->gui_resolution_x                  = { "interface", "resolution_x",                    1024, false, 0, 0 };
+        this->gui_resolution_y                  = { "interface", "resolution_y",                    768,  false, 0, 0 };
         Config::INSTANCE = this;
 
         this->Load();
@@ -99,6 +102,8 @@ namespace kraken {
         this->LoadValue(&this->no_money_in_player_schwarz);
         this->LoadValue(&this->schwarz_overrides);
         this->LoadValue(&this->wares);
+        this->LoadValue(&this->gui_resolution_x);
+        this->LoadValue(&this->gui_resolution_y);
     };
 
     void Config::Dump() {
@@ -135,6 +140,8 @@ namespace kraken {
         this->DumpValue(&this->no_money_in_player_schwarz);
         this->DumpValue(&this->schwarz_overrides);
         this->DumpValue(&this->wares);
+        this->DumpValue(&this->gui_resolution_x);
+        this->DumpValue(&this->gui_resolution_y);
     };
 
     template<typename T>

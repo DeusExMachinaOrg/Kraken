@@ -70,9 +70,9 @@ add_library(kraken SHARED
 
     source/hta/m3d/ui/GarageWnd.cpp
 
-    source/render/d3d9/Debug.cpp
-    source/render/d3d9/Uniform.cpp
-    source/render/d3d9/Texture.cpp
+    source/render/native/Image.cpp
+    source/render/native/Debug.cpp
+    source/render/native/Uniform.cpp
     source/render/CDevice.cpp
 
     source/ext/logger.cpp

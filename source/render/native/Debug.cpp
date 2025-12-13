@@ -1,5 +1,5 @@
-#include "render/d3d9/Shared.hpp"
-#include "render/d3d9/Debug.hpp"
+#include "render/native/Shared.hpp"
+#include "render/native/Debug.hpp"
 
 namespace kraken::render::debug {
     static wchar_t BUFFER[512] = {};
