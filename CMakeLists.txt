@@ -42,8 +42,6 @@ if(NOT EXISTS "${DXSDK_LIB_DIR}")
     message(FATAL_ERROR "DirectX SDK library directory not found: ${DXSDK_LIB_DIR}")
 endif()
 
-add_subdirectory(extern/glm)
-add_subdirectory(extern/lim)
 add_subdirectory(extern/hta)
 
 # Create the DLL
@@ -117,9 +115,7 @@ target_link_libraries(kraken PRIVATE
     user32
     d3d9
     d3dx9
-    lim
     hta
-    glm::glm
 )
 
 # Set output name
