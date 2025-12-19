@@ -11,7 +11,6 @@ if(NOT WIN32)
 endif()
 
 add_subdirectory(extern/lua)
-add_subdirectory(extern/lim)
 add_subdirectory(extern/hta)
 
 # Create the DLL
@@ -69,7 +68,6 @@ target_compile_definitions(kraken PRIVATE WIN32_LEAN_AND_MEAN)
 target_link_libraries(kraken PRIVATE
     kernel32
     user32
-    lim
     hta
     lua
 )
