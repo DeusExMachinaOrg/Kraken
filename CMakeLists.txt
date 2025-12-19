@@ -10,6 +10,7 @@ if(NOT WIN32)
     message(FATAL_ERROR "This project is Windows-only (Win32)")
 endif()
 
+add_subdirectory(extern/lua)
 add_subdirectory(extern/lim)
 add_subdirectory(extern/hta)
 
@@ -42,7 +43,7 @@ add_library(kraken SHARED
 )
 
 # Include directories
-target_include_directories(kraken PRIVATE include)
+target_include_directories(kraken PRIVATE source)
 
 # Windows-specific settings
 if(MSVC)
@@ -70,6 +71,7 @@ target_link_libraries(kraken PRIVATE
     user32
     lim
     hta
+    lua
 )
 
 # Set output name
