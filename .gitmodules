@@ -4,3 +4,6 @@
 [submodule "extern/hta"]
 	path = extern/hta
 	url = https://github.com/DeusExMachinaOrg/Headers
+[submodule "extern/lua"]
+	path = extern/lua
+	url = https://github.com/DeusExMachinaOrg/lua51
