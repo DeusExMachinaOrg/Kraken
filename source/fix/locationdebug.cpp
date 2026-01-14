@@ -15,12 +15,9 @@ void __fastcall RenderDebugInfoHook(hta::ai::DynamicScene* dynamicScene)
     dynamicScene->RenderDebugInfo();
 
     if (hta::m3d::Kernel::Instance()->m_engineConfig->m_ai_location_debug.GetB()) {
-        for (auto& node : hta::ai::CServer::Instance()->m_pObjects->m_allObjects.m_records) {
-            if (node.m_value) {
-                hta::ai::Location* location = node.m_value->cast<hta::ai::Location>();
-                if (location) {
-                    location->RenderDebugInfo();
-                }
+        for (hta::ai::Obj* obj : *hta::ai::CServer::Instance()->m_pObjects) {
+            if (hta::ai::Location* location = obj->cast<hta::ai::Location>()) {
+                location->RenderDebugInfo();
             }
         }
     }
