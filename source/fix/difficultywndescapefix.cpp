@@ -5,7 +5,7 @@
 #include "hta/m3d/Kernel.hpp"
 
 namespace kraken::fix::difficultywndescapefix {
-    template <class Out, class In> Out unsafe_cast(In x) {
+    template <class Out, class In> Out UnsafeCast(In x) {
         union {
             In a;
             Out b;
@@ -29,8 +29,8 @@ namespace kraken::fix::difficultywndescapefix {
         }
     };
 
-    void Apply(void) {
-        routines::Redirect(0x0129, (void*)0x004C1EA0, unsafe_cast<void*>(&MainMenuUI_Fixed::OnNewGame));
+    void Apply() {
+        routines::Redirect(0x0129, (void*)0x004C1EA0, UnsafeCast<void*>(&MainMenuUI_Fixed::OnNewGame));
 
         // Replace RequestDifficultyWnd::OnKey by m3d::ui::ModalWnd::OnKey
         routines::OverrideValue(reinterpret_cast<void*>(0x009D48A4), reinterpret_cast<void*>(0x00676BA0));

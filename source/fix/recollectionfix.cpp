@@ -55,7 +55,7 @@ namespace kraken::fix::recollection {
         hta::ai::VehicleRecollection m_recollection;
     };
 
-    void Apply(void) {
-        kraken::routines::OverrideValue(reinterpret_cast<void*>(0x009ACB40), &VehicleRecollection_Fixed::Update);
+    void Apply() {
+        routines::OverrideValue(reinterpret_cast<void*>(0x009ACB40), &VehicleRecollection_Fixed::Update);
     };
 };
