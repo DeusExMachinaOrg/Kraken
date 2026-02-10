@@ -7,47 +7,116 @@
 #include "stdafx.hpp"
 
 #include "hta/CMiracle3d.hpp"
-#include "hta/PointBase.hpp"
 #include "hta/DragSlot.hpp"
+#include "hta/PointBase.hpp"
 #include "hta/ai/Player.hpp"
 #include "hta/ai/PrototypeManager.hpp"
+#include "hta/m3d/GameImpulse.hpp"
 #include "hta/m3d/ui/DragDropItemsWnd.hpp"
 #include "hta/m3d/ui/GarageWnd.hpp"
-#include "hta/m3d/GameImpulse.hpp"
 
 namespace kraken::fix::wareuse {
     static std::vector<configstructs::WareUnits> RepairWares;
     static std::vector<configstructs::WareUnits> RefuelWares;
 
-    inline void Repair(int units) {
-        static constexpr auto _Repair = 0x0044BBD0;
+    const auto Refuel = reinterpret_cast<void(__thiscall*)(void*, int units)>(0x0044BB40);
 
-        __asm
-        {
-            mov eax, units;
-            call _Repair;
-        }
+    #define EPS 0.001f
+
+    const hta::CStr& getChassisName() {
+        static const hta::CStr name = "CHASSIS_7";
+        return name;
     }
 
-    const auto Refuel = reinterpret_cast<void(__thiscall*)(void*, int units)>(0x0044BB40);
+    hta::ai::Vehicle* GetPlayerVehicle() {
+        if (auto* player = hta::ai::Player::Instance())
+            return player->GetVehicle();
+        return nullptr;
+    }
+
+    float CalcPartDeficit(hta::ai::VehiclePart* part) {
+        if (!part)
+            return 0.0f;
+        return part->m_durability.m_maxValue.m_value - part->m_durability.m_value.m_value;
+    }
+
+    vc3::vector<hta::ai::VehiclePart*> GetDamagedParts(hta::ai::Vehicle* vehicle) {
+        vc3::vector<hta::ai::VehiclePart*> damaged;
+        if (!vehicle)
+            return damaged;
+
+        for (const auto& [partName, part] : vehicle->m_vehicleParts) {
+            if (part && partName != getChassisName() && CalcPartDeficit(part) > EPS)
+                damaged.push_back(part);
+        }
+        return damaged;
+    }
+
+    bool SmartRepair(int hp, float armor) {
+        bool repaired = false;
+
+        hta::ai::Vehicle* vehicle = GetPlayerVehicle();
+        if (!vehicle)
+            return repaired;
+
+        // === Ремонт HP ===
+        {
+            hta::ai::NumericInRangeRegenerating<float>& health = vehicle->Health();
+            float current = health.m_value.m_value;
+            float maxVal = health.m_maxValue.m_value;
+            float deficit = maxVal - current;
+
+            float addHp = (std::min)(static_cast<float>(hp), deficit);
+            if (addHp > EPS) {
+                health.m_value.set(current + addHp);
+                repaired = true;
+            }
+        }
+
+        // === Ремонт брони (деталей) ===
+        if (armor <= EPS)
+            return repaired;
+
+        vc3::vector<hta::ai::VehiclePart*> damaged = GetDamagedParts(vehicle);
+        if (damaged.empty())
+            return repaired;
+
+        float remaining = armor;
+
+        while (remaining > EPS && !damaged.empty()) {
+            // Находим минимальный дефицит среди оставшихся повреждённых деталей
+            float minDeficit = (std::numeric_limits<float>::max)();
+            for (hta::ai::VehiclePart* part : damaged) {
+                float d = CalcPartDeficit(part);
+                if (d > EPS)
+                    minDeficit = (std::min)(minDeficit, d);
+            }
+
+            if (minDeficit <= EPS)
+                break;
+
+            size_t count = damaged.size();
+            float perPart = remaining / static_cast<float>(count);
+            float add = (std::min)(perPart, minDeficit);
+
+            // Добавляем одинаковое количество прочности всем оставшимся деталям
+            for (hta::ai::VehiclePart* part : damaged) {
+                float current = part->m_durability.m_value.m_value;
+                part->m_durability.m_value.set(current + add);
+            }
+
+            remaining -= add * static_cast<float>(count);
+
+            // Удаляем полностью починенные детали из списка
+            damaged.erase(std::remove_if(damaged.begin(), damaged.end(), [](hta::ai::VehiclePart* p) { return CalcPartDeficit(p) <= EPS; }), damaged.end());
+        }
+        return true;
+    }
 
     bool TryRepair(hta::ai::Vehicle* playerVehicle, hta::CStr& name) {
         for (auto wu : RepairWares) {
             if (name == wu.Ware.c_str()) {
-                const int current = playerVehicle->GetHealth();
-                const int max = playerVehicle->GetMaxHealth();
-
-                if (current >= max) {
-                    return false;
-                }
-
-                int amount = wu.Units;
-                if (current + amount > max) {
-                    amount = max - current;
-                }
-
-                Repair(amount);
-                return true;
+                return SmartRepair(wu.Units, wu.Armor);
             }
         }
 

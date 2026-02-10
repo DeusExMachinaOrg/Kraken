@@ -94,7 +94,7 @@ namespace kraken {
         this->LoadValue(&this->complex_schwarz);
         this->LoadValue(&this->gun_gadgets_max_schwarz_part);
         this->LoadValue(&this->common_gadgets_max_schwarz_part);
-        this->LoadValue(&this->wares_max_schwarz_part);       
+        this->LoadValue(&this->wares_max_schwarz_part);
         this->LoadValue(&this->peace_price_from_schwarz);
         this->LoadValue(&this->no_money_in_player_schwarz);
         this->LoadValue(&this->schwarz_overrides);
@@ -130,7 +130,7 @@ namespace kraken {
         this->DumpValue(&this->complex_schwarz);
         this->DumpValue(&this->gun_gadgets_max_schwarz_part);
         this->DumpValue(&this->common_gadgets_max_schwarz_part);
-        this->DumpValue(&this->wares_max_schwarz_part);       
+        this->DumpValue(&this->wares_max_schwarz_part);
         this->DumpValue(&this->peace_price_from_schwarz);
         this->DumpValue(&this->no_money_in_player_schwarz);
         this->DumpValue(&this->schwarz_overrides);
@@ -204,13 +204,13 @@ namespace kraken {
             value->value.clear();
             char keysBuffer[32768];
             DWORD keysLength = GetPrivateProfileStringA(value->section, NULL, "", keysBuffer, sizeof(keysBuffer), CONFIG_PATH);
-            
+
             if (keysLength > 0) {
                 // Parse the null-separated list of keys
                 const char* key = keysBuffer;
                 while (*key != '\0') {
                     GetPrivateProfileStringA(value->section, key, "", buffer, sizeof(buffer), CONFIG_PATH);
-                    
+
                     if (strnlen_s(buffer, sizeof(buffer)) > 0) {
                         try {
                             uint32_t mapValue = std::stoul(buffer);
@@ -236,6 +236,11 @@ namespace kraken {
                         continue;
                     float units = std::strtof(buffer, nullptr);
 
+                    float armor = 0.0f;
+                    GetPrivateProfileStringA(key, "Armor", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    if (strnlen_s(buffer, sizeof(buffer)) != 0)
+                        armor = std::strtof(buffer, nullptr);
+
                     GetPrivateProfileStringA(key, "Ware", "", buffer, sizeof(buffer), CONFIG_PATH);
                     if (strnlen_s(buffer, sizeof(buffer)) == 0)
                         continue;
@@ -243,7 +248,7 @@ namespace kraken {
 
                     configstructs::WareType type = (strcmp(prefix, configstructs::REPAIR) == 0) ? configstructs::WareType::REPAIR : configstructs::WareType::REFUEL;
 
-                    value->value.emplace_back(units, ware, type);
+                    value->value.emplace_back(units, armor, ware, type);
                 }
             }
         }
@@ -296,7 +301,7 @@ namespace kraken {
         else if constexpr (std::is_same_v<std::vector<configstructs::WareUnits>, T>) {
             int repairIndex = 1;
             int refuelIndex = 1;
-            for (const auto& wareUnit : value->value) {
+            for (const configstructs::WareUnits& wareUnit : value->value) {
                 char key[128];
                 if (wareUnit.Type == configstructs::WareType::REPAIR) {
                     std::snprintf(key, sizeof(key), "%s%d", configstructs::REPAIR, repairIndex++);
@@ -304,8 +309,18 @@ namespace kraken {
                 else {
                     std::snprintf(key, sizeof(key), "%s%d", configstructs::REFUEL, refuelIndex++);
                 }
+
+                // Units
                 std::snprintf(buffer, sizeof(buffer), "%.03f", wareUnit.Units);
                 WritePrivateProfileStringA(key, "Units", buffer, CONFIG_PATH);
+
+                // Armor
+                if (wareUnit.Type == configstructs::WareType::REPAIR) {
+                    std::snprintf(buffer, sizeof(buffer), "%.03f", wareUnit.Armor);
+                    WritePrivateProfileStringA(key, "Armor", buffer, CONFIG_PATH);
+                }
+
+                // Ware
                 WritePrivateProfileStringA(key, "Ware", wareUnit.Ware.c_str(), CONFIG_PATH);
             }
         }
