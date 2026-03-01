@@ -35,6 +35,7 @@ add_library(kraken SHARED
     source/fix/skinfix.cpp
     source/fix/locationdebug.cpp
     source/fix/mortarvolleylauncherfix.cpp
+    source/fix/gunlights.cpp
 
     source/ext/logger.cpp
     source/ext/impulse.cpp

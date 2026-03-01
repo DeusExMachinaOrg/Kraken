@@ -25,6 +25,7 @@
 #include "fix/skinfix.hpp"
 #include "fix/locationdebug.hpp"
 #include "fix/mortarvolleylauncherfix.hpp"
+#include "fix/gunlights.hpp"
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
     Config* G_CONFIG = new Config();
@@ -77,5 +78,6 @@ namespace kraken {
         fix::skinfix::Apply();
         fix::locationdebug::Apply();
         fix::mortarvolleylauncherfix::Apply();
+        fix::gunlights::Apply();
     };
 };
