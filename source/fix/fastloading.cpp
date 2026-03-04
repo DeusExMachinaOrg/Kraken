@@ -8,8 +8,6 @@
 #include "hta/m3d/Application.hpp"
 #include "hta/m3d/rend/IRenderer.hpp"
 
-using PresentScene_t = int (__thiscall *)(hta::m3d::rend::IRenderer *); 
-
 namespace kraken::fix::fastloading
 {
     static size_t limit;

@@ -24,6 +24,7 @@
 #include "fix/complexschwarz.hpp"
 #include "fix/skinfix.hpp"
 #include "fix/cctlleakfix.hpp"
+#include "fix/locationdebug.hpp"
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
@@ -76,5 +77,6 @@ namespace kraken {
         fix::complexschwarz::Apply();
         fix::skinfix::Apply();
         fix::cctlleakfix::Apply();
+        fix::locationdebug::Apply();
     };
 };
