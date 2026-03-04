@@ -41,6 +41,7 @@ namespace kraken {
         this->show_load_every                   = { "constants", "show_load_every",                 100,   true,  0,     UINT32_MAX  };
         this->cardan_fix                        = { "constants", "cardan_fix",                      1,     true,  0,     1           };
         this->wares                             = { "constants", "wares",                           0,     true,  0,     1           };
+        this->cctl_leak_fix                     = { "constants", "cctl_leak_fix",                   1,     true,  0,     1           };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -99,6 +100,7 @@ namespace kraken {
         this->LoadValue(&this->no_money_in_player_schwarz);
         this->LoadValue(&this->schwarz_overrides);
         this->LoadValue(&this->wares);
+        this->LoadValue(&this->cctl_leak_fix);
     };
 
     void Config::Dump() {
@@ -135,6 +137,7 @@ namespace kraken {
         this->DumpValue(&this->no_money_in_player_schwarz);
         this->DumpValue(&this->schwarz_overrides);
         this->DumpValue(&this->wares);
+        this->DumpValue(&this->cctl_leak_fix);
     };
 
     template<typename T>

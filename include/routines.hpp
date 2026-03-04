@@ -91,6 +91,20 @@ namespace kraken::routines {
 
         VirtualProtect(src, sizeof(_Call), protection, &protection);
     }
+
+    inline void Patch(void* address, const void* data, size_t size) {
+        DWORD oldProtect;
+        VirtualProtect(address, size, PAGE_EXECUTE_READWRITE, &oldProtect);
+        memcpy(address, data, size);
+        VirtualProtect(address, size, oldProtect, &oldProtect);
+    }
+
+    inline void Nop(void* address, size_t size) {
+        DWORD oldProtect;
+        VirtualProtect(address, size, PAGE_EXECUTE_READWRITE, &oldProtect);
+        memset(address, 0x90, size);
+        VirtualProtect(address, size, oldProtect, &oldProtect);
+    }
 };
 
 #endif
