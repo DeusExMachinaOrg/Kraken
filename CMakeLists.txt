@@ -33,7 +33,9 @@ add_library(kraken SHARED
     source/fix/tactics.cpp
     source/fix/complexschwarz.cpp
     source/fix/skinfix.cpp
+    source/fix/cctlleakfix.cpp
     source/fix/locationdebug.cpp
+    source/fix/difficultywndescapefix.cpp
     source/fix/mortarvolleylauncherfix.cpp
 
     source/ext/logger.cpp
