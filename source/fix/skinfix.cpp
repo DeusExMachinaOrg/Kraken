@@ -24,13 +24,10 @@ namespace kraken::fix::skinfix
             physicBody->m_Node->SetProperty(hta::PROP_DM_SKIN, &skin);
         }
 
-        if (physicBody->IsKindOf((hta::m3d::Class*)0x00A02354 /*TODO*/))
+        hta::ai::Gun* gun = physicBody->cast<hta::ai::Gun>();
+        if (gun && gun->m_barrelNode)
         {
-            hta::ai::Gun* gun = (hta::ai::Gun*)physicBody;
-            if (gun->m_barrelNode)
-            {
-                gun->m_barrelNode->SetProperty(hta::PROP_DM_SKIN, &skin);
-            }
+            gun->m_barrelNode->SetProperty(hta::PROP_DM_SKIN, &skin);
         }
     }
 

@@ -24,6 +24,7 @@
 #include "fix/complexschwarz.hpp"
 #include "fix/skinfix.hpp"
 #include "fix/cctlleakfix.hpp"
+#include "fix/locationdebug.hpp"
 #include "fix/difficultywndescapefix.hpp"
 
 namespace kraken {
@@ -77,6 +78,7 @@ namespace kraken {
         fix::complexschwarz::Apply();
         fix::skinfix::Apply();
         fix::cctlleakfix::Apply();
+        fix::locationdebug::Apply();
         fix::difficultywndescapefix::Apply();
     };
 };
