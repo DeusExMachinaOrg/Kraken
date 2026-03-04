@@ -26,7 +26,7 @@
 #include "fix/cctlleakfix.hpp"
 #include "fix/locationdebug.hpp"
 #include "fix/difficultywndescapefix.hpp"
-
+#include "fix/mortarvolleylauncherfix.hpp"
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
     Config* G_CONFIG = new Config();
@@ -80,5 +80,6 @@ namespace kraken {
         fix::cctlleakfix::Apply();
         fix::locationdebug::Apply();
         fix::difficultywndescapefix::Apply();
+        fix::mortarvolleylauncherfix::Apply();
     };
 };

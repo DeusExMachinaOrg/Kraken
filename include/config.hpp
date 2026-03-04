@@ -69,6 +69,7 @@ namespace kraken {
         ConfigValue<uint32_t>                 wares;
         ConfigValue<uint32_t>                 log_debug; // 0 - debug, 1 - info, 2 - warning, 3 - error, 4 - panic, 5 - none
         ConfigValue<uint32_t>                 cctl_leak_fix;
+        ConfigValue<uint32_t>                 mortarvolleylauncherfix;
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;

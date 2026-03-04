@@ -36,6 +36,7 @@ add_library(kraken SHARED
     source/fix/cctlleakfix.cpp
     source/fix/locationdebug.cpp
     source/fix/difficultywndescapefix.cpp
+    source/fix/mortarvolleylauncherfix.cpp
 
     source/ext/logger.cpp
     source/ext/impulse.cpp

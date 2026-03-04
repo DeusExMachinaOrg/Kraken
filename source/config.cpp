@@ -42,6 +42,7 @@ namespace kraken {
         this->cardan_fix                        = { "constants", "cardan_fix",                      1,     true,  0,     1           };
         this->wares                             = { "constants", "wares",                           0,     true,  0,     1           };
         this->cctl_leak_fix                     = { "constants", "cctl_leak_fix",                   1,     true,  0,     1           };
+        this->mortarvolleylauncherfix           = { "constants", "mortarvolleylauncherfix",         1,     true,  0,     1           };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -101,6 +102,7 @@ namespace kraken {
         this->LoadValue(&this->schwarz_overrides);
         this->LoadValue(&this->wares);
         this->LoadValue(&this->cctl_leak_fix);
+        this->LoadValue(&this->mortarvolleylauncherfix);
     };
 
     void Config::Dump() {
@@ -138,6 +140,7 @@ namespace kraken {
         this->DumpValue(&this->schwarz_overrides);
         this->DumpValue(&this->wares);
         this->DumpValue(&this->cctl_leak_fix);
+        this->DumpValue(&this->mortarvolleylauncherfix);
     };
 
     template<typename T>
