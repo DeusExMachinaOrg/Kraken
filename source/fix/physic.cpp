@@ -475,7 +475,7 @@ namespace kraken::fix::physic {
         last = 0;
 
         int i, j, k;
-        float stepsize1 = 1.0 / stepsize;
+        float stepsize1 = 1.0f / stepsize;
 
         for (i = 0; i < nb; i++)
             body[i]->tag = i;
@@ -1365,7 +1365,7 @@ namespace kraken::fix::physic {
         }
     }
 
-    float __fastcall dDot (const float *a, const float *b, int n) {
+    float __fastcall dDot (const float *a, const float *b, uint32_t n) {
         size_t base = 0;
 
         float sum = 0.0f;
@@ -1963,7 +1963,7 @@ namespace kraken::fix::physic {
         }
     }
 
-    void _dSolveL1_2 (float *L, float *B, int n, int lskip1) {  
+    void _dSolveL1_2 (float *L, float *B, uint32_t n, int lskip1) {  
         for (size_t j = 0; j < n * lskip1; j+= lskip1) {
             float* p = B;
             float* q = B + n;

@@ -37,11 +37,11 @@ namespace kraken::fix::autobrakefix {
         CalcDrivingValues(vehicle, &curPoint, &nextPoint, true, &dv);
 
         float nextAngle = abs(dv.nextAngle);
-        if (fabsf(nextAngle - 3.1415) < 0.01) {
-            nextAngle = 3.1415;
+        if (fabsf(nextAngle - 3.1415f) < 0.01f) {
+            nextAngle = 3.1415f;
         }
 
-        float dead_angle = Config::Instance().auto_brake_angle.value * (3.1415 / 180.0f); // угол, меньше которого торможение не происходит
+        float dead_angle = Config::Instance().auto_brake_angle.value * (3.1415f / 180.0f); // угол, меньше которого торможение не происходит
         if (nextAngle < dead_angle && vehicle->m_pathNum < vehicle->m_pPath->m_size - 1)
             autobrake = false;
 

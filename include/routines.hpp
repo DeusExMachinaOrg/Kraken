@@ -6,8 +6,8 @@
 namespace kraken::routines {
     #pragma pack(push, 1)
     struct _Redirect {
-        char   op;
-        size_t to;
+        uint8_t op;
+        size_t  to;
     };
     union _Call {
         struct { uint8_t  cmd; uintptr_t offset;   } direct;
@@ -27,7 +27,7 @@ namespace kraken::routines {
         VirtualProtect(src, size, PAGE_EXECUTE_READWRITE, &protection);
         memset(src, 0xCC, size);
         _Redirect* op = (_Redirect*) src;
-        op->op = 0xE9;
+        op->op = 0xE9u;
         op->to = (size_t) tar - (size_t) src - 5;
         VirtualProtect(src, size, protection, &protection);
     };
