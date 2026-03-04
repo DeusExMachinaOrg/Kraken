@@ -23,6 +23,7 @@
 #include "fix/tactics.hpp"
 #include "fix/complexschwarz.hpp"
 #include "fix/skinfix.hpp"
+#include "fix/cctlleakfix.hpp"
 #include "fix/difficultywndescapefix.hpp"
 
 namespace kraken {
@@ -75,6 +76,7 @@ namespace kraken {
         fix::tactics::Apply();
         fix::complexschwarz::Apply();
         fix::skinfix::Apply();
+        fix::cctlleakfix::Apply();
         fix::difficultywndescapefix::Apply();
     };
 };

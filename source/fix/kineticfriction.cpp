@@ -94,7 +94,7 @@ namespace kraken::fix::kineticfriction {
         hta::CVector                       local_angular   = invert_rotation * wheel_angular;
         hta::CVector                       world_linear    = wheel->GetLinearVelocity();
         float                              omega_parallel  = local_angular.x;
-        float                              V_parallel      = world_linear.length();
+        float                              V_parallel      = world_linear.Length();
         float                              kappa           = calculateKappa(wheel_radius, omega_parallel, V_parallel, 0.05f);
         float                              mu_longitudinal = mu_from_kappa(kappa, DUMMY_TIRES);
         float                              mu_lateral      = mu_longitudinal * DUMMY_TIRES.lateral_factor;
