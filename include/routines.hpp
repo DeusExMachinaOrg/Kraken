@@ -16,6 +16,7 @@ namespace kraken::routines {
     };
     #pragma pack(pop)
 
+    // Replace function
     inline void Redirect(size_t size, void* src, void* tar) {
         DWORD protection;
 
@@ -31,6 +32,7 @@ namespace kraken::routines {
         VirtualProtect(src, size, protection, &protection);
     };
 
+    // Replace value
     inline void Override(size_t size, void* src, const char* data) {
         DWORD protection;
 
@@ -45,6 +47,7 @@ namespace kraken::routines {
         Override(sizeof(T), address, reinterpret_cast<char*>(&value));
     }
 
+    // Remap pointer
     inline void RemapPtr(void* src, void* tar) {
         DWORD protection;
         size_t temp = (size_t) tar;
@@ -54,9 +57,9 @@ namespace kraken::routines {
         VirtualProtect(src, sizeof(size_t), protection, &protection);
     };
 
+    // Change existing call to point to another function
     inline void ChangeCall(void* src, void* tar) {
         DWORD protection;
-
 
         VirtualProtect(src, sizeof(_Call), PAGE_EXECUTE_READWRITE, &protection);
         _Call* opcode = (_Call*)src;
@@ -72,10 +75,10 @@ namespace kraken::routines {
         VirtualProtect(src, sizeof(_Call), protection, &protection);
     };
 
+    // Create call instruction
     inline void ReplaceCall(void* src, void* tar)
     {
         DWORD protection;
-
 
         VirtualProtect(src, sizeof(_Call), PAGE_EXECUTE_READWRITE, &protection);
 
@@ -87,6 +90,20 @@ namespace kraken::routines {
         p[5] = 0x90;
 
         VirtualProtect(src, sizeof(_Call), protection, &protection);
+    }
+
+    inline void Patch(void* address, const void* data, size_t size) {
+        DWORD oldProtect;
+        VirtualProtect(address, size, PAGE_EXECUTE_READWRITE, &oldProtect);
+        memcpy(address, data, size);
+        VirtualProtect(address, size, oldProtect, &oldProtect);
+    }
+
+    inline void Nop(void* address, size_t size) {
+        DWORD oldProtect;
+        VirtualProtect(address, size, PAGE_EXECUTE_READWRITE, &oldProtect);
+        memset(address, 0x90, size);
+        VirtualProtect(address, size, oldProtect, &oldProtect);
     }
 };
 
