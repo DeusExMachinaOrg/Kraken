@@ -21,4 +21,5 @@ target_sources(kraken PUBLIC
     tactics.cpp
     ultrawide.cpp
     wareuse.cpp
+    animations.cpp
 )

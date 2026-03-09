@@ -28,6 +28,7 @@
 #include "fixes/difficultywndescapefix.hpp"
 #include "fixes/mortarvolleylauncherfix.hpp"
 #include "fixes/gunlights.hpp"
+#include "fixes/animations.hpp"
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
@@ -84,5 +85,6 @@ namespace kraken {
         fix::difficultywndescapefix::Apply();
         fix::mortarvolleylauncherfix::Apply();
         fix::gunlights::Apply();
+        fix::animations::Apply();
     };
 };
