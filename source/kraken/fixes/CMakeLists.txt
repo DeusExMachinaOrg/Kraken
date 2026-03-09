@@ -12,6 +12,7 @@ target_sources(kraken PUBLIC
     kineticfriction.cpp
     locationdebug.cpp
     luabinds.cpp
+    memory.cpp
     mortarvolleylauncherfix.cpp
     objcontupgrade.cpp
     physic.cpp

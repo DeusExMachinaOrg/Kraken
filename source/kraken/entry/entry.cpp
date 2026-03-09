@@ -28,6 +28,7 @@
 #include "fixes/difficultywndescapefix.hpp"
 #include "fixes/mortarvolleylauncherfix.hpp"
 #include "fixes/gunlights.hpp"
+#include "fixes/memory.hpp"
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
@@ -64,6 +65,7 @@ namespace kraken {
 
         LOG_INFO("Prepare patches");
         ConstantHotfix();
+        fix::memory::Apply();
         fix::fileserver::Apply();
         fix::physic::Apply();
         fix::autobrakefix::Apply();

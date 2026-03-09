@@ -16,6 +16,7 @@ add_subdirectory(config)
 add_subdirectory(fixes)
 add_subdirectory(impulse)
 add_subdirectory(logger)
+add_subdirectory(memory)
 add_subdirectory(runtime)
 
 target_include_directories(kraken PRIVATE .)
