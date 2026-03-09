@@ -5,6 +5,7 @@
 #include <mutex>
 #include <cstddef>
 #include <cstring>
+#include <cassert>
 
 namespace kraken::memory {
     using CRT_MALLOC  = void* (__cdecl*)(size_t size);

@@ -96,21 +96,29 @@ namespace kraken::memory {
         item.mPool = this;
         page->Lock(item);
 
-        if (!page->mFree) {
+        if (page->IsFull()) {
             FreeRemove(page);
         }
     }
 
     template<size_t S>
     void Pool<S>::Free(Item<S>& item) {
+        assert(item.mPool == this);
         auto* page = item.GetPage();
-        bool wasFull = (page->mFree == nullptr);
+        bool wasFull = page->IsFull();
         page->Free(item);
 
-        if (page->mUsed == 0) {
-            FreeRemove(page);
-            PageRemove(page);
-            delete page;
+        if (page->IsFree()) {
+//
+//  Need to find who use dangled pointer for small allocation
+//  When enable it we have a crash in a map transition
+//  See:
+//    m3d::Landscape::Release
+//    m3d::Landscape::ReleaseOdeCollisionData
+//
+//            if (!wasFull) FreeRemove(page);
+//            PageRemove(page);
+//            delete page;
         } else if (wasFull) {
             FreePush(page);
         }

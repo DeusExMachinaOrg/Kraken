@@ -25,6 +25,9 @@ namespace kraken::memory {
         Page();
        ~Page();
     public:
+        bool IsFull() const { return mUsed == L; }
+        bool IsFree() const { return mUsed == 0; }
+    public:
         void Lock(Item<S>& item);
         void Free(Item<S>& item);
     public:
@@ -35,8 +38,10 @@ namespace kraken::memory {
     template<size_t S>
     Page<S>::Page() {
         for (size_t i = 0; i < L; i++) {
+            mData[i].mPool = nullptr;
             mData[i].mPage = this;
             mData[i].mNext = (i + 1 < L) ? &mData[i + 1] : nullptr;
+            mData[i].mSize = S;
         }
         mFree = &mData[0];
     }
@@ -50,10 +55,12 @@ namespace kraken::memory {
         mFree = item.GetNext();
         item.mNext = nullptr;
         mUsed++;
+        memset(item.mData, 0, std::size(item.mData));
     };
 
     template<size_t S>
     void Page<S>::Free(Item<S>& item) {
+        assert(item.mPage == this);
         item.mSize = 0;
         item.mNext = mFree;
         mFree = &item;

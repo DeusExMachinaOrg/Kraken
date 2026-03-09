@@ -8,9 +8,11 @@ namespace kraken::memory {
     CRT_REALLOC gRealloc = (CRT_REALLOC) 0x0096519E;
     CRT_FREE    gFree    = (CRT_FREE)    0x00965168;
 
+    static Memory* INSTANCE = nullptr;
+
     Memory& Memory::Instance(void) {
-        static Memory instance;
-        return instance;
+        if (!INSTANCE) INSTANCE = new Memory();
+        return *INSTANCE;
     }
 
     Memory::Memory()  = default;
