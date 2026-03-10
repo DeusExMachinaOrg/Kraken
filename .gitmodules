@@ -4,3 +4,9 @@
 [submodule "extern/hta"]
 	path = extern/hta
 	url = https://github.com/DeusExMachinaOrg/Headers
+[submodule "extern/json"]
+	path = extern/json
+	url = https://github.com/nlohmann/json
+[submodule "extern/pugixml"]
+	path = extern/pugixml
+	url = https://github.com/zeux/pugixml.git

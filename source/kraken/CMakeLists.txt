@@ -10,6 +10,8 @@ if(NOT WIN32)
 endif()
 
 add_library(kraken SHARED)
+add_subdirectory(assets)
+add_subdirectory(codex)
 add_subdirectory(entry)
 add_subdirectory(common)
 add_subdirectory(config)
@@ -33,6 +35,8 @@ target_link_libraries(kraken PRIVATE kernel32)
 target_link_libraries(kraken PRIVATE user32)
 target_link_libraries(kraken PRIVATE lim)
 target_link_libraries(kraken PRIVATE hta)
+target_link_libraries(kraken PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(kraken PRIVATE pugixml::static)
 
 set_target_properties(kraken PROPERTIES
     OUTPUT_NAME "kraken"
