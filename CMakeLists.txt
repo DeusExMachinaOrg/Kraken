@@ -39,9 +39,12 @@ add_library(kraken SHARED
     source/fix/mortarvolleylauncherfix.cpp
     source/fix/gunlights.cpp
 
+    source/ai/KVehicle.cpp
+
     source/ext/logger.cpp
     source/ext/impulse.cpp
     source/ext/runtime.cpp
+    source/ext/meta.cpp
 )
 
 # Include directories

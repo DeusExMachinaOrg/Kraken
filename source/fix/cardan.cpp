@@ -12,6 +12,7 @@
 #include "hta/m3d/AnimInfo.hpp"
 #include "hta/Shared.hpp"
 
+#include "ai/KVehicle.hpp"
 #include "fix/cardan.hpp"
 
 namespace kraken::fix::cardan {
@@ -76,6 +77,12 @@ namespace kraken::fix::cardan {
         vel = velocity.x;
         v29 = velocity.y;
         v30 = velocity.z;
+
+        const hta::m3d::Class& m_classArticulatedVehicle = *((hta::m3d::Class*)0x00A04750);
+        const hta::m3d::Class& m_classVehicle = *((hta::m3d::Class*)0x00A00914);
+        const hta::m3d::Class& m_classKVehicle = *hta::ai::KVehicle::GetClassObject();
+        hta::ai::KVehicle::GetBaseClass();
+        hta::ai::KVehicle::CreateObject();
 
         dir = vehicle->GetDirection();
         if (vehicle->m_bAutoBrake) {
