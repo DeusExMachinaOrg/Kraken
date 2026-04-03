@@ -10,11 +10,15 @@
 #include "hta/ai/Cabin.hpp"
 #include "hta/ai/Basket.hpp"
 #include "hta/m3d/AnimInfo.hpp"
+#include "hta/m3d/Object.hpp"
 #include "hta/Shared.hpp"
 
 #include "fix/cardan.hpp"
 
 namespace kraken::fix::cardan {
+    static std::unordered_map<hta::ai::Vehicle*, hta::CVector> surfaceVelocities;
+    static std::unordered_map<hta::ai::Vehicle*, int32_t> surfaceWheelsTouchingCount;
+
     void SetChassisAnimationStopped(hta::ai::Vehicle* vehicle, bool stopped) {
         // ----------------------------------------------
         // Cardan fix
@@ -72,6 +76,12 @@ namespace kraken::fix::cardan {
 
         wheelRpm = fabs(vehicle->m_averageWheelAVel) * 9.5492964;
         hta::CVector velocity = vehicle->GetLinearVelocity();
+
+        const int32_t surfaceWheelCount = surfaceWheelsTouchingCount[vehicle];
+        if (surfaceWheelCount > 0) {
+            hta::CVector surfaceVel = surfaceVelocities[vehicle] * (float)(1.0 / surfaceWheelCount);
+            velocity = velocity - surfaceVel;
+        }
 
         vel = velocity.x;
         v29 = velocity.y;
@@ -190,6 +200,91 @@ namespace kraken::fix::cardan {
         }
     }
 
+    struct CollideVelocityInfo {
+        hta::CVector velocity;
+        bool bWheelsCollided;
+
+        CollideVelocityInfo() : velocity(), bWheelsCollided(false) {}
+    };
+
+    void __fastcall HookVehicleDtor(hta::ai::Vehicle* self, void*, bool bHorn)
+    {
+        if (!self) return;
+
+        surfaceVelocities.erase(self);
+        surfaceWheelsTouchingCount.erase(self);
+
+        if (self->m_bIsControlledByPlayer) {
+            self->SetHorn(bHorn);
+        }
+    }
+
+    hta::ai::Vehicle* __fastcall VehiclePrototypeInfo_CreateTargetObject(hta::ai::VehiclePrototypeInfo* self, void*)
+    {
+        hta::ai::Vehicle* vehicle = (hta::ai::Vehicle*)hta::m3d::Kernel::Instance()->g_mar.AllocMem(sizeof(hta::ai::Vehicle), nullptr, 0);
+        if (vehicle) {
+            using VehicleCtor = void(__thiscall*)(hta::ai::Vehicle*, const hta::ai::VehiclePrototypeInfo&);
+            static auto ctor = reinterpret_cast<VehicleCtor>(0x005ED590);
+            ctor(vehicle, *self);
+
+            surfaceVelocities[vehicle] = hta::CVector();
+            surfaceWheelsTouchingCount[vehicle] = 0;
+        }
+        return vehicle;
+    }
+
+    void AddSurfaceVelocity(hta::ai::Vehicle* vehicle, hta::ai::PhysicObj* surface)
+    {
+        hta::CVector velocity = surface->GetLinearVelocity();
+        if (velocity.Length() > 0) {
+            surfaceVelocities[vehicle] += velocity;
+            surfaceWheelsTouchingCount[vehicle] += 1;
+        }
+    }
+
+    void __stdcall HandleWheelSurfaceTouch(hta::ai::Wheel* wheel, hta::m3d::Object* surface)
+    {
+        hta::ai::Vehicle* vehicle = wheel->GetVehicle();
+
+        if (vehicle) {
+            // Engine resets m_numWheelsTouchingGround each update cycle.
+            // First contact in cycle must reset our moving-surface accumulators.
+            if (!vehicle->m_numWheelsTouchingGround) {
+                surfaceVelocities[vehicle] = hta::CVector();
+                surfaceWheelsTouchingCount[vehicle] = 0;
+            }
+
+            vehicle->IncNumWheelsTouchingGround();
+
+            if (surface) {
+                if (hta::ai::PhysicObj* obj = surface->cast<hta::ai::PhysicObj>()) {
+                    AddSurfaceVelocity(vehicle, obj);
+                }
+            }
+        }
+    }
+
+    const uintptr_t kReturnAddr = 0x00891435;
+
+    __declspec(naked) void Hook_CollideWheelDefault_Naked() {
+        __asm {
+            pushad
+
+            push edx
+            push ecx
+            call HandleWheelSurfaceTouch
+
+            popad
+
+            sub esp, 0x24
+            push ebx
+            push ebp
+
+            mov eax, kReturnAddr
+            jmp eax
+        }
+    }
+
     void Apply()
     {
         LOG_INFO("Feature enabled");
@@ -198,5 +293,9 @@ namespace kraken::fix::cardan {
             return;
 
         kraken::routines::ChangeCall((void*) 0x005EC7AD, KeepThrottle);
+        kraken::routines::Nop((void*)0x005ECCD3, 2);
+        kraken::routines::ChangeCall((void*) 0x005ECCD6, HookVehicleDtor);
+        kraken::routines::Redirect(0x26, (void*) 0x005EDD60, VehiclePrototypeInfo_CreateTargetObject);
+        kraken::routines::Redirect(5, (void*)0x00891430, Hook_CollideWheelDefault_Naked);
     }
 }
