@@ -465,8 +465,8 @@ namespace kraken::fix::physic {
         dxBodyAutoDisable = 16        // enable auto-disable on body
     };
 
-    float last = 0;
-    float step = 1 / 120;
+    float last = 0.0f;
+    float step = 1.0f / 120.0f;
 
     void __fastcall dInternalStepIsland_x2(dxWorld* world, dxBody*const* body, int nb, dxJoint*const* _joint, int nj, float stepsize) {
         last += stepsize;
