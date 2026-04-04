@@ -477,8 +477,10 @@ namespace kraken::fix::physic {
         int i, j, k;
         float stepsize1 = 1.0f / stepsize;
 
-        for (i = 0; i < nb; i++)
+        for (i = 0; i < nb; i++) {
+            kraken::fix::cinematicmover::OnBodyBeforeStep(static_cast<void*>(body[i]));
             body[i]->tag = i;
+        }
 
         HeapArray<float>    I     (3*nb*4);
         HeapArray<float>    invI  (3*nb*4);

@@ -10,3 +10,7 @@ build
 **/*.lib
 **/*.ilk
 **/*.pdb
+
+.claude
+provider
+.mcp.json

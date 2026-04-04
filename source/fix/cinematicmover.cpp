@@ -80,7 +80,7 @@ namespace kraken::fix::cinematicmover {
         };
 
         static void SetCorrectPosToControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj);
-        static void __fastcall ControlledObjBeforeStepCallback(dBody* body);
+        static void __fastcall ControlledObjBeforeStepCallback(dxBody* body);
 
         static float GetPhysicsStepTime() {
             const auto* globalProps = hta::ai::GlobalProperties::Instance();
@@ -96,15 +96,15 @@ namespace kraken::fix::cinematicmover {
         using PhysicObjGetIntConstFn = int32_t(__thiscall*)(const hta::ai::PhysicObj*);
 
         static std::unordered_map<const hta::ai::PhysicObj*, int32_t> g_cinematicMoverIds;
-        static std::unordered_map<const dBody*, void*> g_beforeStepCallbacks;
-        static std::unordered_map<const dBody*, void*> g_savedBeforeStepCallbacks;
+        static std::unordered_map<const dxBody*, void*> g_beforeStepCallbacks;
+        static std::unordered_map<const dxBody*, void*> g_savedBeforeStepCallbacks;
 
         static bool PhysicObj_IsCinematic(const hta::ai::PhysicObj* obj) {
             if (!obj) {
                 return false;
             }
 
-            const auto* body = reinterpret_cast<const dxBody*>(obj->GetBody());
+            const auto* body = obj->GetBody() ? obj->GetBody()->_id : nullptr;
             if (!body) {
                 return false;
             }
@@ -118,7 +118,7 @@ namespace kraken::fix::cinematicmover {
                 return;
             }
 
-            auto* body = reinterpret_cast<dxBody*>(obj->GetBody());
+            auto* body = obj->GetBody() ? obj->GetBody()->_id : nullptr;
             if (!body) {
                 return;
             }
@@ -136,7 +136,7 @@ namespace kraken::fix::cinematicmover {
                 return true;
             }
 
-            return reinterpret_cast<bool(__fastcall*)(const dBody*)>(0x007C4C00)(obj->GetBody()) != 0;
+            return reinterpret_cast<bool(__fastcall*)(const dxBody*)>(0x007C4C00)(obj->GetBody()->_id) != 0;
         }
 
         static bool PhysicObj_IsPhysicsEnabled(const hta::ai::PhysicObj* obj) {
@@ -144,7 +144,7 @@ namespace kraken::fix::cinematicmover {
                 return false;
             }
 
-            return reinterpret_cast<bool(__fastcall*)(const dBody*)>(0x007C4BE0)(obj->GetBody()) != 0;
+            return reinterpret_cast<bool(__fastcall*)(const dxBody*)>(0x007C4BE0)(obj->GetBody()->_id) != 0;
         }
 
         static void PhysicObj_SetGravityMode(hta::ai::PhysicObj* obj, bool value) {
@@ -152,12 +152,12 @@ namespace kraken::fix::cinematicmover {
                 return;
             }
 
-            dBody* body = obj->GetBody();
-            if (!body) {
+            dxBody* rawBody = obj->GetBody() ? obj->GetBody()->_id : nullptr;
+            if (!rawBody) {
                 return;
             }
 
-            reinterpret_cast<void(__fastcall*)(dBody*, bool)>(0x007C4BF0)(body, value);
+            reinterpret_cast<void(__fastcall*)(dxBody*, bool)>(0x007C4BF0)(rawBody, value);
         }
 
         static void PhysicObj_SetCinematicMoverId(hta::ai::PhysicObj* obj, int32_t value) {
@@ -182,11 +182,11 @@ namespace kraken::fix::cinematicmover {
             return it != g_cinematicMoverIds.end() ? it->second : -1;
         }
 
-        static void* dBody_GetData(dBody* body) {
-            return body ? reinterpret_cast<void*(__fastcall*)(dBody*)>(0x007C4580)(body) : nullptr;
+        static void* dBody_GetData(dxBody* body) {
+            return body ? reinterpret_cast<void*(__fastcall*)(dxBody*)>(0x007C4580)(body) : nullptr;
         }
 
-        static void* dBody_GetBeforeStepCallback(dBody* body) {
+        static void* dBody_GetBeforeStepCallback(dxBody* body) {
             if (!body) {
                 return nullptr;
             }
@@ -195,7 +195,7 @@ namespace kraken::fix::cinematicmover {
             return it != g_beforeStepCallbacks.end() ? it->second : nullptr;
         }
 
-        static void dBody_SetBeforeStepCallback(dBody* body, void* callback) {
+        static void dBody_SetBeforeStepCallback(dxBody* body, void* callback) {
             if (!body) {
                 return;
             }
@@ -322,8 +322,9 @@ namespace kraken::fix::cinematicmover {
             PhysicObj_SetGravityMode(controlledObj, false);
 
             if (controlledObj->GetBody()) {
-                g_savedBeforeStepCallbacks[controlledObj->GetBody()] = dBody_GetBeforeStepCallback(controlledObj->GetBody());
-                dBody_SetBeforeStepCallback(controlledObj->GetBody(), reinterpret_cast<void*>(&ControlledObjBeforeStepCallback));
+                dxBody* rawBody = controlledObj->GetBody()->_id;
+                g_savedBeforeStepCallbacks[rawBody] = dBody_GetBeforeStepCallback(rawBody);
+                dBody_SetBeforeStepCallback(rawBody, reinterpret_cast<void*>(&ControlledObjBeforeStepCallback));
             }
 
             if (PhysicObj_IsCinematic(controlledObj)) {
@@ -346,9 +347,10 @@ namespace kraken::fix::cinematicmover {
             PhysicObj_SetCinematicMoverId(controlledObj, -1);
 
             if (controlledObj->GetBody()) {
-                const auto it = g_savedBeforeStepCallbacks.find(controlledObj->GetBody());
-                dBody_SetBeforeStepCallback(controlledObj->GetBody(), it != g_savedBeforeStepCallbacks.end() ? it->second : nullptr);
-                g_savedBeforeStepCallbacks.erase(controlledObj->GetBody());
+                dxBody* rawBody = controlledObj->GetBody()->_id;
+                const auto it = g_savedBeforeStepCallbacks.find(rawBody);
+                dBody_SetBeforeStepCallback(rawBody, it != g_savedBeforeStepCallbacks.end() ? it->second : nullptr);
+                g_savedBeforeStepCallbacks.erase(rawBody);
             }
 
             if (PhysicObj_IsCinematic(controlledObj)) {
@@ -361,7 +363,7 @@ namespace kraken::fix::cinematicmover {
             PhysicObj_SetGravityMode(controlledObj, state.oldObjectGravityMode);
         }
 
-        static void __fastcall ControlledObjBeforeStepCallback(dBody* body) {
+        static void __fastcall ControlledObjBeforeStepCallback(dxBody* body) {
             static uint32_t callbackHitCounter = 0;
 
             auto* controlledObj = static_cast<hta::ai::PhysicObj*>(dBody_GetData(body));
@@ -396,9 +398,10 @@ namespace kraken::fix::cinematicmover {
                 PhysicObj_SetCinematic(controlledObj, false);
 
                 if (controlledObj->GetBody()) {
-                    const auto it = g_savedBeforeStepCallbacks.find(controlledObj->GetBody());
-                    dBody_SetBeforeStepCallback(controlledObj->GetBody(), it != g_savedBeforeStepCallbacks.end() ? it->second : nullptr);
-                    g_savedBeforeStepCallbacks.erase(controlledObj->GetBody());
+                    dxBody* rawBody = controlledObj->GetBody()->_id;
+                    const auto it = g_savedBeforeStepCallbacks.find(rawBody);
+                    dBody_SetBeforeStepCallback(rawBody, it != g_savedBeforeStepCallbacks.end() ? it->second : nullptr);
+                    g_savedBeforeStepCallbacks.erase(rawBody);
                 }
 
                 return;
@@ -407,7 +410,7 @@ namespace kraken::fix::cinematicmover {
             const auto savedIt = g_savedBeforeStepCallbacks.find(body);
             const void* oldBeforeStepCallback = savedIt != g_savedBeforeStepCallbacks.end() ? savedIt->second : nullptr;
             if (oldBeforeStepCallback && oldBeforeStepCallback != reinterpret_cast<void*>(&ControlledObjBeforeStepCallback)) {
-                reinterpret_cast<void(__fastcall*)(dBody*)>(const_cast<void*>(oldBeforeStepCallback))(body);
+                reinterpret_cast<void(__fastcall*)(dxBody*)>(const_cast<void*>(oldBeforeStepCallback))(body);
             }
         }
 
@@ -511,13 +514,13 @@ namespace kraken::fix::cinematicmover {
             return;
         }
 
-        dBody* typedBody = static_cast<dBody*>(body);
+        dxBody* typedBody = static_cast<dxBody*>(body);
         const auto it = g_beforeStepCallbacks.find(typedBody);
         if (it == g_beforeStepCallbacks.end() || !it->second) {
             return;
         }
 
-        reinterpret_cast<void(__fastcall*)(dBody*)>(it->second)(typedBody);
+        reinterpret_cast<void(__fastcall*)(dxBody*)>(it->second)(typedBody);
     }
 
     static void __fastcall Hooked_ObjRemove(hta::ai::Obj* self, void*) {
