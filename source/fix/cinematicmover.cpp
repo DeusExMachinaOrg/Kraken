@@ -77,7 +77,6 @@ namespace kraken::fix::cinematicmover {
             int32_t movingMode = 0;
             bool oldObjectCinematicMode = false;
             bool oldObjectGravityMode = false;
-            bool oldObjectAutoDisableFlag = false;
         };
 
         static void SetCorrectPosToControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj);
@@ -159,42 +158,6 @@ namespace kraken::fix::cinematicmover {
             }
 
             reinterpret_cast<void(__fastcall*)(dxBody*, bool)>(0x007C4BF0)(rawBody, value);
-        }
-
-        static void PhysicObj_EnableBody(hta::ai::PhysicObj* obj) {
-            if (!obj) {
-                return;
-            }
-
-            dxBody* rawBody = obj->GetBody() ? obj->GetBody()->_id : nullptr;
-            if (!rawBody) {
-                return;
-            }
-
-            reinterpret_cast<void(__fastcall*)(dxBody*)>(0x007C67D0)(rawBody);
-        }
-
-        static bool PhysicObj_GetAutoDisableFlag(const hta::ai::PhysicObj* obj) {
-            if (!obj || !obj->GetBody()) {
-                return false;
-            }
-
-            const dxBody* rawBody = obj->GetBody()->_id;
-            // dBodyGetAutoDisableFlag: (flags >> 4) & 1
-            return rawBody && ((static_cast<uint32_t>(rawBody->flags) >> 4) & 1u) != 0;
-        }
-
-        static void PhysicObj_SetAutoDisableFlag(hta::ai::PhysicObj* obj, bool value) {
-            if (!obj || !obj->GetBody()) {
-                return;
-            }
-
-            dxBody* rawBody = obj->GetBody()->_id;
-            if (!rawBody) {
-                return;
-            }
-
-            reinterpret_cast<void(__fastcall*)(dxBody*, bool)>(0x007C4CB0)(rawBody, value);
         }
 
         static void PhysicObj_SetCinematicMoverId(hta::ai::PhysicObj* obj, int32_t value) {
@@ -354,11 +317,9 @@ namespace kraken::fix::cinematicmover {
 
             state.oldObjectCinematicMode = PhysicObj_IsCinematic(controlledObj);
             state.oldObjectGravityMode = PhysicObj_GetGravityMode(controlledObj);
-            state.oldObjectAutoDisableFlag = PhysicObj_GetAutoDisableFlag(controlledObj);
 
             PhysicObj_SetCinematic(controlledObj, true);
             PhysicObj_SetGravityMode(controlledObj, false);
-            PhysicObj_SetAutoDisableFlag(controlledObj, false);
 
             if (controlledObj->GetBody()) {
                 dxBody* rawBody = controlledObj->GetBody()->_id;
@@ -400,7 +361,6 @@ namespace kraken::fix::cinematicmover {
 
             PhysicObj_SetCinematic(controlledObj, state.oldObjectCinematicMode);
             PhysicObj_SetGravityMode(controlledObj, state.oldObjectGravityMode);
-            PhysicObj_SetAutoDisableFlag(controlledObj, state.oldObjectAutoDisableFlag);
         }
 
         static void __fastcall ControlledObjBeforeStepCallback(dxBody* body) {
@@ -611,7 +571,6 @@ namespace kraken::fix::cinematicmover {
         TryParseIntAttribute(xmlNode, "MovingMode", state.movingMode);
         TryParseBoolAttribute(xmlNode, "OldObjectCinematicMode", state.oldObjectCinematicMode);
         TryParseBoolAttribute(xmlNode, "OldObjectGravityMode", state.oldObjectGravityMode);
-        TryParseBoolAttribute(xmlNode, "OldObjectAutoDisableFlag", state.oldObjectAutoDisableFlag);
 
         auto* runtimePathNode = xmlFile->CreateNode(hta::m3d::cmn::XML_NODE_EMPTY, nullptr);
         if (runtimePathNode) {
@@ -648,7 +607,6 @@ namespace kraken::fix::cinematicmover {
         WriteIntAttribute(xmlNode, "MovingMode", state.movingMode);
         WriteBoolAttribute(xmlNode, "OldObjectCinematicMode", state.oldObjectCinematicMode);
         WriteBoolAttribute(xmlNode, "OldObjectGravityMode", state.oldObjectGravityMode);
-        WriteBoolAttribute(xmlNode, "OldObjectAutoDisableFlag", state.oldObjectAutoDisableFlag);
 
         if (self->m_currentFlyPath) {
             auto* runtimePathNode = xmlFile->CreateNode(hta::m3d::cmn::XML_NODE_ELEMENT, "CurrentFlyPath");
@@ -718,7 +676,6 @@ namespace kraken::fix::cinematicmover {
             }
         }
 
-        PhysicObj_EnableBody(controlledObj);
         state.movingMode = PhysicObj_IsPhysicsEnabled(controlledObj) ? 1 : 0;
         CinematicMover_AttachControlledObj(self, controlledObj);
         PhysicObj_SetCinematicMoverId(controlledObj, self->m_objId);
