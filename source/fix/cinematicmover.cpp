@@ -47,6 +47,14 @@
         float m_angularDamping;
     };
 
+    enum MovingMode : __int32
+    {
+        MOVE_IN_UPDATE         = 0x0,
+        MOVE_BEFORE_PHYSICSTEP = 0x1,
+    };
+
+    const hta::CVector ZeroVector(0.0f, 0.0f, 0.0f);
+
     struct dxBody: dObject {
         dxJointNode*  firstjoint;
         int32_t       flags;
@@ -70,6 +78,7 @@
         void (__fastcall* m_changeEnabledStateCallback)(dxBody *);
     };
 
+using namespace hta;
 
 namespace kraken::fix::cinematicmover {
     namespace {
@@ -305,62 +314,63 @@ namespace kraken::fix::cinematicmover {
             return true;
         }
 
-        static void CinematicMover_AttachControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj) {
-            if (!self || !controlledObj) {
-                return;
-            }
+        REIMPL void CinematicMover_AttachControlledObj(hta::ai::CinematicMover* self)
+        {
+            if (self->m_controlledObjId >= 0) {
+                const hta::ai::CServer* server = hta::ai::CServer::Instance();
+                ai::PhysicObj* controlledObj = (ai::PhysicObj*)server->m_pObjects->GetEntityByObjId(self->m_controlledObjId);
 
-            MeridianState& state = GetState(self);
-            if (state.movingMode != 1) {
-                return;
-            }
+                if (controlledObj != nullptr)
+                {
+                    MeridianState& state = GetState(self);
+                    if (state.movingMode == MOVE_BEFORE_PHYSICSTEP)
+                    {
+                        state.oldObjectCinematicMode = PhysicObj_IsCinematic(controlledObj);
+                        state.oldObjectGravityMode = PhysicObj_GetGravityMode(controlledObj);
 
-            state.oldObjectCinematicMode = PhysicObj_IsCinematic(controlledObj);
-            state.oldObjectGravityMode = PhysicObj_GetGravityMode(controlledObj);
+                        PhysicObj_SetCinematic(controlledObj, true);
+                        PhysicObj_SetGravityMode(controlledObj, false);
 
-            PhysicObj_SetCinematic(controlledObj, true);
-            PhysicObj_SetGravityMode(controlledObj, false);
-
-            if (controlledObj->GetBody()) {
-                dxBody* rawBody = controlledObj->GetBody()->_id;
-                g_savedBeforeStepCallbacks[rawBody] = dBody_GetBeforeStepCallback(rawBody);
-                dBody_SetBeforeStepCallback(rawBody, reinterpret_cast<void*>(&ControlledObjBeforeStepCallback));
-            }
-
-            if (PhysicObj_IsCinematic(controlledObj)) {
-                const hta::CVector zero(0.0f, 0.0f, 0.0f);
-                controlledObj->SetLinearVelocity(zero);
-                controlledObj->SetAngularVelocity(zero);
+                        if (controlledObj->GetBody()) {
+                            dxBody* rawBody = controlledObj->GetBody()->_id;
+                            g_savedBeforeStepCallbacks[rawBody] = dBody_GetBeforeStepCallback(rawBody);
+                            dBody_SetBeforeStepCallback(rawBody, reinterpret_cast<void*>(&ControlledObjBeforeStepCallback));
+                        }
+                    }
+                }
             }
         }
 
-        static void DetachControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj) {
-            if (!self || !controlledObj) {
-                return;
+        REIMPL void _DetachControlledObj(ai::CinematicMover* self)
+        {
+            if (self->m_controlledObjId >= 0)
+            {
+                const ai::CServer* server = ai::CServer::Instance();
+                ai::PhysicObj* controlledObj = (ai::PhysicObj*)server->m_pObjects->GetEntityByObjId(self->m_controlledObjId);
+
+                if (controlledObj != nullptr)
+                {
+                    MeridianState& state = GetState(self);
+                    PhysicObj_SetCinematicMoverId(controlledObj, -1);
+
+                    if (state.movingMode == MOVE_BEFORE_PHYSICSTEP)
+                    {
+                        dxBody* rawBody = controlledObj->GetBody()->_id;
+                        const auto it = g_savedBeforeStepCallbacks.find(rawBody);
+                        dBody_SetBeforeStepCallback(rawBody, it != g_savedBeforeStepCallbacks.end() ? it->second : nullptr);
+                        g_savedBeforeStepCallbacks.erase(rawBody);
+
+                        if (PhysicObj_IsCinematic(controlledObj))
+                        {
+                            controlledObj->SetLinearVelocity(ZeroVector);
+                            controlledObj->SetAngularVelocity(ZeroVector);
+                        }
+
+                        PhysicObj_SetCinematic(controlledObj, state.oldObjectCinematicMode);
+                        PhysicObj_SetGravityMode(controlledObj, state.oldObjectGravityMode);
+                    }
+                }
             }
-
-            MeridianState& state = GetState(self);
-            if (state.movingMode != 1) {
-                return;
-            }
-
-            PhysicObj_SetCinematicMoverId(controlledObj, -1);
-
-            if (controlledObj->GetBody()) {
-                dxBody* rawBody = controlledObj->GetBody()->_id;
-                const auto it = g_savedBeforeStepCallbacks.find(rawBody);
-                dBody_SetBeforeStepCallback(rawBody, it != g_savedBeforeStepCallbacks.end() ? it->second : nullptr);
-                g_savedBeforeStepCallbacks.erase(rawBody);
-            }
-
-            if (PhysicObj_IsCinematic(controlledObj)) {
-                const hta::CVector zero(0.0f, 0.0f, 0.0f);
-                controlledObj->SetLinearVelocity(zero);
-                controlledObj->SetAngularVelocity(zero);
-            }
-
-            PhysicObj_SetCinematic(controlledObj, state.oldObjectCinematicMode);
-            PhysicObj_SetGravityMode(controlledObj, state.oldObjectGravityMode);
         }
 
         static void __fastcall ControlledObjBeforeStepCallback(dxBody* body) {
@@ -414,98 +424,43 @@ namespace kraken::fix::cinematicmover {
             }
         }
 
-        static void SetCorrectPosToControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj) {
-            if (!self || !controlledObj || !self->m_currentFlyPath) {
-                return;
+        REIMPL static void SetCorrectPosToControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj) {
+            hta::CVector pos = controlledObj->GetPosition();
+            hta::Quaternion rot = controlledObj->GetRotation();
+            float zoom;
+
+            self->m_currentFlyPath->GetCameraForTime(self->m_currentFlyTime, pos, rot, zoom);
+
+            controlledObj->SetPosition(pos);
+            controlledObj->SetRotation(rot);
+
+            CVector linearVel(0.0f, 0.0f, 0.0f);
+            CVector angularVel(0.0f, 0.0f, 0.0f);
+
+            const float dt = 0.01f;
+            const float invDt = 100.0f;
+
+            if (self->m_currentFlyTime > dt) {
+                CVector oldPos = pos;
+                Quaternion oldRot = rot;
+
+                self->m_currentFlyPath->GetCameraForTime(self->m_currentFlyTime - dt, oldPos, oldRot, zoom);
+
+                linearVel = (pos - oldPos) * invDt;
+
+                CMatrix matCurrent, matOld;
+                matCurrent.Rotation(rot);
+                matOld.Rotation(oldRot);
+
+                CVector dirCurrent, dirOld, dummyX, dummyY;
+                matCurrent.GetBasis(dummyX, dummyY, dirCurrent);
+                matOld.GetBasis(dummyX, dummyY, dirOld);
+
+                angularVel = CVector::Cross(dirOld, dirCurrent) * invDt;
             }
 
-            const float sampleStep = GetPhysicsStepTime();
-
-            hta::CVector currentPos;
-            hta::Quaternion currentRot;
-            float currentZoom = 0.0f;
-            if (!SamplePath(self->m_currentFlyPath, self->m_currentFlyTime, currentPos, currentRot, currentZoom)) {
-                return;
-            }
-
-            controlledObj->SetPosition(currentPos);
-            controlledObj->SetRotation(currentRot);
-
-            hta::CVector linearVelocity(0.0f, 0.0f, 0.0f);
-            hta::CVector angularVelocity(0.0f, 0.0f, 0.0f);
-            if (sampleStep > 0.0f && self->m_currentFlyTime > sampleStep) {
-                hta::CVector prevPos;
-                hta::Quaternion prevRot;
-                float prevZoom = 0.0f;
-                if (SamplePath(self->m_currentFlyPath, self->m_currentFlyTime - sampleStep, prevPos, prevRot, prevZoom)) {
-                    linearVelocity = (currentPos - prevPos) / sampleStep;
-
-                    auto quaternionToMatrix3x3 = [](const hta::Quaternion& q, float m[3][3]) {
-                        float x = q.x;
-                        float y = q.y;
-                        float z = q.z;
-                        float w = q.w;
-                        const float norm = std::sqrt(x * x + y * y + z * z + w * w);
-                        if (norm > 1e-6f) {
-                            const float invNorm = 1.0f / norm;
-                            x *= invNorm;
-                            y *= invNorm;
-                            z *= invNorm;
-                            w *= invNorm;
-                        }
-
-                        const float xx = x * x;
-                        const float yy = y * y;
-                        const float zz = z * z;
-                        const float xy = x * y;
-                        const float xz = x * z;
-                        const float yz = y * z;
-                        const float wx = w * x;
-                        const float wy = w * y;
-                        const float wz = w * z;
-
-                        m[0][0] = 1.0f - 2.0f * (yy + zz);
-                        m[0][1] = 2.0f * (xy - wz);
-                        m[0][2] = 2.0f * (xz + wy);
-                        m[1][0] = 2.0f * (xy + wz);
-                        m[1][1] = 1.0f - 2.0f * (xx + zz);
-                        m[1][2] = 2.0f * (yz - wx);
-                        m[2][0] = 2.0f * (xz - wy);
-                        m[2][1] = 2.0f * (yz + wx);
-                        m[2][2] = 1.0f - 2.0f * (xx + yy);
-                    };
-
-                    float prevM[3][3];
-                    float currM[3][3];
-                    quaternionToMatrix3x3(prevRot, prevM);
-                    quaternionToMatrix3x3(currentRot, currM);
-
-                    float dR[3][3] = {};
-                    for (int r = 0; r < 3; ++r) {
-                        for (int c = 0; c < 3; ++c) {
-                            dR[r][c] = (currM[r][c] - prevM[r][c]) / sampleStep;
-                        }
-                    }
-
-                    float omegaSkew[3][3] = {};
-                    for (int r = 0; r < 3; ++r) {
-                        for (int c = 0; c < 3; ++c) {
-                            omegaSkew[r][c] =
-                                dR[r][0] * currM[c][0] +
-                                dR[r][1] * currM[c][1] +
-                                dR[r][2] * currM[c][2];
-                        }
-                    }
-
-                    angularVelocity.x = 0.5f * (omegaSkew[2][1] - omegaSkew[1][2]);
-                    angularVelocity.y = 0.5f * (omegaSkew[0][2] - omegaSkew[2][0]);
-                    angularVelocity.z = 0.5f * (omegaSkew[1][0] - omegaSkew[0][1]);
-                }
-            }
-
-            controlledObj->SetLinearVelocity(linearVelocity);
-            controlledObj->SetAngularVelocity(angularVelocity);
-            (void)currentZoom;
+            controlledObj->SetLinearVelocity(linearVel);
+            controlledObj->SetAngularVelocity(angularVel);
         }
     }
 
@@ -531,12 +486,11 @@ namespace kraken::fix::cinematicmover {
         if (self->GetClass() && self->GetClass()->IsKindOf(hta::ai::CinematicMover::GetBaseClass())) {
             auto* mover = static_cast<hta::ai::CinematicMover*>(self);
             if (hta::ai::PhysicObj* controlledObj = mover->_GetControlledObj()) {
-                DetachControlledObj(mover, controlledObj);
+                _DetachControlledObj(mover);
             }
             g_states.erase(mover);
         }
 
-        // Full replacement of ai::Obj::Remove (HTA RVA 0x292880, 34 bytes).
         self->_SetDeadStatus();
         self->m_flags |= 2u;
         hta::ai::CServer* server = hta::ai::CServer::Instance();
@@ -546,74 +500,158 @@ namespace kraken::fix::cinematicmover {
         }
     }
 
-    static void __fastcall Hooked_LoadRuntimeValues(hta::ai::CinematicMover* self, void*, hta::m3d::cmn::XmlFile* xmlFile, const hta::m3d::cmn::XmlNode* xmlNode) {
-        if (!self || !xmlFile || !xmlNode) {
-            return;
+    REIMPL int SafeStrAttrib(CStr* v, m3d::cmn::XmlNode* node, const char* attrib)
+    {
+        if (node->IsEmpty()) {
+            return 0;
         }
 
+        const char* attrValue = node->GetAttribute(attrib);
+        if (attrValue == nullptr) {
+            return 0;
+        }
+
+        CStr tempStr(attrValue);
+
+        *v = tempStr;
+
+        if (tempStr.m_charPtr != tempStr.ZERO)
+        {
+            m3d::Kernel::Instance()->g_mar.FreeMem(tempStr.m_charPtr, 0, 0);
+        }
+
+        return 1;
+    }
+
+    REIMPL bool SafeBoolAttrib(bool* v, m3d::cmn::XmlNode* node, const char* attrib)
+    {
+        if (node->IsEmpty()) {
+            return false;
+        }
+
+        const char* attrValue = node->GetAttribute(attrib);
+        if (attrValue == nullptr) {
+            return false;
+        }
+
+        bool isTrue = (_stricmp(attrValue, "true") == 0) ||
+                    (_stricmp(attrValue, "1") == 0) ||
+                    (_stricmp(attrValue, "yes") == 0) ||
+                    (_stricmp(attrValue, "yeah") == 0) ||
+                    (_stricmp(attrValue, "yep") == 0);
+
+        bool isFalse = (_stricmp(attrValue, "false") == 0) ||
+                    (_stricmp(attrValue, "0") == 0) ||
+                    (_stricmp(attrValue, "no") == 0) ||
+                    (_stricmp(attrValue, "nope") == 0) ||
+                    (_stricmp(attrValue, "none") == 0);
+
+        if (isTrue || isFalse)
+        {
+            *v = isTrue;
+            return true;
+        }
+
+        return false;
+    }
+
+    REIMPL void Hooked_LoadRuntimeValues(hta::ai::CinematicMover* self, void*, m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* xmlNode)
+    {
         self->Obj::LoadRuntimeValues(xmlFile, xmlNode);
 
-        if (const char* flyPath = xmlNode->GetAttribute("FlyPathName"); flyPath && *flyPath) {
-            self->m_flyPathName = flyPath;
+        SafeStrAttrib(&self->m_flyPathName, xmlNode, "FlyPathName");
+
+        if (!xmlNode->IsEmpty())
+        {
+            const char* timeStr = xmlNode->GetAttribute("CurrentFlyTime");
+            if (timeStr) {
+                self->m_currentFlyTime = (float)std::atof(timeStr);
+            }
         }
 
-        int32_t controlledObjId = self->m_controlledObjId;
-        if (TryParseIntAttribute(xmlNode, "ControlledObjId", controlledObjId)) {
-            self->m_controlledObjId = controlledObjId;
-        }
-
-        const char* currentFlyTimeText = xmlNode->GetAttribute("CurrentFlyTime");
-        if (currentFlyTimeText && *currentFlyTimeText) {
-            self->m_currentFlyTime = static_cast<float>(std::atof(currentFlyTimeText));
+        if (!xmlNode->IsEmpty())
+        {
+            const char* objIdStr = xmlNode->GetAttribute("ControlledObjId");
+            if (objIdStr) {
+                self->m_controlledObjId = std::atoi(objIdStr);
+            }
         }
 
         MeridianState& state = GetState(self);
-        TryParseIntAttribute(xmlNode, "MovingMode", state.movingMode);
-        TryParseBoolAttribute(xmlNode, "OldObjectCinematicMode", state.oldObjectCinematicMode);
-        TryParseBoolAttribute(xmlNode, "OldObjectGravityMode", state.oldObjectGravityMode);
 
-        auto* runtimePathNode = xmlFile->CreateNode(hta::m3d::cmn::XML_NODE_EMPTY, nullptr);
-        if (runtimePathNode) {
-            if (xmlNode->GetFirstChild(runtimePathNode, "CurrentFlyPath") && !runtimePathNode->IsEmpty()) {
-                if (hta::m3d::CameraPath* currentPath = EnsureCurrentFlyPath(self)) {
-                    currentPath->LoadFromXmlRuntime(xmlFile, runtimePathNode);
-                }
+        if (!xmlNode->IsEmpty())
+        {
+            const char* modeStr = xmlNode->GetAttribute("MovingMode");
+            if (modeStr) {
+                state.movingMode = std::atoi(modeStr);
             }
-            runtimePathNode->DecRef();
         }
 
-        hta::ai::PhysicObj* controlledObj = self->_GetControlledObj();
-        if (!controlledObj) {
-            return;
+        SafeBoolAttrib(&state.oldObjectCinematicMode, xmlNode, "OldObjectCinematicMode");
+        SafeBoolAttrib(&state.oldObjectGravityMode, xmlNode, "OldObjectGravityMode");
+
+        m3d::cmn::XmlNode* childNode = xmlFile->CreateNode(m3d::cmn::XML_NODE_EMPTY, 0);
+
+        if (childNode) {
+            childNode->IncRef();
+        } else {
+            m3d::Kernel::Instance()->SysError("0 != m_ptr", "e:\\cruisecontrol\\work\\checkout\\truxx15\\trunk\\core\\ref_ptr.h");
         }
 
-        CinematicMover_AttachControlledObj(self, controlledObj);
+        xmlNode->GetFirstChild(childNode, "CurrentFlyPath");
+
+        if (!childNode) {
+            m3d::Kernel::Instance()->SysError("0 != m_ptr", "e:\\cruisecontrol\\work\\checkout\\truxx15\\trunk\\core\\ref_ptr.h");
+        }
+
+        if (!childNode->IsEmpty())
+        {
+            self->m_currentFlyPath = (m3d::CameraPath*)m3d::Kernel::Instance()->g_mar.AllocMem(sizeof(m3d::CameraPath), 0, 0);
+
+            if (self->m_currentFlyPath)
+            {
+                auto* ctor = reinterpret_cast<void(__thiscall*)(m3d::CameraPath*)>(0x00629E00);
+                ctor(self->m_currentFlyPath);
+            }
+
+            if (self->m_currentFlyPath) {
+                self->m_currentFlyPath->LoadFromXmlRuntime(xmlFile, childNode);
+            }
+        }
+
+        CinematicMover_AttachControlledObj(self);
+
+        childNode->DecRef();
     }
 
-    static void __fastcall Hooked_SaveRuntimeValues(const hta::ai::CinematicMover* self, void*, hta::m3d::cmn::XmlFile* xmlFile, hta::m3d::cmn::XmlNode* xmlNode) {
-        if (!self || !xmlFile || !xmlNode) {
-            return;
-        }
-
+    REIMPL void __fastcall Hooked_SaveRuntimeValues(const ai::CinematicMover* self, void*, m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* xmlNode)
+    {
         self->Obj::SaveRuntimeValues(xmlFile, xmlNode);
 
-        xmlNode->SetAttribute("FlyPathName", self->m_flyPathName.c_str());
-        WriteIntAttribute(xmlNode, "ControlledObjId", self->m_controlledObjId);
-        char flyTimeText[32] = {};
-        std::snprintf(flyTimeText, sizeof(flyTimeText), "%.9g", self->m_currentFlyTime);
-        xmlNode->SetAttribute("CurrentFlyTime", flyTimeText);
+        xmlNode->SetAttribute("FlyPathName", self->m_flyPathName.m_charPtr);
 
         const MeridianState& state = GetState(self);
-        WriteIntAttribute(xmlNode, "MovingMode", state.movingMode);
-        WriteBoolAttribute(xmlNode, "OldObjectCinematicMode", state.oldObjectCinematicMode);
-        WriteBoolAttribute(xmlNode, "OldObjectGravityMode", state.oldObjectGravityMode);
+
+        xmlNode->SetAttribute("CurrentFlyTime",         CStr(self->m_currentFlyTime).c_str());
+        xmlNode->SetAttribute("ControlledObjId",        CStr(self->m_controlledObjId).c_str());
+        xmlNode->SetAttribute("MovingMode",             CStr(state.movingMode).c_str());
+        xmlNode->SetAttribute("OldObjectCinematicMode", CStr(state.oldObjectCinematicMode).c_str());
+        xmlNode->SetAttribute("OldObjectGravityMode",   CStr(state.oldObjectGravityMode).c_str());
 
         if (self->m_currentFlyPath) {
-            auto* runtimePathNode = xmlFile->CreateNode(hta::m3d::cmn::XML_NODE_ELEMENT, "CurrentFlyPath");
-            if (runtimePathNode) {
-                self->m_currentFlyPath->SaveToXmlRuntime(xmlFile, runtimePathNode);
-                xmlNode->AddChild(runtimePathNode);
-                runtimePathNode->DecRef();
+            m3d::cmn::XmlNode* flyPathNode = xmlFile->CreateNode(hta::m3d::cmn::XML_NODE_ELEMENT, "CurrentFlyPath");
+
+            if (flyPathNode) {
+                flyPathNode->IncRef();
+
+                self->m_currentFlyPath->SaveToXmlRuntime(xmlFile, flyPathNode);
+
+                xmlNode->AddChild(flyPathNode);
+
+                flyPathNode->DecRef();
+            }
+            else {
+                m3d::Kernel::Instance()->SysError("0 != m_ptr", "Failed to create XmlNode 'CurrentFlyPath'");
             }
         }
     }
@@ -640,72 +678,90 @@ namespace kraken::fix::cinematicmover {
         }
     }
 
-    static void __fastcall Hooked_SetObjAndPath(hta::ai::CinematicMover* self, void*, int32_t controlledObjId, const hta::CStr& flyPathName, float flyTime) {
-        if (!self) {
-            return;
+    REIMPL void __fastcall Hooked_SetObjAndPath(hta::ai::CinematicMover* self, void*, int32_t controlledObjId, const CStr& cinematicPathName, float totalTime)
+    {
+        if (self->m_currentFlyPath != nullptr)
+        {
+            m3d::CameraPathState* myFirst = self->m_currentFlyPath->m_cameraPathStates._Myfirst;
+            if (myFirst != nullptr) {
+                m3d::Kernel::Instance()->g_mar.FreeMem(myFirst, 0, 0);
+            }
+
+            self->m_currentFlyPath->m_cameraPathStates._Myfirst = nullptr;
+            self->m_currentFlyPath->m_cameraPathStates._Mylast = nullptr;
+            self->m_currentFlyPath->m_cameraPathStates._Myend = nullptr;
+
+            m3d::Kernel::Instance()->g_mar.FreeMem(self->m_currentFlyPath, 0, 0);
+            self->m_currentFlyPath = nullptr;
         }
 
-        ReleaseCurrentFlyPath(self);
+        const hta::ai::CServer* server = hta::ai::CServer::Instance();
 
-        hta::ai::PhysicObj* oldControlledObj = self->_GetControlledObj();
-        if (oldControlledObj) {
-            DetachControlledObj(self, oldControlledObj);
-        }
-
-        self->m_controlledObjId = controlledObjId;
-        self->m_flyPathName = flyPathName;
-        self->m_currentFlyTime = 0.0f;
-
-        MeridianState& state = GetState(self);
-        state.movingMode = 0;
-
-        hta::ai::PhysicObj* controlledObj = self->_GetControlledObj();
-        if (!controlledObj) {
-            return;
-        }
-
-        const int32_t oldMoverId = PhysicObj_GetCinematicMoverId(controlledObj);
-        if (oldMoverId >= 0) {
-            const hta::ai::CServer* server = hta::ai::CServer::Instance();
-            if (server && server->m_pObjects) {
-                hta::ai::Obj* oldMoverObj = server->m_pObjects->GetEntityByObjId(oldMoverId);
-                if (oldMoverObj && oldMoverObj->GetClass()->IsKindOf(hta::ai::CinematicMover::GetBaseClass())) {
-                    auto* oldMover = static_cast<hta::ai::CinematicMover*>(oldMoverObj);
-                    DetachControlledObj(oldMover, controlledObj);
-                }
+        if (self->m_controlledObjId >= 0)
+        {
+            ai::Obj* oldObj = server->m_pObjects->GetEntityByObjId(self->m_controlledObjId);
+            if (oldObj != nullptr) {
+                _DetachControlledObj(self);
             }
         }
 
-        state.movingMode = PhysicObj_IsPhysicsEnabled(controlledObj) ? 1 : 0;
-        CinematicMover_AttachControlledObj(self, controlledObj);
-        PhysicObj_SetCinematicMoverId(controlledObj, self->m_objId);
+        self->m_currentFlyTime = 0.0f;
+        self->m_controlledObjId = controlledObjId;
+        self->m_flyPathName = cinematicPathName;
 
-        hta::m3d::Cinematic* cinematic = GetCinematic();
-        if (!cinematic || self->m_flyPathName.empty()) {
-            return;
+        if (self->m_controlledObjId >= 0) {
+            ai::PhysicObj* controlledObj = (ai::PhysicObj*)server->m_pObjects->GetEntityByObjId(self->m_controlledObjId);
+
+            if (controlledObj != nullptr)
+            {
+                int existingMoverId = PhysicObj_GetCinematicMoverId(controlledObj);
+                if (existingMoverId >= 0)
+                {
+                    ai::CinematicMover* existingMover = (ai::CinematicMover*)server->m_pObjects->GetEntityByObjId(existingMoverId);
+                    if (existingMover != nullptr) {
+                        _DetachControlledObj(existingMover);
+                    }
+                }
+
+                MeridianState& state = GetState(self);
+                state.movingMode = PhysicObj_IsPhysicsEnabled(controlledObj);
+                CinematicMover_AttachControlledObj(self);
+                PhysicObj_SetCinematicMoverId(controlledObj, self->m_objId);
+
+                m3d::Cinematic* cinematic = GetCinematic();
+                cinematic->Load("camera_paths.xml");
+
+                self->m_currentFlyPath = (m3d::CameraPath*)m3d::Kernel::Instance()->g_mar.AllocMem(sizeof(m3d::CameraPath), 0, 0);
+
+                if (self->m_currentFlyPath != nullptr)
+                {
+                    const m3d::CameraPath& pathByName = cinematic->GetPathByName(self->m_flyPathName);
+
+                    auto* currentPath = static_cast<hta::m3d::CameraPath*>(m3d::Kernel::Instance()->g_mar.AllocMem(static_cast<int32_t>(sizeof(hta::m3d::CameraPath)), nullptr, 0));
+                    if (!currentPath) {
+                        return;
+                    }
+
+                    auto* copyCtor = reinterpret_cast<void(__thiscall*)(hta::m3d::CameraPath*, const hta::m3d::CameraPath&)>(0x0062A220);
+                    copyCtor(currentPath, pathByName);
+                    self->m_currentFlyPath = currentPath;
+
+                    self->m_currentFlyPath->m_fullLength = pathByName.m_fullLength;
+                    self->m_currentFlyPath->m_fullTime = pathByName.m_fullTime;
+
+                    m3d::CameraPathState initialState;
+                    initialState.m_point = controlledObj->GetPosition();
+                    initialState.m_rotation = controlledObj->GetRotation();
+                    initialState.m_zoom = 1.0f;
+                    initialState.m_speed = 1.0f;
+
+                    self->m_currentFlyPath->insert(0, initialState);
+
+                    self->m_currentFlyPath->m_fullTime = totalTime;
+                    self->m_currentFlyPath->CalcFlyTimes(1, 1);
+                }
+            }
         }
-
-        cinematic->Load("camera_paths.xml");
-        const hta::m3d::CameraPath& sourcePath = cinematic->GetPathByName(self->m_flyPathName);
-
-        hta::m3d::Kernel* kernel = hta::m3d::Kernel::Instance();
-        if (!kernel || !kernel->m_memMan) {
-            return;
-        }
-
-        auto* currentPath = static_cast<hta::m3d::CameraPath*>(kernel->m_memMan->Malloc(static_cast<int32_t>(sizeof(hta::m3d::CameraPath)), nullptr, 0));
-        if (!currentPath) {
-            return;
-        }
-
-        auto* copyCtor = reinterpret_cast<void(__thiscall*)(hta::m3d::CameraPath*, const hta::m3d::CameraPath&)>(0x0062A220);
-        copyCtor(currentPath, sourcePath);
-        self->m_currentFlyPath = currentPath;
-
-        hta::m3d::CameraPathState initialState(controlledObj->GetPosition(), controlledObj->GetRotation(), 0.0f, 0.0f, 0.0f);
-        currentPath->insert(0, initialState);
-        currentPath->SetFullTime(flyTime);
-        currentPath->CalcFlyTimes(1, true);
     }
 
     void Apply() {
