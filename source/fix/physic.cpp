@@ -467,7 +467,7 @@ namespace kraken::fix::physic {
     };
 
     float last = 0;
-    float step = 1 / 120;
+    float step = 1.0f / 120.0f;
 
     void __fastcall dInternalStepIsland_x2(dxWorld* world, dxBody*const* body, int nb, dxJoint*const* _joint, int nj, float stepsize) {
         last += stepsize;
@@ -479,7 +479,7 @@ namespace kraken::fix::physic {
         float stepsize1 = 1.0f / stepsize;
 
         for (i = 0; i < nb; i++) {
-            kraken::fix::cinematicmover::OnBodyBeforeStep(static_cast<void*>(body[i]));
+            kraken::fix::cinematicmover::OnBodyBeforeStep(static_cast<void*>(body[i]), stepsize);
             body[i]->tag = i;
         }
 

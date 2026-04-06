@@ -88,18 +88,8 @@ namespace kraken::fix::cinematicmover {
             bool oldObjectGravityMode = false;
         };
 
-        static void SetCorrectPosToControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj);
+        static void SetCorrectPosToControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj, float stepTime);
         static void __fastcall ControlledObjBeforeStepCallback(dxBody* body);
-
-        static float GetPhysicsStepTime() {
-            const auto* globalProps = hta::ai::GlobalProperties::Instance();
-            if (!globalProps) {
-                return 1.0f / 60.0f;
-            }
-
-            const float dt = globalProps->m_physicStepTime;
-            return (dt > 0.0f && dt < 1.0f) ? dt : (1.0f / 60.0f);
-        }
 
         using PhysicObjVoidIntFn = void(__thiscall*)(hta::ai::PhysicObj*, int32_t);
         using PhysicObjGetIntConstFn = int32_t(__thiscall*)(const hta::ai::PhysicObj*);
@@ -107,6 +97,7 @@ namespace kraken::fix::cinematicmover {
         static std::unordered_map<const hta::ai::PhysicObj*, int32_t> g_cinematicMoverIds;
         static std::unordered_map<const dxBody*, void*> g_beforeStepCallbacks;
         static std::unordered_map<const dxBody*, void*> g_savedBeforeStepCallbacks;
+        static float g_beforeStepDeltaTime = 1.0f / 120.0f;
 
         static bool PhysicObj_IsCinematic(const hta::ai::PhysicObj* obj) {
             if (!obj) {
@@ -374,8 +365,6 @@ namespace kraken::fix::cinematicmover {
         }
 
         static void __fastcall ControlledObjBeforeStepCallback(dxBody* body) {
-            static uint32_t callbackHitCounter = 0;
-
             auto* controlledObj = static_cast<hta::ai::PhysicObj*>(dBody_GetData(body));
             if (!controlledObj) {
                 return;
@@ -399,8 +388,8 @@ namespace kraken::fix::cinematicmover {
             auto* mover = static_cast<hta::ai::CinematicMover*>(obj);
             (void)GetState(mover);
 
-            const float callbackStep = GetPhysicsStepTime();
-            SetCorrectPosToControlledObj(mover, controlledObj);
+            const float callbackStep = g_beforeStepDeltaTime;
+            SetCorrectPosToControlledObj(mover, controlledObj, callbackStep);
             mover->m_currentFlyTime += callbackStep;
 
             if (mover->m_currentFlyPath && mover->m_currentFlyTime >= mover->m_currentFlyPath->GetFullTime()) {
@@ -424,7 +413,7 @@ namespace kraken::fix::cinematicmover {
             }
         }
 
-        REIMPL static void SetCorrectPosToControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj) {
+        REIMPL static void SetCorrectPosToControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj, float stepTime) {
             hta::CVector pos = controlledObj->GetPosition();
             hta::Quaternion rot = controlledObj->GetRotation();
             float zoom;
@@ -437,8 +426,8 @@ namespace kraken::fix::cinematicmover {
             CVector linearVel(0.0f, 0.0f, 0.0f);
             CVector angularVel(0.0f, 0.0f, 0.0f);
 
-            const float dt = 0.01f;
-            const float invDt = 100.0f;
+            const float dt = (stepTime > 0.0f && stepTime < 1.0f) ? stepTime : 0.01f;
+            const float invDt = 1.0f / dt;
 
             if (self->m_currentFlyTime > dt) {
                 CVector oldPos = pos;
@@ -464,9 +453,13 @@ namespace kraken::fix::cinematicmover {
         }
     }
 
-    void OnBodyBeforeStep(void* body) {
+    void OnBodyBeforeStep(void* body, float stepTime) {
         if (!body) {
             return;
+        }
+
+        if (stepTime > 0.0f && stepTime < 1.0f) {
+            g_beforeStepDeltaTime = stepTime;
         }
 
         dxBody* typedBody = static_cast<dxBody*>(body);
@@ -667,7 +660,7 @@ namespace kraken::fix::cinematicmover {
         if (state.movingMode == 0) {
             hta::ai::PhysicObj* controlledObj = self->_GetControlledObj();
             if (controlledObj && self->m_currentFlyPath) {
-                SetCorrectPosToControlledObj(self, controlledObj);
+                SetCorrectPosToControlledObj(self, controlledObj, elapsedTime);
 
                 self->m_currentFlyTime += elapsedTime;
             }
