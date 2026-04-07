@@ -15,6 +15,7 @@
 #include "hta/ai/CServer.hpp"
 #include "hta/ai/CinematicMover.hpp"
 #include "hta/ai/ObjContainer.hpp"
+#include "hta/ai/PhysicBody.hpp"
 #include "hta/ai/PhysicObj.hpp"
 #include "hta/ai/GlobalProperties.hpp"
 #include "hta/m3d/Application.hpp"
@@ -90,6 +91,7 @@ namespace kraken::fix::cinematicmover {
 
         static void SetCorrectPosToControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj, float stepTime);
         static void __fastcall ControlledObjBeforeStepCallback(dxBody* body);
+        static int32_t __fastcall Hooked_CollidePOAndWater(hta::m3d::Object* obj1, hta::m3d::Object* obj2, dContact* contacts, uint32_t& numContacts, bool reverse);
 
         using PhysicObjVoidIntFn = void(__thiscall*)(hta::ai::PhysicObj*, int32_t);
         using PhysicObjGetIntConstFn = int32_t(__thiscall*)(const hta::ai::PhysicObj*);
@@ -98,6 +100,14 @@ namespace kraken::fix::cinematicmover {
         static std::unordered_map<const dxBody*, void*> g_beforeStepCallbacks;
         static std::unordered_map<const dxBody*, void*> g_savedBeforeStepCallbacks;
         static float g_beforeStepDeltaTime = 1.0f / 120.0f;
+
+        CUSTOM static bool CanCreateCollisionEffect2(const hta::ai::PhysicObj* obj) {
+            if (!obj) {
+                return false;
+            }
+
+            return obj->m_timeFromLastCollisionEffect > 0.1f;
+        }
 
         static bool PhysicObj_IsCinematic(const hta::ai::PhysicObj* obj) {
             if (!obj) {
@@ -157,7 +167,12 @@ namespace kraken::fix::cinematicmover {
                 return;
             }
 
-            reinterpret_cast<void(__fastcall*)(dxBody*, bool)>(0x007C4BF0)(rawBody, value);
+            constexpr uint32_t gravityDisabledMask = 1u << 3;
+            if (value) {
+                rawBody->flags &= ~static_cast<int32_t>(gravityDisabledMask);
+            } else {
+                rawBody->flags |= static_cast<int32_t>(gravityDisabledMask);
+            }
         }
 
         static void PhysicObj_SetCinematicMoverId(hta::ai::PhysicObj* obj, int32_t value) {
@@ -413,6 +428,49 @@ namespace kraken::fix::cinematicmover {
             }
         }
 
+        static int32_t __fastcall Hooked_CollidePOAndWater(hta::m3d::Object* obj1, hta::m3d::Object* obj2, dContact* contacts, uint32_t& numContacts, bool reverse) {
+            (void)numContacts;
+            (void)reverse;
+
+            if (!obj1 || !obj2 || !contacts) {
+                return 0;
+            }
+
+            hta::ai::PhysicObj* physicObj = nullptr;
+            if (obj1->GetClass() && obj1->GetClass()->IsKindOf(hta::ai::PhysicObj::GetBaseClass())) {
+                physicObj = static_cast<hta::ai::PhysicObj*>(obj1);
+            } else if (obj2->GetClass() && obj2->GetClass()->IsKindOf(hta::ai::PhysicObj::GetBaseClass())) {
+                physicObj = static_cast<hta::ai::PhysicObj*>(obj2);
+            }
+
+            if (!physicObj) {
+                return 0;
+            }
+
+            const CVector velocity = physicObj->GetLinearVelocity();
+            constexpr float kMinSplashSpeed = 1.0f;
+            if (velocity.LengthSquare() < kMinSplashSpeed * kMinSplashSpeed) {
+                return 0;
+            }
+
+            if (!CanCreateCollisionEffect2(physicObj)) {
+                return 0;
+            }
+
+            const CVector contactPos(
+                static_cast<float>(contacts->geom.pos[0]),
+                static_cast<float>(contacts->geom.pos[1]),
+                static_cast<float>(contacts->geom.pos[2]));
+
+            Quaternion splashRotation;
+            splashRotation.Identity();
+            const CStr splashName("ET_PS_SPLINTER_WATERSPLASH");
+            hta::ai::PhysicBody::CreateEffectNode(splashName, contactPos, splashRotation, true, 1.0f);
+            physicObj->SetCollisionEffectCreated();
+
+            return 0;
+        }
+
         REIMPL static void SetCorrectPosToControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj, float stepTime) {
             hta::CVector pos = controlledObj->GetPosition();
             hta::Quaternion rot = controlledObj->GetRotation();
@@ -666,6 +724,10 @@ namespace kraken::fix::cinematicmover {
             }
         }
 
+        if (hta::ai::PhysicObj* controlledObj = self->_GetControlledObj()) {
+            controlledObj->m_timeFromLastCollisionEffect += elapsedTime;
+        }
+
         if (!self->m_currentFlyPath || self->m_currentFlyTime >= self->m_currentFlyPath->GetFullTime()) {
             self->Remove();
         }
@@ -765,6 +827,7 @@ namespace kraken::fix::cinematicmover {
         kraken::routines::Redirect(230, (void*)0x007FA670, (void*)&Hooked_Update);
         kraken::routines::Redirect(306, (void*)0x007FA760, (void*)&Hooked_LoadRuntimeValues);
         kraken::routines::Redirect(833, (void*)0x007FA950, (void*)&Hooked_SetObjAndPath);
+        kraken::routines::Redirect(0xC0, (void*)0x00890DD0, (void*)&Hooked_CollidePOAndWater);
 
         LOG_INFO("CinematicMover Meridian port applied");
     }
