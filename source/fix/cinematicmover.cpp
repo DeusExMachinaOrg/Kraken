@@ -25,6 +25,7 @@
 #include "hta/m3d/CameraPathState.hpp"
 #include "hta/m3d/Kernel.hpp"
 #include "hta/m3d/cmn/XmlFile.hpp"
+#include "hta/ref_ptr.hpp"
 
     struct dObject {
         dxWorld*  world;
@@ -606,7 +607,7 @@ namespace kraken::fix::cinematicmover {
         return false;
     }
 
-    REIMPL void Hooked_LoadRuntimeValues(hta::ai::CinematicMover* self, void*, m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* xmlNode)
+    REIMPL void __fastcall Hooked_LoadRuntimeValues(hta::ai::CinematicMover* self, void*, m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* xmlNode)
     {
         self->Obj::LoadRuntimeValues(xmlFile, xmlNode);
 
