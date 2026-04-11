@@ -467,7 +467,7 @@ namespace kraken::fix::physic {
     };
 
     float last = 0;
-    float step = 1.0f / 120.0f;
+    float step = 1 / 120;
 
     void __fastcall dInternalStepIsland_x2(dxWorld* world, dxBody*const* body, int nb, dxJoint*const* _joint, int nj, float stepsize) {
         last += stepsize;
