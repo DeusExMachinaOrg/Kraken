@@ -567,11 +567,6 @@ namespace kraken::fix::cinematicmover {
 
         *v = tempStr;
 
-        if (tempStr.m_charPtr != tempStr.ZERO)
-        {
-            m3d::Kernel::Instance()->g_mar.FreeMem(tempStr.m_charPtr, 0, 0);
-        }
-
         return 1;
     }
 
@@ -642,13 +637,7 @@ namespace kraken::fix::cinematicmover {
         SafeBoolAttrib(&state.oldObjectCinematicMode, xmlNode, "OldObjectCinematicMode");
         SafeBoolAttrib(&state.oldObjectGravityMode, xmlNode, "OldObjectGravityMode");
 
-        m3d::cmn::XmlNode* childNode = xmlFile->CreateNode(m3d::cmn::XML_NODE_EMPTY, 0);
-
-        if (childNode) {
-            childNode->IncRef();
-        } else {
-            m3d::Kernel::Instance()->SysError("0 != m_ptr", "e:\\cruisecontrol\\work\\checkout\\truxx15\\trunk\\core\\ref_ptr.h");
-        }
+        ref_ptr<m3d::cmn::XmlNode> childNode = xmlFile->CreateNode(m3d::cmn::XML_NODE_EMPTY, 0);
 
         xmlNode->GetFirstChild(childNode, "CurrentFlyPath");
 
@@ -672,8 +661,6 @@ namespace kraken::fix::cinematicmover {
         }
 
         CinematicMover_AttachControlledObj(self);
-
-        childNode->DecRef();
     }
 
     REIMPL void __fastcall Hooked_SaveRuntimeValues(const ai::CinematicMover* self, void*, m3d::cmn::XmlFile* xmlFile, m3d::cmn::XmlNode* xmlNode)

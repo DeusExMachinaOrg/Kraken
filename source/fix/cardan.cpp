@@ -236,7 +236,7 @@ namespace kraken::fix::cardan {
     void AddSurfaceVelocity(hta::ai::Vehicle* vehicle, hta::ai::PhysicObj* surface)
     {
         hta::CVector velocity = surface->GetLinearVelocity();
-        if (velocity.Length() > 0) {
+        if (velocity.Length() > 0.1f) {
             surfaceVelocities[vehicle] += velocity;
             surfaceWheelsTouchingCount[vehicle] += 1;
         }
