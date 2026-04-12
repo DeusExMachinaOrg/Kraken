@@ -504,8 +504,12 @@ namespace kraken::fix::cinematicmover {
                 angularVel = CVector::Cross(dirOld, dirCurrent) * invDt;
             }
 
-            controlledObj->SetLinearVelocity(linearVel);
-            controlledObj->SetAngularVelocity(angularVel);
+            MeridianState& state = GetState(self);
+
+            if (state.movingMode == 1) {
+                controlledObj->SetLinearVelocity(linearVel);
+                controlledObj->SetAngularVelocity(angularVel);
+            }
         }
     }
 
