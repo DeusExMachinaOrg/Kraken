@@ -11,14 +11,15 @@ namespace kraken::configstructs {
         REFUEL
     };
     struct WareUnits {
-        WareUnits(float units, float armor, const std::string& ware, WareType type)
-            : Units(units), Armor(armor), Ware(ware), Type(type)
+        WareUnits(float units, float armor, const std::string& ware, WareType type, const std::string& sound)
+            : Units(units), Armor(armor), Ware(ware), Type(type), Sound(sound)
         {
         }
         float Units;
         float Armor;
         std::string Ware;
         WareType Type;
+        std::string Sound;
     };
 };
 

@@ -3,6 +3,8 @@
 #include <assert.h>
 #include <string>
 
+#define LOGGER "config"
+
 using kraken::logger::eLogDebug;
 using kraken::logger::eLogPanic;
 
@@ -57,6 +59,8 @@ namespace kraken {
         this->common_gadgets_max_schwarz_part   = { "schwarz",   "common_gadgets_max_schwarz_part", 0.0,   true,  0.0,   10.0        };
         this->wares_max_schwarz_part            = { "schwarz",    "wares_max_schwarz_part",         0.0,   true,  0.0,   10.0        };
         Config::INSTANCE = this;
+
+        logger::Init();
 
         this->Load();
         this->Dump();
@@ -255,9 +259,14 @@ namespace kraken {
                         continue;
                     std::string ware = buffer;
 
+                    GetPrivateProfileStringA(key, "Sound", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    std::string sound = buffer;
+
                     configstructs::WareType type = (strcmp(prefix, configstructs::REPAIR) == 0) ? configstructs::WareType::REPAIR : configstructs::WareType::REFUEL;
 
-                    value->value.emplace_back(units, armor, ware, type);
+                    LOG_INFO("Loaded ware unit: Type=%s, Units=%.03f, Armor=%.03f, Ware=%s, Sound=%s", (type == configstructs::WareType::REPAIR) ? "REPAIR" : "REFUEL", units, armor, ware.c_str(), sound.c_str());
+
+                    value->value.emplace_back(units, armor, ware, type, sound);
                 }
             }
         }
@@ -331,6 +340,9 @@ namespace kraken {
 
                 // Ware
                 WritePrivateProfileStringA(key, "Ware", wareUnit.Ware.c_str(), CONFIG_PATH);
+
+                // Sound
+                WritePrivateProfileStringA(key, "Sound", wareUnit.Sound.c_str(), CONFIG_PATH);
             }
         }
         else {

@@ -14,6 +14,7 @@
 #include "hta/m3d/GameImpulse.hpp"
 #include "hta/m3d/ui/DragDropItemsWnd.hpp"
 #include "hta/m3d/ui/GarageWnd.hpp"
+#include "hta/m3d/ui/GfxServer.hpp"
 
 namespace kraken::fix::wareuse {
     static std::vector<configstructs::WareUnits> RepairWares;
@@ -116,7 +117,11 @@ namespace kraken::fix::wareuse {
     bool TryRepair(hta::ai::Vehicle* playerVehicle, hta::CStr& name) {
         for (auto wu : RepairWares) {
             if (name == wu.Ware.c_str()) {
-                return SmartRepair(wu.Units, wu.Armor);
+                bool result = SmartRepair(wu.Units, wu.Armor);
+
+                if (result)
+                    hta::m3d::ui::GfxServer::Instance()->PlayControlSound(wu.Sound.c_str(), 0);
+                return result;
             }
         }
 
@@ -139,6 +144,8 @@ namespace kraken::fix::wareuse {
                 }
 
                 Refuel(nullptr, amount);
+                if (!wu.Sound.empty())
+                    hta::m3d::ui::GfxServer::Instance()->PlayControlSound(wu.Sound.c_str(), 0);
                 return true;
             }
         }
