@@ -39,6 +39,7 @@ add_library(kraken SHARED
     source/fix/mortarvolleylauncherfix.cpp
     source/fix/gunlights.cpp
     source/fix/cinematicmover.cpp
+    source/fix/watercollidefix.cpp
 
     source/ext/logger.cpp
     source/ext/impulse.cpp

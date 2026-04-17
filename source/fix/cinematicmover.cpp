@@ -1,8 +1,5 @@
 #define LOGGER "cinematicmover"
 
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <unordered_map>
 
 #include "fix/cinematicmover.hpp"
@@ -15,9 +12,7 @@
 #include "hta/ai/CServer.hpp"
 #include "hta/ai/CinematicMover.hpp"
 #include "hta/ai/ObjContainer.hpp"
-#include "hta/ai/PhysicBody.hpp"
 #include "hta/ai/PhysicObj.hpp"
-#include "hta/ai/GlobalProperties.hpp"
 #include "hta/m3d/Application.hpp"
 #include "hta/m3d/Cinematic.hpp"
 #include "hta/m3d/Class.hpp"
@@ -27,90 +22,29 @@
 #include "hta/m3d/cmn/XmlFile.hpp"
 #include "hta/ref_ptr.hpp"
 
-    struct dObject {
-        dxWorld*  world;
-        dObject*  next;
-        dObject** tome;
-        void*     userdata;
-        int32_t   tag;
-    };
-
-    struct dxGeom {};
-
-    struct dxAutoDisable {
-        float linear_threshold;
-        float angular_threshold;
-        float idle_time;
-        int   idle_steps;
-    };
-
-    struct dxDamping {
-        float m_linearDamping;
-        float m_angularDamping;
-    };
-
-    enum MovingMode : __int32
-    {
-        MOVE_IN_UPDATE         = 0x0,
-        MOVE_BEFORE_PHYSICSTEP = 0x1,
-    };
-
-    const hta::CVector ZeroVector(0.0f, 0.0f, 0.0f);
-
-    struct dxBody: dObject {
-        dxJointNode*  firstjoint;
-        int32_t       flags;
-        dxGeom*       geom;
-        dMass         mass;
-        float         invI[12];
-        float         invMass;
-        float         pos[4];
-        float         q[4];
-        float         R[12];
-        float         lvel[4];
-        float         avel[4];
-        float         facc[4];
-        float         tacc[4];
-        float         finite_rot_axis[4];
-        dxAutoDisable adis;
-        dxDamping     m_damping;
-        float         adis_timeleft;
-        int           adis_stepsleft;
-        void (__fastcall* m_movedCallback)(dxBody *);
-        void (__fastcall* m_changeEnabledStateCallback)(dxBody *);
-    };
-
 using namespace hta;
 
 namespace kraken::fix::cinematicmover {
     namespace {
+        struct MeridianState;
+
+        static std::unordered_map<const hta::ai::PhysicObj*, int32_t>            g_cinematicMoverIds;
+        static std::unordered_map<const dxBody*, void*>                          g_beforeStepCallbacks;
+        static std::unordered_map<const dxBody*, void*>                          g_savedBeforeStepCallbacks;
+        static std::unordered_map<const hta::ai::CinematicMover*, MeridianState> g_states;
+
         struct MeridianState {
-            int32_t movingMode = 0;
+            int32_t movingMode = MOVE_IN_UPDATE;
             bool oldObjectCinematicMode = false;
             bool oldObjectGravityMode = false;
         };
 
         static void CinematicMover_SetCorrectPosToControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj, float stepTime);
         static void __fastcall ControlledObjBeforeStepCallback(dxBody* body);
-        static int32_t __fastcall CollidePOAndWater(hta::m3d::Object* obj1, hta::m3d::Object* obj2, dContact* contacts, uint32_t& numContacts, bool reverse);
 
-        using PhysicObjVoidIntFn = void(__thiscall*)(hta::ai::PhysicObj*, int32_t);
-        using PhysicObjGetIntConstFn = int32_t(__thiscall*)(const hta::ai::PhysicObj*);
-
-        static std::unordered_map<const hta::ai::PhysicObj*, int32_t> g_cinematicMoverIds;
-        static std::unordered_map<const dxBody*, void*> g_beforeStepCallbacks;
-        static std::unordered_map<const dxBody*, void*> g_savedBeforeStepCallbacks;
         static float g_beforeStepDeltaTime = 1.0f / 120.0f;
 
-        CUSTOM static bool CanCreateCollisionEffect2(const hta::ai::PhysicObj* obj) {
-            if (!obj) {
-                return false;
-            }
-
-            return obj->m_timeFromLastCollisionEffect > 0.1f;
-        }
-
-        static bool PhysicObj_IsCinematic(const hta::ai::PhysicObj* obj) {
+        REIMPL static bool PhysicObj_IsCinematic(const hta::ai::PhysicObj* obj) {
             if (!obj) {
                 return false;
             }
@@ -124,7 +58,7 @@ namespace kraken::fix::cinematicmover {
             return ((static_cast<uint32_t>(body->flags) >> 15) & 1u) != 0;
         }
 
-        static void PhysicObj_SetCinematic(hta::ai::PhysicObj* obj, bool value) {
+        REIMPL static void PhysicObj_SetCinematic(hta::ai::PhysicObj* obj, bool value) {
             if (!obj) {
                 return;
             }
@@ -142,7 +76,7 @@ namespace kraken::fix::cinematicmover {
             }
         }
 
-        static bool PhysicObj_GetGravityMode(const hta::ai::PhysicObj* obj) {
+        REIMPL static bool PhysicObj_GetGravityMode(const hta::ai::PhysicObj* obj) {
             if (!obj) {
                 return true;
             }
@@ -150,7 +84,7 @@ namespace kraken::fix::cinematicmover {
             return reinterpret_cast<bool(__fastcall*)(const dxBody*)>(0x007C4C00)(obj->GetBody()->_id) != 0;
         }
 
-        static bool PhysicObj_IsPhysicsEnabled(const hta::ai::PhysicObj* obj) {
+        REIMPL static bool PhysicObj_IsPhysicsEnabled(const hta::ai::PhysicObj* obj) {
             if (!obj) {
                 return false;
             }
@@ -158,7 +92,7 @@ namespace kraken::fix::cinematicmover {
             return reinterpret_cast<bool(__fastcall*)(const dxBody*)>(0x007C4BE0)(obj->GetBody()->_id) != 0;
         }
 
-        static void PhysicObj_SetGravityMode(hta::ai::PhysicObj* obj, bool value) {
+        REIMPL static void PhysicObj_SetGravityMode(hta::ai::PhysicObj* obj, bool value) {
             if (!obj) {
                 return;
             }
@@ -176,7 +110,7 @@ namespace kraken::fix::cinematicmover {
             }
         }
 
-        static void PhysicObj_SetCinematicMoverId(hta::ai::PhysicObj* obj, int32_t value) {
+        CUSTOM static void PhysicObj_SetCinematicMoverId(hta::ai::PhysicObj* obj, int32_t value) {
             if (!obj) {
                 return;
             }
@@ -189,7 +123,7 @@ namespace kraken::fix::cinematicmover {
             g_cinematicMoverIds[obj] = value;
         }
 
-        static int32_t PhysicObj_GetCinematicMoverId(const hta::ai::PhysicObj* obj) {
+        CUSTOM static int32_t PhysicObj_GetCinematicMoverId(const hta::ai::PhysicObj* obj) {
             if (!obj) {
                 return -1;
             }
@@ -198,11 +132,11 @@ namespace kraken::fix::cinematicmover {
             return it != g_cinematicMoverIds.end() ? it->second : -1;
         }
 
-        static void* dBody_GetData(dxBody* body) {
+        REIMPL static void* dBody_GetData(dxBody* body) {
             return body ? reinterpret_cast<void*(__fastcall*)(dxBody*)>(0x007C4580)(body) : nullptr;
         }
 
-        static void* dBody_GetBeforeStepCallback(dxBody* body) {
+        CUSTOM static void* dBody_GetBeforeStepCallback(dxBody* body) {
             if (!body) {
                 return nullptr;
             }
@@ -211,7 +145,7 @@ namespace kraken::fix::cinematicmover {
             return it != g_beforeStepCallbacks.end() ? it->second : nullptr;
         }
 
-        static void dBody_SetBeforeStepCallback(dxBody* body, void* callback) {
+        CUSTOM static void dBody_SetBeforeStepCallback(dxBody* body, void* callback) {
             if (!body) {
                 return;
             }
@@ -223,102 +157,17 @@ namespace kraken::fix::cinematicmover {
             }
         }
 
-        static std::unordered_map<const hta::ai::CinematicMover*, MeridianState> g_states;
-
-        static bool TryParseIntAttribute(const hta::m3d::cmn::XmlNode* node, const char* key, int32_t& outValue) {
-            if (!node || !key) {
-                return false;
-            }
-
-            const char* value = node->GetAttribute(key);
-            if (!value || !*value) {
-                return false;
-            }
-
-            char* endPtr = nullptr;
-            const long parsed = std::strtol(value, &endPtr, 10);
-            if (endPtr == value) {
-                return false;
-            }
-
-            outValue = static_cast<int32_t>(parsed);
-            return true;
-        }
-
-        static bool TryParseBoolAttribute(const hta::m3d::cmn::XmlNode* node, const char* key, bool& outValue) {
-            int32_t parsed = 0;
-            if (!TryParseIntAttribute(node, key, parsed)) {
-                return false;
-            }
-
-            outValue = parsed != 0;
-            return true;
-        }
-
-        static void WriteIntAttribute(hta::m3d::cmn::XmlNode* node, const char* key, int32_t value) {
-            if (!node || !key) {
-                return;
-            }
-
-            const hta::CStr text(value);
-            node->SetAttribute(key, text.c_str());
-        }
-
-        static void WriteBoolAttribute(hta::m3d::cmn::XmlNode* node, const char* key, bool value) {
-            WriteIntAttribute(node, key, value ? 1 : 0);
-        }
-
-        static MeridianState& GetState(const hta::ai::CinematicMover* self) {
+        CUSTOM static MeridianState& GetState(const hta::ai::CinematicMover* self) {
             return g_states[self];
         }
 
-        static hta::m3d::Cinematic* GetCinematic() {
+        CUSTOM static hta::m3d::Cinematic* GetCinematic() {
             hta::m3d::Application* application = hta::m3d::Application::Instance();
             if (!application) {
                 return nullptr;
             }
 
             return application->m_cinematic;
-        }
-
-        static void ReleaseCurrentFlyPath(hta::ai::CinematicMover* self) {
-            if (!self || !self->m_currentFlyPath) {
-                return;
-            }
-
-            self->m_currentFlyPath->clear();
-
-            self->m_currentFlyPath = nullptr;
-        }
-
-        static hta::m3d::CameraPath* EnsureCurrentFlyPath(hta::ai::CinematicMover* self) {
-            if (self->m_currentFlyPath) {
-                return self->m_currentFlyPath;
-            }
-
-            hta::m3d::Kernel* kernel = hta::m3d::Kernel::Instance();
-            if (!kernel || !kernel->m_memMan) {
-                return nullptr;
-            }
-
-            auto* path = static_cast<hta::m3d::CameraPath*>(kernel->m_memMan->Malloc(static_cast<int32_t>(sizeof(hta::m3d::CameraPath)), nullptr, 0));
-            if (!path) {
-                return nullptr;
-            }
-
-            auto* ctor = reinterpret_cast<void(__thiscall*)(hta::m3d::CameraPath*)>(0x00629E00);
-            ctor(path);
-            self->m_currentFlyPath = path;
-            return path;
-        }
-
-        static bool SamplePath(const hta::m3d::CameraPath* path, float time, hta::CVector& position, hta::Quaternion& rotation, float& zoom) {
-            if (!path || path->empty()) {
-                return false;
-            }
-
-            path->GetCameraForTime(time, position, rotation, zoom);
-            return true;
         }
 
         REIMPL void CinematicMover_AttachControlledObj(hta::ai::CinematicMover* self)
@@ -369,8 +218,8 @@ namespace kraken::fix::cinematicmover {
 
                         if (PhysicObj_IsCinematic(controlledObj))
                         {
-                            controlledObj->SetLinearVelocity(ZeroVector);
-                            controlledObj->SetAngularVelocity(ZeroVector);
+                            controlledObj->SetLinearVelocity(CVector());
+                            controlledObj->SetAngularVelocity(CVector());
                         }
 
                         PhysicObj_SetCinematic(controlledObj, state.oldObjectCinematicMode);
@@ -380,8 +229,8 @@ namespace kraken::fix::cinematicmover {
             }
         }
 
-        static void __fastcall ControlledObjBeforeStepCallback(dxBody* body) {
-            auto* controlledObj = static_cast<hta::ai::PhysicObj*>(dBody_GetData(body));
+        REIMPL static void __fastcall ControlledObjBeforeStepCallback(dxBody* body) {
+            hta::ai::PhysicObj* controlledObj = static_cast<hta::ai::PhysicObj*>(dBody_GetData(body));
             if (!controlledObj) {
                 return;
             }
@@ -401,16 +250,14 @@ namespace kraken::fix::cinematicmover {
                 return;
             }
 
-            auto* mover = static_cast<hta::ai::CinematicMover*>(obj);
-            (void)GetState(mover);
-
+            hta::ai::CinematicMover* mover = static_cast<hta::ai::CinematicMover*>(obj);
             const float callbackStep = g_beforeStepDeltaTime;
             CinematicMover_SetCorrectPosToControlledObj(mover, controlledObj, callbackStep);
             mover->m_currentFlyTime += callbackStep;
 
             if (mover->m_currentFlyPath && mover->m_currentFlyTime >= mover->m_currentFlyPath->GetFullTime()) {
                 PhysicObj_SetCinematicMoverId(controlledObj, -1);
-                PhysicObj_SetCinematic(controlledObj, false); // CUSTOM
+                PhysicObj_SetCinematic(controlledObj, false);
 
                 if (controlledObj->GetBody()) {
                     dxBody* rawBody = controlledObj->GetBody()->_id;
@@ -427,46 +274,6 @@ namespace kraken::fix::cinematicmover {
             if (oldBeforeStepCallback && oldBeforeStepCallback != reinterpret_cast<void*>(&ControlledObjBeforeStepCallback)) {
                 reinterpret_cast<void(__fastcall*)(dxBody*)>(const_cast<void*>(oldBeforeStepCallback))(body);
             }
-        }
-
-        static int32_t __fastcall CollidePOAndWater(hta::m3d::Object* obj1, hta::m3d::Object* obj2, dContact* contacts, uint32_t& numContacts, bool reverse) {
-            if (!obj1 || !obj2 || !contacts) {
-                return 0;
-            }
-
-            hta::ai::PhysicObj* physicObj = nullptr;
-            if (obj1->GetClass() && obj1->GetClass()->IsKindOf(hta::ai::PhysicObj::GetBaseClass())) {
-                physicObj = static_cast<hta::ai::PhysicObj*>(obj1);
-            } else if (obj2->GetClass() && obj2->GetClass()->IsKindOf(hta::ai::PhysicObj::GetBaseClass())) {
-                physicObj = static_cast<hta::ai::PhysicObj*>(obj2);
-            }
-
-            if (!physicObj) {
-                return 0;
-            }
-
-            const CVector velocity = physicObj->GetLinearVelocity();
-            constexpr float kMinSplashSpeed = 1.0f;
-            if (velocity.LengthSquare() < kMinSplashSpeed * kMinSplashSpeed) {
-                return 0;
-            }
-
-            if (!CanCreateCollisionEffect2(physicObj)) {
-                return 0;
-            }
-
-            const CVector contactPos(
-                static_cast<float>(contacts->geom.pos[0]),
-                static_cast<float>(contacts->geom.pos[1]),
-                static_cast<float>(contacts->geom.pos[2]));
-
-            Quaternion splashRotation;
-            splashRotation.Identity();
-            const CStr splashName("ET_PS_SPLINTER_WATERSPLASH");
-            hta::ai::PhysicBody::CreateEffectNode(splashName, contactPos, splashRotation, true, 1.0f);
-            physicObj->SetCollisionEffectCreated();
-
-            return 0;
         }
 
         CUSTOM static void CinematicMover_SetCorrectPosToControlledObj(hta::ai::CinematicMover* self, hta::ai::PhysicObj* controlledObj, float stepTime) {
@@ -506,7 +313,7 @@ namespace kraken::fix::cinematicmover {
 
             MeridianState& state = GetState(self);
 
-            if (state.movingMode == 1) {
+            if (state.movingMode == MovingMode::MOVE_BEFORE_PHYSICSTEP) {
                 controlledObj->SetLinearVelocity(linearVel);
                 controlledObj->SetAngularVelocity(angularVel);
             }
@@ -652,8 +459,7 @@ namespace kraken::fix::cinematicmover {
 
             if (self->m_currentFlyPath)
             {
-                auto* ctor = reinterpret_cast<void(__thiscall*)(m3d::CameraPath*)>(0x00629E00);
-                ctor(self->m_currentFlyPath);
+                ::new (self->m_currentFlyPath) m3d::CameraPath();
             }
 
             if (self->m_currentFlyPath) {
@@ -704,7 +510,7 @@ namespace kraken::fix::cinematicmover {
         self->Obj::Update(elapsedTime, workTime);
 
         MeridianState& state = GetState(self);
-        if (state.movingMode == 0) {
+        if (state.movingMode == MOVE_IN_UPDATE) {
             hta::ai::PhysicObj* controlledObj = self->_GetControlledObj();
             if (controlledObj && self->m_currentFlyPath) {
                 CinematicMover_SetCorrectPosToControlledObj(self, controlledObj, elapsedTime);
@@ -713,6 +519,7 @@ namespace kraken::fix::cinematicmover {
             }
         }
 
+        // CUSTOM
         // Ensure collision effects can be created for the controlled object by updating the timer.
         // NOTE: controlledObj is not updatable by itself
         if (hta::ai::PhysicObj* controlledObj = self->_GetControlledObj()) {
@@ -728,14 +535,7 @@ namespace kraken::fix::cinematicmover {
     {
         if (self->m_currentFlyPath != nullptr)
         {
-            m3d::CameraPathState* myFirst = self->m_currentFlyPath->m_cameraPathStates._Myfirst;
-            if (myFirst != nullptr) {
-                m3d::Kernel::Instance()->g_mar.FreeMem(myFirst, 0, 0);
-            }
-
-            self->m_currentFlyPath->m_cameraPathStates._Myfirst = nullptr;
-            self->m_currentFlyPath->m_cameraPathStates._Mylast = nullptr;
-            self->m_currentFlyPath->m_cameraPathStates._Myend = nullptr;
+            self->m_currentFlyPath->~CameraPath();
 
             m3d::Kernel::Instance()->g_mar.FreeMem(self->m_currentFlyPath, 0, 0);
             self->m_currentFlyPath = nullptr;
@@ -783,13 +583,12 @@ namespace kraken::fix::cinematicmover {
                 {
                     const m3d::CameraPath& pathByName = cinematic->GetPathByName(self->m_flyPathName);
 
-                    auto* currentPath = static_cast<hta::m3d::CameraPath*>(m3d::Kernel::Instance()->g_mar.AllocMem(static_cast<int32_t>(sizeof(hta::m3d::CameraPath)), nullptr, 0));
+                    m3d::CameraPath* currentPath = static_cast<hta::m3d::CameraPath*>(m3d::Kernel::Instance()->g_mar.AllocMem(static_cast<int32_t>(sizeof(hta::m3d::CameraPath)), nullptr, 0));
                     if (!currentPath) {
                         return;
                     }
 
-                    auto* copyCtor = reinterpret_cast<void(__thiscall*)(hta::m3d::CameraPath*, const hta::m3d::CameraPath&)>(0x0062A220);
-                    copyCtor(currentPath, pathByName);
+                    ::new (currentPath) m3d::CameraPath(pathByName);
                     self->m_currentFlyPath = currentPath;
 
                     self->m_currentFlyPath->m_fullLength = pathByName.m_fullLength;
@@ -812,14 +611,10 @@ namespace kraken::fix::cinematicmover {
 
     void Apply() {
         LOG_INFO("Feature enabled");
-
         kraken::routines::Redirect(34, (void*)0x00692880, (void*)&Obj_Remove);
         kraken::routines::Redirect(280, (void*)0x007FA4E0, (void*)&CinematicMover_SaveRuntimeValues);
         kraken::routines::Redirect(230, (void*)0x007FA670, (void*)&CinematicMover_Update);
         kraken::routines::Redirect(306, (void*)0x007FA760, (void*)&CinematicMover_LoadRuntimeValues);
         kraken::routines::Redirect(833, (void*)0x007FA950, (void*)&CinematicMover_SetObjAndPath);
-        kraken::routines::Redirect(0xC0, (void*)0x00890DD0, (void*)&CollidePOAndWater);
-
-        LOG_INFO("CinematicMover Meridian port applied");
     }
 }

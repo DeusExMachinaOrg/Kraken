@@ -3,6 +3,7 @@
 #include "ext/logger.hpp"
 #include "routines.hpp"
 #include "config.hpp"
+#include <new>
 
 #include "hta/CVector.hpp"
 #include "hta/ai/Vehicle.hpp"
@@ -19,11 +20,17 @@ namespace kraken::fix::cardan {
     static std::unordered_map<hta::ai::Vehicle*, hta::CVector> surfaceVelocities;
     static std::unordered_map<hta::ai::Vehicle*, int32_t> surfaceWheelsTouchingCount;
 
+    static bool cardan_fix_enabled = false;
+
     void SetChassisAnimationStopped(hta::ai::Vehicle* vehicle, bool stopped) {
         // ----------------------------------------------
         // Cardan fix
         // stopped = true -> stop chassis animation
         // ----------------------------------------------
+
+        if (!cardan_fix_enabled)
+            return;
+
         hta::ai::Chassis* chassis = vehicle->GetChassis();
         if (chassis) {
             hta::m3d::AnimInfo* info;
@@ -223,9 +230,7 @@ namespace kraken::fix::cardan {
     {
         hta::ai::Vehicle* vehicle = (hta::ai::Vehicle*)hta::m3d::Kernel::Instance()->g_mar.AllocMem(sizeof(hta::ai::Vehicle), nullptr, 0);
         if (vehicle) {
-            using VehicleCtor = void(__thiscall*)(hta::ai::Vehicle*, const hta::ai::VehiclePrototypeInfo&);
-            static auto ctor = reinterpret_cast<VehicleCtor>(0x005ED590);
-            ctor(vehicle, *self);
+            ::new (vehicle) hta::ai::Vehicle(*self);
 
             surfaceVelocities[vehicle] = hta::CVector();
             surfaceWheelsTouchingCount[vehicle] = 0;
@@ -287,10 +292,11 @@ namespace kraken::fix::cardan {
 
     void Apply()
     {
-        LOG_INFO("Feature enabled");
         const kraken::Config& config = kraken::Config::Instance();
-        if (config.cardan_fix.value == 0)
-            return;
+        if (config.cardan_fix.value == true) {
+            LOG_INFO("Feature enabled");
+            cardan_fix_enabled = true;
+        }
 
         kraken::routines::ChangeCall((void*) 0x005EC7AD, KeepThrottle);
         kraken::routines::Nop((void*)0x005ECCD3, 2);
