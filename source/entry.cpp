@@ -6,6 +6,7 @@
 
 #include "ext/logger.hpp"
 #include "ext/runtime.hpp"
+#include "ext/meta.hpp"
 #include "ext/impulse.hpp"
 
 #include "fix/fileserver.hpp"
@@ -62,6 +63,7 @@ namespace kraken {
 
         logger::Init();
         runtime::Init();
+        kraken::meta::Init();
         impulse::Init();
 
         LOG_INFO("Prepare patches");

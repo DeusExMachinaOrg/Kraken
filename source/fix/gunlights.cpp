@@ -14,7 +14,7 @@
 #include "hta/Enums.hpp"
 #include "hta/m3d/WeatherManager.hpp"
 #include "hta/m3d/SgAnimatedModelNode.hpp"
-
+#include "ext/ai/Appendix.hpp"//#include "fix/appendix.hpp"
 #include "routines.hpp"
 
 namespace kraken::fix::gunlights {
@@ -126,6 +126,10 @@ namespace kraken::fix::gunlights {
     {
         self->hta::ai::VehiclePart::_InternalCreateVisualPart();
         self->_CreateBarrelNode();
+
+        if (self->GetClass()->IsKindOf(&hta::ai::Appendix::m_classAppendix)) {
+            reinterpret_cast<hta::ai::Appendix*>(self)->BuildVisualPart();
+        }
 
         // HEADLIGHTS
         hta::m3d::Object* parent = self->GetParent();
