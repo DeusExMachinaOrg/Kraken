@@ -278,6 +278,81 @@ warning, не краш.)
 - получить шип-оружие на машину (магазин/автоген; CanBeUsedInAutogenerating=1).
 - `[thorncollide]` в `data/kraken.ini` допишется сам при первом запуске (дефолты Config).
 
+## 9. Шип в кабине + шип висит в воздухе после car(1) — РЕШЕНО
+
+Симптомы: thorn-модель рендерится внутри кабины (у gun mount'а); после команды
+`car(1)` этот шип остаётся висеть в воздухе.
+
+### Ground truth (m113, ExMachina15.exe + Game.pdb)
+
+В оригинале шип в кабине **невозможен по построению**: `Appendix::Appendix`
+(0x524CF0) ставит `PhysicBody::m_createModel = false` (+0x145). Этот флаг
+проверяют `PhysicBody::_ApplyCurrentModelName` (0x3FBC90, единственный создатель
+`m_Node`) и `Gun::_CreateBarrelNode` (0x460370) — у Appendix **никогда нет ни
+`m_Node`, ни `m_barrelNode`**, у его слота ничего не рендерится. Никаких
+SetVisible(false)/RemoveNode — просто не создаётся.
+
+Триггеры `ReconstructCallback` в m113 (всего 2 диспатч-сайта, слот 93/+0x174):
+`ComplexPhysicObj::_ConstructVehiclePart`+0xDC5 (0x43ed65) и
+**`VehiclePart::DefineSuppressedLPs`+0x2F5 (0x4512b5)** — последний зовётся из
+`_InternalCreateVisualPart` каждой части, `_OnDurabilityValueAfterChange`
+(смена модели по повреждению) и `BreakModel`. Единственный сайт
+`DeattachCallback` (слот 94) — `SetPartByName`, detach-ветка
+(complexphysicobj.cpp:904), пока part ещё owned.
+
+### Почему в HTA шип висел в воздухе
+
+1. `car(1)` — это **Lua-чит** (`cheats.lua` → `GiveVehicle` → `AddPlayerVehicle`
+   в debug.lua): старая машина уходит в TempTeam и **удаляется**
+   (`Team::Remove` → `Vehicle::Remove` → `ObjContainer::Purge` → scalar deleting
+   dtor). Прежний комментарий «car(1) вызывает SetInvisible» — неверен.
+2. Хуки D/E патчили vtable **абстрактного** `ComplexPhysicObj` (VA 0x99D928);
+   у `ai::Vehicle` свой vtable (RVA 0x593010), где SetVisible/SetInvisible — в
+   слотах **54/55** (и зовут базу напрямую `call 0x6bfb40/0x6bfbc0`). Патч не
+   срабатывал никогда — мёртвый код.
+3. Механизм «висящего» шипа: `~SgNode` (RVA 0x243e60) **переподвешивает живых
+   детей разрушаемого узла на orphan-holder графа, замораживает их в мировых
+   координатах и заново LinkNode'ит** — сирота продолжает рендериться.
+   Когда часть-носитель умирает (`~PhysicBody` → `RemoveNode(m_Node)`),
+   неубранный баррель/клоны застывали в воздухе.
+4. Источник кабинного шипа: порт не подавлял собственный визуал части —
+   `m_Node` (модель шипа у gun mount), `m_barrelNode`, плюс `gunlights.cpp`
+   (Redirect 0x6E4990) для Appendix звал `BuildVisualPart()`, клепая ещё ≥2
+   клона прямо на барреле (AppendixType=1 = Multi). ReconstructCallback убирал
+   только баррель.
+
+### Фикс (зеркалирование m113)
+
+1. **`Appendix::_InternalCreateVisualPart`**: эмуляция `m_createModel=false` —
+   если `GetOwner()` есть → `DestroyOwnVisual()` (снести m_barrelNode, затем
+   m_Node через `SceneGraph::RemoveNode`) и выход; без владельца (магазин/
+   инвентарь) — обычный `Gun::_InternalCreateVisualPart` (иконка-превью жива).
+   Инвариант дополнительно усиливается в начале каждого `ReconstructCallback`
+   (`DestroyOwnVisual` + `ClearAppendices` ДО early-return'ов).
+2. **`BuildVisualPart` + `m_cloneCountOverride` удалены** (вместе с вызовом из
+   gunlights.cpp и атрибутом AppendixCloneCount) — пред-спавн клонов на барреле
+   был источником кабинных шипов.
+3. **Хуки D/E (vtable-патч CPO) удалены**; hide/show теперь работает само:
+   клоны — дети `m_Node` других частей, `PhysicBody::SetInvisible/SetVisible`
+   отцепляет/возвращает всё поддерево.
+4. **Новый Hook D**: трамплин на `VehiclePart::DefineSuppressedLPs`
+   (VA 0x006D3AF0, пролог `83 EC 28 53 57`) → после оригинала respread владельца.
+   Это точная копия второго триггера m113: закрывает смену модели по урону /
+   BreakModel (иначе клоны-сироты застывали бы в воздухе до следующего respread).
+5. **Hook B (`SetPartByName`)**: до оригинала — поиск одноимённой части; если
+   это Appendix и его заменяют/снимают → `DeattachCallback()` (зеркало
+   единственного сайта m113). Иначе клоны снятого шипа (висящие на ЧУЖИХ частях)
+   не убрал бы никто. `DeattachCallback` также взводит `m_bMustCreateVisualPart`
+   (Obj+0x51), чтобы движок пересоздал «магазинный» визуал предмета.
+6. **Hook C (dtor)**: дополнительно чистит `g_vehicleThornForce` по указателю —
+   против наследования thornForce новой машиной на переиспользованном адресе.
+
+car(1) теперь: Hook C убирает LP-клоны до разрушения узлов частей; собственного
+визуала у установленного шипа нет вовсе → висеть нечему. Остаточный риск (как и
+раньше): переход между картами с шипом — `SetPassedToAnotherMapStatus` сносит
+узлы частей мимо наших хуков; сироты-клоны подберёт первый же respread на новой
+карте, но указатели в `m_appendices` в этом окне могут протухнуть (не наблюдалось).
+
 ## Как воспроизвести анализ
 ```powershell
 py -3 e:\KrakenWorkspace\scripts3\_probe.py find                 # типы Appendix в обеих PDB

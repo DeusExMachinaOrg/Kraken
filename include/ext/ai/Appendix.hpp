@@ -57,8 +57,8 @@ namespace hta {
             virtual void SaveRuntimeValues(m3d::cmn::XmlFile*, m3d::cmn::XmlNode*) const;
 
             void ClearAppendices();
+            void DestroyOwnVisual();
             void SetDependantCfg(m3d::SgNode* parentNode, m3d::AnimatedModel* mdl, m3d::SgNode* node, int lpId);
-            void BuildVisualPart();
             virtual void ReconstructCallback();
             virtual void DeattachCallback();
 
@@ -69,7 +69,6 @@ namespace hta {
             CStr m_lpName;
             float m_thornForce;
             int32_t m_appendixType;
-            int32_t m_cloneCountOverride;
             vc3::vector<m3d::SgNode*> m_appendices;
             vc3::vector<int> m_lpNums;
         };

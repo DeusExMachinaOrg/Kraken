@@ -131,7 +131,6 @@ namespace hta {
             m_appendixType = prototypeInfo ? prototypeInfo->m_appendixType : AppendixPrototypeInfo::AppendixType_Default;
             m_lpName = prototypeInfo ? prototypeInfo->m_lpName : "";
             m_thornForce = prototypeInfo ? prototypeInfo->m_thornForce : 1.0f;
-            m_cloneCountOverride = -1;
         }
 
         Appendix::Appendix(AppendixPrototypeInfo* prototypeInfo)
@@ -147,7 +146,6 @@ namespace hta {
                 m_lpName = "";
                 m_thornForce = 1.0f;
             }
-            m_cloneCountOverride = -1;
         }
 
         Appendix::~Appendix() {
@@ -166,7 +164,6 @@ namespace hta {
                     appendix->m_appendixType = m_appendixType;
                     appendix->m_lpName = m_lpName;
                     appendix->m_thornForce = m_thornForce;
-                    appendix->m_cloneCountOverride = m_cloneCountOverride;
                 }
             }
             return clonedObject;
@@ -205,40 +202,44 @@ namespace hta {
         }
 
         void Appendix::_InternalCreateVisualPart() {
-            // Gun::_InternalCreateVisualPart() = VehiclePart::_InternalCreateVisualPart()
-            // + Gun::_CreateBarrelNode(). The barrel node IS the thorn's visual; without
-            // it the icon thumbnail is blank and ReconstructCallback has nothing to clone
-            // onto the vehicle's load points. Meridian's Appendix does not override this
-            // method at all, inheriting Gun's behaviour — so call Gun's version here.
+            // Meridian never builds the appendix's own visual: Appendix::Appendix sets
+            // PhysicBody::m_createModel = false (m113 +0x145), which is honored by both
+            // _ApplyCurrentModelName (no m_Node) and Gun::_CreateBarrelNode (no barrel),
+            // so nothing ever renders at the thorn's own gun mount. HTA's PhysicBody
+            // predates that flag, so emulate it: while mounted, create nothing and
+            // destroy whatever an earlier code path left at the mount (the "thorn
+            // inside the cabin"). A detached appendix (shop/inventory) keeps Gun's
+            // visual so the garage thumbnail still renders.
+            if (GetOwner()) {
+                DestroyOwnVisual();
+                return;
+            }
             Gun::_InternalCreateVisualPart();
         }
 
-        void Appendix::BuildVisualPart() {
-            if (!m_barrelNode) {
-                return;
-            }
-
-            ClearAppendices();
-
-            const AppendixPrototypeInfo* proto = GetPrototypeInfo();
-            size_t cloneCount = proto && !proto->m_fireLpMatrices.empty() ? proto->m_fireLpMatrices.size() : 1u;
-            if (m_cloneCountOverride >= 0) {
-                cloneCount = static_cast<size_t>(m_cloneCountOverride);
-            }
-
-            if (m_appendixType == AppendixPrototypeInfo::AppendixType_Multi && cloneCount < 2u) {
-                cloneCount = 2u;
-            }
-
-            for (size_t index = 0; index < cloneCount; ++index) {
-                hta::m3d::Object* clonedObject = m_barrelNode->Clone();
-                if (!clonedObject) {
-                    continue;
+        void Appendix::DestroyOwnVisual() {
+            // Remove the barrel before m_Node: ~SgNode re-parents surviving children
+            // onto the scene graph's orphan holder, frozen at their world transform and
+            // re-linked into the render cells — that is exactly how thorns end up
+            // hanging in mid-air.
+            if (m_barrelNode) {
+                if (hta::m3d::SceneGraph* graph = m_barrelNode->GetGraph()) {
+                    graph->RemoveNode(m_barrelNode);
                 }
+                else if (hta::m3d::Object* parent = m_barrelNode->GetParent()) {
+                    parent->RemoveChild(m_barrelNode);
+                }
+                m_barrelNode = nullptr;
+            }
 
-                m_barrelNode->AddChild(clonedObject);
-                m_appendices.push_back(static_cast<hta::m3d::SgNode*>(clonedObject));
-                m_lpNums.push_back(-1);
+            if (m_Node) {
+                if (hta::m3d::SceneGraph* graph = m_Node->GetGraph()) {
+                    graph->RemoveNode(m_Node);
+                }
+                else if (hta::m3d::Object* parent = m_Node->GetParent()) {
+                    parent->RemoveChild(m_Node);
+                }
+                m_Node = nullptr;
             }
         }
 
@@ -259,10 +260,6 @@ namespace hta {
             if (const char* appendixType = xmlNode->GetAttribute("AppendixType")) {
                 m_appendixType = static_cast<int32_t>(std::atoi(appendixType));
             }
-
-            if (const char* cloneCount = xmlNode->GetAttribute("AppendixCloneCount")) {
-                m_cloneCountOverride = std::atoi(cloneCount);
-            }
         }
 
         void Appendix::SaveRuntimeValues(hta::m3d::cmn::XmlFile* xmlFile, hta::m3d::cmn::XmlNode* xmlNode) const {
@@ -280,9 +277,6 @@ namespace hta {
             xmlNode->SetAttribute("ThornForce", hta::CStr(thornForce).c_str());
             if (loadPoint && loadPoint[0] != '\0') {
                 xmlNode->SetAttribute("LoadPoint", loadPoint);
-            }
-            if (m_cloneCountOverride >= 0) {
-                xmlNode->SetAttribute("AppendixCloneCount", hta::CStr(m_cloneCountOverride).c_str());
             }
         }
 
@@ -361,10 +355,14 @@ namespace hta {
                 SetVehicleThornForce(static_cast<hta::ai::Vehicle*>(owner), m_thornForce);
             }
 
+            // While mounted the appendix must not have a visual of its own (see
+            // _InternalCreateVisualPart); enforce it on every respread to cover parts
+            // that built one before being mounted (shop purchase -> SetPartByName).
+            DestroyOwnVisual();
+            ClearAppendices();
+
             const bool hasLpName = m_lpName.m_charPtr && m_lpName.m_charPtr[0] != '\0';
             if (!hasLpName) return;
-
-            ClearAppendices();
 
             using CreateNodeFn = hta::m3d::SgNode*(__fastcall*)(hta::CStr*, void*, hta::CVector*, void*, bool);
             auto createNodeFn = reinterpret_cast<CreateNodeFn>(0x006173B0);
@@ -408,15 +406,6 @@ namespace hta {
                     m_lpNums.push_back(lpId);
                 }
             }
-
-            if (m_barrelNode) {
-                if (hta::m3d::SceneGraph* graph = m_barrelNode->GetGraph()) {
-                    graph->RemoveNode(m_barrelNode);
-                } else if (hta::m3d::Object* parent = m_barrelNode->GetParent()) {
-                    parent->RemoveChild(m_barrelNode);
-                }
-                m_barrelNode = nullptr;
-            }
         }
 
         void Appendix::DeattachCallback() {
@@ -427,6 +416,10 @@ namespace hta {
                 }
             }
             ClearAppendices();
+            // Re-arm the engine's "needs visual" gate (Obj+0x51): once detached the
+            // owner is gone, so the next CreateVisualPart takes the Gun path in
+            // _InternalCreateVisualPart and rebuilds the item's own model.
+            m_bMustCreateVisualPart = true;
         }
 
         m3d::Class Appendix::m_classAppendix {
@@ -517,6 +510,23 @@ namespace {
 
     void __fastcall SetPartByName_Hook(hta::ai::ComplexPhysicObj* self, void* edx,
                                        hta::CStr* partName, hta::ai::VehiclePart* part, bool bUnsafe) {
+        // Meridian's only DeattachCallback dispatch site is SetPartByName's detach
+        // path (m113 complexphysicobj.cpp:904), fired while the part is still owned
+        // and mounted. Mirror it here for an appendix being detached or replaced —
+        // its clones hang under OTHER parts' nodes, so the post-call respread alone
+        // would never reach a part that is no longer in m_vehicleParts.
+        if (partName) {
+            for (auto it = self->m_vehicleParts.begin(); it != self->m_vehicleParts.end(); ++it) {
+                if (!((*it).first == *partName)) continue;
+                hta::ai::VehiclePart* oldPart = (*it).second;
+                if (oldPart && oldPart != part && oldPart->GetClass() &&
+                    oldPart->GetClass()->IsKindOf(&hta::ai::Appendix::m_classAppendix)) {
+                    static_cast<hta::ai::Appendix*>(oldPart)->DeattachCallback();
+                }
+                break;
+            }
+        }
+
         using Fn = void(__fastcall*)(hta::ai::ComplexPhysicObj*, void*, hta::CStr*, hta::ai::VehiclePart*, bool);
         reinterpret_cast<Fn>(static_cast<void*>(s_setPartTrampoline))(self, edx, partName, part, bUnsafe);
         RespreadVehicleAppendices(self);
@@ -539,34 +549,34 @@ namespace {
                 static_cast<hta::ai::Appendix*>(part)->ClearAppendices();
             }
         }
+        // The thornForce side-map is keyed by Vehicle*; erase unconditionally so a
+        // later allocation reusing this address can't inherit the dead vehicle's
+        // thorn damage. (Erasing a key that was never inserted is a no-op.)
+        ClearVehicleThornForce(reinterpret_cast<hta::ai::Vehicle*>(self));
+
         using Fn = void(__fastcall*)(hta::ai::ComplexPhysicObj*, void*);
         reinterpret_cast<Fn>(static_cast<void*>(s_complexDtorTrampoline))(self, nullptr);
     }
 
-    // --- Hook D: ComplexPhysicObj::SetInvisible vtable patch (slot 51, vtable+0xCC) ---
-    // car(1) calls SetInvisible() on the old vehicle instead of deleting it, so Hook C
-    // never fires. LP_THORN ServerControlledNodes persist and render as floating spikes.
-    // vtable at VA 0x0099D928; slot 51 confirmed from vtable scan (VA 0x006BFBC0).
-    // Vtable patch: call original directly — no trampoline needed.
-    void __fastcall ComplexPhysicObjSetInvisible_Hook(hta::ai::ComplexPhysicObj* self, void* /*edx*/) {
-        for (auto it = self->m_vehicleParts.begin(); it != self->m_vehicleParts.end(); ++it) {
-            hta::ai::VehiclePart* part = (*it).second;
-            if (!part || !part->GetClass()) continue;
-            if (part->GetClass()->IsKindOf(&hta::ai::Appendix::m_classAppendix)) {
-                static_cast<hta::ai::Appendix*>(part)->ClearAppendices();
-            }
-        }
-        using Fn = void(__fastcall*)(hta::ai::ComplexPhysicObj*, void*);
-        reinterpret_cast<Fn>(0x006BFBC0)(self, nullptr);
-    }
+    // --- Hook D: VehiclePart::DefineSuppressedLPs trampoline (VA 0x006D3AF0) ---------
+    // Meridian's second ReconstructCallback broadcast site (m113 RVA 0x4512b5):
+    // DefineSuppressedLPs runs in every part's _InternalCreateVisualPart, in
+    // _OnDurabilityValueAfterChange (damage model swap) and in BreakModel, and m113
+    // re-broadcasts ReconstructCallback to all of the owner's parts right after it.
+    // The damage paths destroy the part's old node; without an immediate respread the
+    // thorn clones parented under it get orphaned by ~SgNode and freeze in mid-air.
+    // First 5 bytes: 83 EC 28 53 57 (sub esp,0x28; push ebx; push edi) — all
+    // position-independent, safe to copy into the trampoline stub.
+    static uint8_t s_defineSuppressedLPsTrampoline[16];
 
-    // --- Hook E: ComplexPhysicObj::SetVisible vtable patch (slot 50, vtable+0xC8) ----
-    // Restores LP_THORN nodes when a previously-hidden vehicle becomes visible again
-    // (e.g., player switches back with car(0)). Slot 50, VA 0x006BFB40.
-    void __fastcall ComplexPhysicObjSetVisible_Hook(hta::ai::ComplexPhysicObj* self, void* /*edx*/) {
-        using Fn = void(__fastcall*)(hta::ai::ComplexPhysicObj*, void*);
-        reinterpret_cast<Fn>(0x006BFB40)(self, nullptr);
-        RespreadVehicleAppendices(self);
+    void __fastcall DefineSuppressedLPs_Hook(hta::ai::VehiclePart* self, void* /*edx*/) {
+        using Fn = void(__fastcall*)(hta::ai::VehiclePart*, void*);
+        reinterpret_cast<Fn>(static_cast<void*>(s_defineSuppressedLPsTrampoline))(self, nullptr);
+
+        hta::ai::PhysicObj* owner = self->GetOwner();
+        if (owner && owner->GetClass() && owner->GetClass()->IsKindOf("ComplexPhysicObj")) {
+            RespreadVehicleAppendices(static_cast<hta::ai::ComplexPhysicObj*>(owner));
+        }
     }
 }
 
@@ -600,15 +610,17 @@ namespace kraken::ext::ai {
         *reinterpret_cast<int32_t*>(s_complexDtorTrampoline + 6) = static_cast<int32_t>(dtorJmpTarget - dtorJmpSrc);
         kraken::routines::Redirect(5, origDtor, reinterpret_cast<void*>(&ComplexPhysicObjDtor_Hook));
 
-        // Hook D & E: vtable patches for ComplexPhysicObj::SetInvisible (slot 51) and
-        // SetVisible (slot 50). Vtable at VA 0x0099D928 (RVA 0x59D928, confirmed from
-        // ~ComplexPhysicObj prolog). Slots confirmed by vtable scan: slot 50 = 0x6BFB40,
-        // slot 51 = 0x6BFBC0. Patching both slots atomically under one VirtualProtect.
-        void** const vtable = reinterpret_cast<void**>(0x0099D928);
-        VirtualProtect(reinterpret_cast<void*>(vtable + 50), 2 * sizeof(void*), PAGE_READWRITE, &oldProt);
-        vtable[50] = reinterpret_cast<void*>(&ComplexPhysicObjSetVisible_Hook);
-        vtable[51] = reinterpret_cast<void*>(&ComplexPhysicObjSetInvisible_Hook);
-        VirtualProtect(reinterpret_cast<void*>(vtable + 50), 2 * sizeof(void*), oldProt, &oldProt);
+        // Hook D: trampoline ai::VehiclePart::DefineSuppressedLPs (RVA 0x2d3af0).
+        // First 5 bytes (83 EC 28 53 57 = sub esp,0x28; push ebx; push edi) are
+        // position-independent.
+        void* const origDefineLPs = reinterpret_cast<void*>(0x006D3AF0);
+        VirtualProtect(s_defineSuppressedLPsTrampoline, sizeof(s_defineSuppressedLPsTrampoline), PAGE_EXECUTE_READWRITE, &oldProt);
+        std::memcpy(s_defineSuppressedLPsTrampoline, origDefineLPs, 5);
+        s_defineSuppressedLPsTrampoline[5] = 0xE9;
+        const uintptr_t dlpJmpSrc = reinterpret_cast<uintptr_t>(s_defineSuppressedLPsTrampoline) + 10;
+        const uintptr_t dlpJmpTarget = reinterpret_cast<uintptr_t>(origDefineLPs) + 5;
+        *reinterpret_cast<int32_t*>(s_defineSuppressedLPsTrampoline + 6) = static_cast<int32_t>(dlpJmpTarget - dlpJmpSrc);
+        kraken::routines::Redirect(5, origDefineLPs, reinterpret_cast<void*>(&DefineSuppressedLPs_Hook));
     }
 }
 
