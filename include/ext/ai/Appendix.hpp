@@ -28,6 +28,11 @@ namespace hta {
             virtual Obj* CreateTargetObject() const;
             virtual bool LoadFromXML(m3d::cmn::XmlFile* xmlFile, const m3d::cmn::XmlNode* xmlNode);
 
+            // The engine destroys prototypes via a scalar deleting destructor, so the
+            // object must be freed on the engine heap it was allocated from (g_mar).
+            void* operator new(size_t size);
+            void  operator delete(void* data);
+
             AppendixType m_appendixType;
             CStr m_lpName;
             float m_thornForce;
@@ -74,4 +79,10 @@ namespace hta {
 namespace kraken::ext::ai {
     hta::ai::PrototypeInfo* CreateAppendixPrototypeInfo(const hta::CStr& className);
     float GetVehicleThornForce(hta::ai::Vehicle* vehicle);
+
+    // HTA's engine has no per-part "ReconstructCallback" (Meridian added it as a new
+    // VehiclePart virtual that does not exist in HTA). Install a hook at the point
+    // where the vehicle finishes building all part visuals and drive the appendix
+    // spread ourselves. Call once at startup.
+    void ApplyReconstructHook();
 }

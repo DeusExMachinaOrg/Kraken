@@ -46,6 +46,11 @@ namespace kraken {
         this->cctl_leak_fix                     = { "constants", "cctl_leak_fix",                   1,     true,  0,     1           };
         this->mortarvolleylauncherfix           = { "constants", "mortarvolleylauncherfix",         1,     true,  0,     1           };
         this->gunlights                         = { "constants", "gunlights",                       1,     true,  0,     1           };
+        this->thorn_hit_speed_threshold         = { "thorncollide", "hit_speed_threshold",          5.0f,  true,  0.0f,  1000.0f     };
+        this->thorn_hit_damage_coeff            = { "thorncollide", "hit_damage_coeff",             1.0f,  true,  0.0f,  10000.0f    };
+        this->thorn_side_threshold              = { "thorncollide", "side_threshold",               0.707f,true,  -1.0f, 1.0f        };
+        this->thorn_side_front_coeff            = { "thorncollide", "side_front_coeff",             1.0f,  true,  0.01f, 1000.0f     };
+        this->thorn_side_glancing_coeff         = { "thorncollide", "side_glancing_coeff",          1.0f,  true,  0.01f, 1000.0f     };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -109,6 +114,11 @@ namespace kraken {
         this->LoadValue(&this->cctl_leak_fix);
         this->LoadValue(&this->mortarvolleylauncherfix);
         this->LoadValue(&this->gunlights);
+        this->LoadValue(&this->thorn_hit_speed_threshold);
+        this->LoadValue(&this->thorn_hit_damage_coeff);
+        this->LoadValue(&this->thorn_side_threshold);
+        this->LoadValue(&this->thorn_side_front_coeff);
+        this->LoadValue(&this->thorn_side_glancing_coeff);
     };
 
     void Config::Dump() {
@@ -148,6 +158,11 @@ namespace kraken {
         this->DumpValue(&this->cctl_leak_fix);
         this->DumpValue(&this->mortarvolleylauncherfix);
         this->DumpValue(&this->gunlights);
+        this->DumpValue(&this->thorn_hit_speed_threshold);
+        this->DumpValue(&this->thorn_hit_damage_coeff);
+        this->DumpValue(&this->thorn_side_threshold);
+        this->DumpValue(&this->thorn_side_front_coeff);
+        this->DumpValue(&this->thorn_side_glancing_coeff);
     };
 
     template<typename T>

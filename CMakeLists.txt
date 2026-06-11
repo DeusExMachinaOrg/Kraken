@@ -41,7 +41,9 @@ add_library(kraken SHARED
     source/fix/cinematicmover.cpp
     source/fix/watercollidefix.cpp
     source/fix/thorncollide.cpp
+    source/fix/firingtype.cpp
 
+    source/ext/memory.cpp
     source/ext/logger.cpp
     source/ext/impulse.cpp
     source/ext/runtime.cpp

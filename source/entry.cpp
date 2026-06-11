@@ -8,6 +8,7 @@
 #include "ext/runtime.hpp"
 #include "ext/meta.hpp"
 #include "ext/impulse.hpp"
+#include "ext/ai/Appendix.hpp"
 
 #include "fix/fileserver.hpp"
 #include "fix/physic.hpp"
@@ -31,6 +32,8 @@
 #include "fix/gunlights.hpp"
 #include "fix/cinematicmover.hpp"
 #include "fix/watercollidefix.hpp"
+#include "fix/thorncollide.hpp"
+#include "fix/firingtype.hpp"
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
@@ -90,5 +93,8 @@ namespace kraken {
         fix::gunlights::Apply();
         fix::cinematicmover::Apply();
         fix::watercollidefix::Apply();
+        fix::thorncollide::Apply();
+        fix::firingtype::Apply();
+        ext::ai::ApplyReconstructHook();
     };
 };

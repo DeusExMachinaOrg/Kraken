@@ -7,6 +7,7 @@
 #include "hta/ai/Enums.hpp"
 #include "hta/ai/DynamicScene.hpp"
 #include "ext/ai/Appendix.hpp"
+#include "config.hpp"
 #include "routines.hpp"
 
 #include <unordered_map>
@@ -17,12 +18,26 @@ namespace hta::ai {
     struct DynamicScene;
     extern DynamicScene* gDynamicScene;
 
-    static inline float __cdecl CalcHitValue(float speed) {
-        return reinterpret_cast<float(__cdecl*)(float)>(0x008C28F0)(speed);
+    // Ported from Meridian ai::CalcHitValue / ai::CalcSideCoeff (the originals at
+    // 0x8C28F0 / 0x8C26B0 are Meridian-only and read Meridian config globals — those
+    // addresses are DirectShow code in HTA, hence the previous crash). The two curves
+    // are reproduced here with parameters read from kraken.ini [thorncollide].
+
+    // Below a speed threshold there is no damage; above it, damage is linear in speed.
+    static inline float CalcHitValue(float speed) {
+        const kraken::Config& cfg = kraken::Config::Instance();
+        if (speed < cfg.thorn_hit_speed_threshold.value) {
+            return 0.0f;
+        }
+        return cfg.thorn_hit_damage_coeff.value * speed;
     }
 
-    static inline float __cdecl CalcSideCoeff(float dot) {
-        return reinterpret_cast<float(__cdecl*)(float)>(0x008C26B0)(dot);
+    // Head-on hits (dot above threshold) use one coefficient, glancing hits another.
+    static inline float CalcSideCoeff(float dot) {
+        const kraken::Config& cfg = kraken::Config::Instance();
+        return (dot > cfg.thorn_side_threshold.value)
+            ? cfg.thorn_side_front_coeff.value
+            : cfg.thorn_side_glancing_coeff.value;
     }
 }
 
@@ -54,12 +69,24 @@ namespace {
 }
 
 namespace kraken::fix::thorncollide {
-    double __fastcall CalcDamageToVehicles(
+    // Output channel for the "damage dealt to v2" value. Like Meridian, our ram-damage
+    // routine REPLACES the engine's ai::CalcDamageToVehicles (0x0088F700) globally (see
+    // Apply), so BOTH collision paths use it: vehicle-vs-vehicle (CollideVehiclePartAndVehiclePart)
+    // and vehicle-vs-landscape (CollideVehicleAndLandscape). The engine ABI is
+    // `void __fastcall(v1, v2, contacts, dSpeed, damageInfo, contactPos)` — 6 args,
+    // ret 0x10 — and the native landscape caller relies on that exact signature (it
+    // ignores the result), so we must keep it void/6-arg or the stack cleanup is off and
+    // corrupts the caller. The v1 damage is written into damageInfo; the v2 damage is
+    // published here for our own CollideVehiclePartAndVehiclePart to read.
+    static float g_thornDamageToV2 = 0.0f;
+
+    void __fastcall CalcDamageToVehicles(
         ai::Vehicle *v1,
         ai::Vehicle *v2,
         dContact *contacts,
         float *dSpeed,
-        ai::DamageInfo *damageInfo)
+        ai::DamageInfo *damageInfo,
+        CVector * /*contactPos*/)
     {
         const bool isVehicle1 = v1 ? v1->cast<ai::Vehicle>() : false;
         const bool isVehicle2 = v2 ? v2->cast<ai::Vehicle>() : false;
@@ -144,7 +171,7 @@ namespace kraken::fix::thorncollide {
             damageInfo->decalId = ai::DynamicScene::Instance()->m_clashDecalId;
         }
 
-        return damageToV2;
+        g_thornDamageToV2 = static_cast<float>(damageToV2);
     }
 
     int __fastcall CollideVehiclePartAndVehiclePart(
@@ -187,13 +214,15 @@ namespace kraken::fix::thorncollide {
         float deltaSpeed = 0.0f;
         ai::DamageInfo damageInfo;
 
-        float damageToVehicle2 = CalcDamageToVehicles(
+        CalcDamageToVehicles(
             (ai::Vehicle*)owner1,
             isVehicle2 ? (ai::Vehicle*)owner2 : nullptr,
             contacts,
             &deltaSpeed,
-            &damageInfo
+            &damageInfo,
+            nullptr
         );
+        float damageToVehicle2 = g_thornDamageToV2;
 
         // 6. Наносим урон первой машине
         if (isVehicle1) {
@@ -250,6 +279,13 @@ namespace kraken::fix::thorncollide {
     }
 
     void Apply() {
+        // Replace the engine's ram-damage model with Meridian's globally. Meridian's
+        // CalcDamageToVehicles (linear hit curve + side coefficient + thorn force,
+        // asymmetric per-vehicle damage) is used by BOTH collision paths, so we must
+        // override the engine function (0x0088F700) — not just our v-v handler — or
+        // vehicle-vs-landscape would keep HTA's different (quadratic, symmetric, no
+        // thorns) curve via CollideVehicleAndLandscape. The 6-arg void ABI is preserved
+        // so that native caller's stack cleanup stays correct.
         kraken::routines::Redirect(0x383, (void*)0x0088F700, (void*)&CalcDamageToVehicles);
         kraken::routines::Redirect(0x34A, (void*)0x00890430, (void*)&CollideVehiclePartAndVehiclePart);
     }

@@ -72,6 +72,13 @@ namespace kraken {
         ConfigValue<uint32_t>                 mortarvolleylauncherfix;
         ConfigValue<uint32_t>                 gunlights;
 
+        // Thorn collision (Appendix melee weapon)
+        ConfigValue<float>                    thorn_hit_speed_threshold;  // min |Δv| along contact normal for any damage
+        ConfigValue<float>                    thorn_hit_damage_coeff;     // damage per unit of impact speed
+        ConfigValue<float>                    thorn_side_threshold;       // dot(dir,hitDir) above which the hit counts as head-on (cos45 ≈ 0.707)
+        ConfigValue<float>                    thorn_side_front_coeff;     // side coefficient for head-on hits
+        ConfigValue<float>                    thorn_side_glancing_coeff;  // side coefficient for glancing hits
+
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;
         ConfigValue<float>                    gun_gadgets_max_schwarz_part;
