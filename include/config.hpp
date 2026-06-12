@@ -71,6 +71,7 @@ namespace kraken {
         ConfigValue<uint32_t>                 cctl_leak_fix;
         ConfigValue<uint32_t>                 mortarvolleylauncherfix;
         ConfigValue<uint32_t>                 gunlights;
+        ConfigValue<uint32_t>                 radio_manager_fix; // 0 disables the RadioManager map-transition self-heal
         ConfigValue<uint32_t>                 appendix; // 0 disables Appendix (thorn) logic + the new ram-collision formulas
 
         // Ram collision model (vehicle/landscape impacts + Appendix thorns).

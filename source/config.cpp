@@ -46,6 +46,7 @@ namespace kraken {
         this->cctl_leak_fix                     = { "constants", "cctl_leak_fix",                   1,     true,  0,     1           };
         this->mortarvolleylauncherfix           = { "constants", "mortarvolleylauncherfix",         1,     true,  0,     1           };
         this->gunlights                         = { "constants", "gunlights",                       1,     true,  0,     1           };
+        this->radio_manager_fix                 = { "constants", "radio_manager_fix",               1,     true,  0,     1           };
         this->appendix                          = { "constants", "appendix",                        1,     true,  0,     1           };
         this->ram_speed_threshold               = { "thorncollide", "speed_threshold",              5.0f,    true,  0.0f,  1000.0f   };
         this->ram_damage_coeff                  = { "thorncollide", "damage_coeff",                 2.7f,    true,  0.0f,  100000.0f };
@@ -119,6 +120,7 @@ namespace kraken {
         this->LoadValue(&this->cctl_leak_fix);
         this->LoadValue(&this->mortarvolleylauncherfix);
         this->LoadValue(&this->gunlights);
+        this->LoadValue(&this->radio_manager_fix);
         this->LoadValue(&this->appendix);
         this->LoadValue(&this->ram_speed_threshold);
         this->LoadValue(&this->ram_damage_coeff);
@@ -168,6 +170,7 @@ namespace kraken {
         this->DumpValue(&this->cctl_leak_fix);
         this->DumpValue(&this->mortarvolleylauncherfix);
         this->DumpValue(&this->gunlights);
+        this->DumpValue(&this->radio_manager_fix);
         this->DumpValue(&this->appendix);
         this->DumpValue(&this->ram_speed_threshold);
         this->DumpValue(&this->ram_damage_coeff);

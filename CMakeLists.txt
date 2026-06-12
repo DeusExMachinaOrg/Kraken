@@ -42,6 +42,7 @@ add_library(kraken SHARED
     source/fix/watercollidefix.cpp
     source/fix/thorncollide.cpp
     source/fix/firingtype.cpp
+    source/fix/radiomanagerfix.cpp
 
     source/ext/memory.cpp
     source/ext/logger.cpp

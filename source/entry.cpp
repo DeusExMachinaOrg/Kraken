@@ -34,6 +34,7 @@
 #include "fix/watercollidefix.hpp"
 #include "fix/thorncollide.hpp"
 #include "fix/firingtype.hpp"
+#include "fix/radiomanagerfix.hpp"
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
@@ -93,6 +94,7 @@ namespace kraken {
         fix::gunlights::Apply();
         fix::cinematicmover::Apply();
         fix::watercollidefix::Apply();
+        fix::radiomanagerfix::Apply();
         // Appendix (thorn melee weapons) + the Meridian ram-collision formulas.
         // Gated by [constants] appendix so it can be fully disabled (vanilla HTA ram
         // damage, no thorn hooks). The Appendix class itself stays registered in
