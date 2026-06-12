@@ -47,11 +47,15 @@ namespace kraken {
         this->mortarvolleylauncherfix           = { "constants", "mortarvolleylauncherfix",         1,     true,  0,     1           };
         this->gunlights                         = { "constants", "gunlights",                       1,     true,  0,     1           };
         this->appendix                          = { "constants", "appendix",                        1,     true,  0,     1           };
-        this->thorn_hit_speed_threshold         = { "thorncollide", "hit_speed_threshold",          5.0f,  true,  0.0f,  1000.0f     };
-        this->thorn_hit_damage_coeff            = { "thorncollide", "hit_damage_coeff",             0.036f,true,  0.0f,  10000.0f    };
-        this->thorn_side_threshold              = { "thorncollide", "side_threshold",               0.707f,true,  -1.0f, 1.0f        };
-        this->thorn_side_front_coeff            = { "thorncollide", "side_front_coeff",             1.0f,  true,  0.01f, 1000.0f     };
-        this->thorn_side_glancing_coeff         = { "thorncollide", "side_glancing_coeff",          1.0f,  true,  0.01f, 1000.0f     };
+        this->ram_speed_threshold               = { "thorncollide", "speed_threshold",              5.0f,    true,  0.0f,  1000.0f   };
+        this->ram_damage_coeff                  = { "thorncollide", "damage_coeff",                 2.7f,    true,  0.0f,  100000.0f };
+        this->ram_speed_exponent                = { "thorncollide", "speed_exponent",               1.0f,    true,  0.1f,  4.0f      };
+        this->ram_max_damage                    = { "thorncollide", "max_damage",                   100000.0f,true, 0.0f,  1e9f      };
+        this->ram_armor_front                   = { "thorncollide", "armor_front",                  0.8f,    true,  0.01f, 100.0f    };
+        this->ram_armor_side                    = { "thorncollide", "armor_side",                   1.25f,   true,  0.01f, 100.0f    };
+        this->ram_armor_rear                    = { "thorncollide", "armor_rear",                   1.0f,    true,  0.01f, 100.0f    };
+        this->ram_landscape_offense             = { "thorncollide", "landscape_offense",            0.5f,    true,  0.0f,  100.0f    };
+        this->ram_thorn_scale                   = { "thorncollide", "thorn_scale",                  0.02f,   true,  0.0f,  100.0f    };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -116,11 +120,15 @@ namespace kraken {
         this->LoadValue(&this->mortarvolleylauncherfix);
         this->LoadValue(&this->gunlights);
         this->LoadValue(&this->appendix);
-        this->LoadValue(&this->thorn_hit_speed_threshold);
-        this->LoadValue(&this->thorn_hit_damage_coeff);
-        this->LoadValue(&this->thorn_side_threshold);
-        this->LoadValue(&this->thorn_side_front_coeff);
-        this->LoadValue(&this->thorn_side_glancing_coeff);
+        this->LoadValue(&this->ram_speed_threshold);
+        this->LoadValue(&this->ram_damage_coeff);
+        this->LoadValue(&this->ram_speed_exponent);
+        this->LoadValue(&this->ram_max_damage);
+        this->LoadValue(&this->ram_armor_front);
+        this->LoadValue(&this->ram_armor_side);
+        this->LoadValue(&this->ram_armor_rear);
+        this->LoadValue(&this->ram_landscape_offense);
+        this->LoadValue(&this->ram_thorn_scale);
     };
 
     void Config::Dump() {
@@ -161,11 +169,15 @@ namespace kraken {
         this->DumpValue(&this->mortarvolleylauncherfix);
         this->DumpValue(&this->gunlights);
         this->DumpValue(&this->appendix);
-        this->DumpValue(&this->thorn_hit_speed_threshold);
-        this->DumpValue(&this->thorn_hit_damage_coeff);
-        this->DumpValue(&this->thorn_side_threshold);
-        this->DumpValue(&this->thorn_side_front_coeff);
-        this->DumpValue(&this->thorn_side_glancing_coeff);
+        this->DumpValue(&this->ram_speed_threshold);
+        this->DumpValue(&this->ram_damage_coeff);
+        this->DumpValue(&this->ram_speed_exponent);
+        this->DumpValue(&this->ram_max_damage);
+        this->DumpValue(&this->ram_armor_front);
+        this->DumpValue(&this->ram_armor_side);
+        this->DumpValue(&this->ram_armor_rear);
+        this->DumpValue(&this->ram_landscape_offense);
+        this->DumpValue(&this->ram_thorn_scale);
     };
 
     template<typename T>

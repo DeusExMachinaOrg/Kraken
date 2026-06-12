@@ -73,12 +73,19 @@ namespace kraken {
         ConfigValue<uint32_t>                 gunlights;
         ConfigValue<uint32_t>                 appendix; // 0 disables Appendix (thorn) logic + the new ram-collision formulas
 
-        // Thorn collision (Appendix melee weapon)
-        ConfigValue<float>                    thorn_hit_speed_threshold;  // min |Δv| along contact normal for any damage
-        ConfigValue<float>                    thorn_hit_damage_coeff;     // damage per unit of impact speed
-        ConfigValue<float>                    thorn_side_threshold;       // dot(dir,hitDir) above which the hit counts as head-on (cos45 ≈ 0.707)
-        ConfigValue<float>                    thorn_side_front_coeff;     // side coefficient for head-on hits
-        ConfigValue<float>                    thorn_side_glancing_coeff;  // side coefficient for glancing hits
+        // Ram collision model (vehicle/landscape impacts + Appendix thorns).
+        // damage_i = clamp( coeff * (v - threshold)^exponent * massShare_i
+        //                   * offense_other * thornMult_other * dirArmor_i , 0, max_damage )
+        // The engine then scales it by the target's blast resistance (InflictDamage).
+        ConfigValue<float>                    ram_speed_threshold;    // min normal approach speed before any damage
+        ConfigValue<float>                    ram_damage_coeff;       // master damage scale (K)
+        ConfigValue<float>                    ram_speed_exponent;     // p: 1.0 = impulse, 2.0 = energy
+        ConfigValue<float>                    ram_max_damage;         // per-contact clamp (anti-oneshot / velocity spikes)
+        ConfigValue<float>                    ram_armor_front;        // directional armor: hit from the front (<1 = tougher)
+        ConfigValue<float>                    ram_armor_side;         // directional armor: hit from the side
+        ConfigValue<float>                    ram_armor_rear;         // directional armor: hit from the rear
+        ConfigValue<float>                    ram_landscape_offense;  // "ram offense" of static obstacles (walls/pipes)
+        ConfigValue<float>                    ram_thorn_scale;        // thorn multiplier = 1 + ThornForce * this
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;

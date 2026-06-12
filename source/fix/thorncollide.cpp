@@ -1,3 +1,5 @@
+#define LOGGER "RAMCOLLIDE"
+
 #include "hta/CStr.hpp"
 #include "hta/CVector.hpp"
 #include "hta/ai/Gun.hpp"
@@ -9,9 +11,12 @@
 #include "hta/m3d/cmn/XmlFile.hpp"
 #include "hta/m3d/cmn/XmlNode.hpp"
 #include "ext/ai/Appendix.hpp"
+#include "ext/logger.hpp"
 #include "config.hpp"
 #include "routines.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -23,96 +28,49 @@ using namespace hta;
 namespace hta::ai {
     struct DynamicScene;
     extern DynamicScene* gDynamicScene;
-
-    // Ported from Meridian ai::CalcHitValue / ai::CalcSideCoeff (the originals at
-    // 0x8C28F0 / 0x8C26B0 are Meridian-only and read Meridian config globals — those
-    // addresses are DirectShow code in HTA, hence the previous crash). The two curves
-    // are reproduced here with parameters read from kraken.ini [thorncollide].
-
-    // Below a speed threshold there is no damage; above it, damage is linear in speed.
-    static inline float CalcHitValue(float speed) {
-        const kraken::Config& cfg = kraken::Config::Instance();
-        if (speed < cfg.thorn_hit_speed_threshold.value) {
-            return 0.0f;
-        }
-        return cfg.thorn_hit_damage_coeff.value * speed;
-    }
-
-    // Head-on hits (dot above threshold) use one coefficient, glancing hits another.
-    static inline float CalcSideCoeff(float dot) {
-        const kraken::Config& cfg = kraken::Config::Instance();
-        return (dot > cfg.thorn_side_threshold.value)
-            ? cfg.thorn_side_front_coeff.value
-            : cfg.thorn_side_glancing_coeff.value;
-    }
 }
 
 namespace {
     static auto dBodyGetPointVelPtr = reinterpret_cast<void(__fastcall*)(dxBody*, float, float, float, float*)>(0x007C49E0);
 
-    // --- Per-vehicle ram strength (Meridian m_hitForce) -----------------------------
-    // Meridian scaled ram damage by a per-vehicle hitForce read from the prototype
-    // (ai::VehiclePrototypeInfo::m_hitForce, proto+0x4c, set by the XML "HitForce"
-    // attribute; e.g. Scout=25, Tank=200). HTA's VehiclePrototypeInfo has no such field
-    // (it rams by GetMass()), so we re-introduce the value: a side table keyed by the
-    // (concrete) prototype object, populated from XML at load time via the LoadFromXML
-    // trampoline below. The factory built-in carries Meridian's stock numbers so no
-    // vehicles.xml edits are required; a modder may still override a vehicle with an
-    // explicit HitForce="N" attribute, and ParentPrototype chains inherit the parent's
-    // value (e.g. Scout01 -> Scout = 25).
-    static const float kDefaultHitForce = 25.0f; // Meridian Scout baseline
+    // --- Per-vehicle ram offense ----------------------------------------------------
+    // In the ram-damage model mass carries the size/weight dynamic, so a vehicle's
+    // "offense" defaults to 1.0 (neutral). A modder may make a specific vehicle a harder
+    // rammer (reinforced bull-bar) with an XML attribute RamOffense="N"; ParentPrototype
+    // chains inherit it (parents load first). Captured per prototype via the LoadFromXML
+    // trampoline below. (Thorn melee weapons are a separate multiplier, see ThornMultiplier.)
+    static const float kDefaultRamOffense = 1.0f;
 
-    static const std::unordered_map<std::string, float>& MeridianHitForceTable() {
-        static const std::unordered_map<std::string, float> table = {
-            { "Scout",           25.0f  }, { "RoboScout",       10.0f  },
-            { "Bug",             25.0f  }, { "Fighter",         50.0f  },
-            { "Hunter",          75.0f  }, { "Cruiser",         150.0f },
-            { "Dozer",           75.0f  }, { "Tank",            200.0f },
-            { "Dot",             50.0f  }, { "Molokovoz",       50.0f  },
-            { "Ural",            100.0f }, { "Belaz",           150.0f },
-            { "Mirotvorec",      200.0f },
-            { "Sml1",            10.0f  }, { "Sml2",            10.0f  },
-            { "Sml3",            10.0f  }, { "Sml4",            10.0f  },
-            { "Robot01",         100.0f }, { "Robot02",         150.0f },
-            { "Robot03_Big",     150.0f }, { "Robot04_SMALL",   75.0f  },
-            { "Robot_Player_01", 100.0f },
-        };
-        return table;
-    }
+    static std::unordered_map<const void*, float> g_ramOffenseByProto;
+    static std::unordered_map<std::string, float> g_ramOffenseByName;
 
-    static std::unordered_map<const void*, float> g_hitForceByProto;
-    static std::unordered_map<std::string, float> g_hitForceByName;
-
-    static float GetPrototypeHitForce(const ai::VehiclePrototypeInfo* prototype) {
+    static float GetPrototypeRamOffense(const ai::VehiclePrototypeInfo* prototype) {
         if (!prototype) {
-            return kDefaultHitForce;
+            return kDefaultRamOffense;
         }
-        auto it = g_hitForceByProto.find(prototype);
-        return it != g_hitForceByProto.end() ? it->second : kDefaultHitForce;
+        auto it = g_ramOffenseByProto.find(prototype);
+        return it != g_ramOffenseByProto.end() ? it->second : kDefaultRamOffense;
     }
 
-    // Resolve a prototype's hitForce while it is being loaded from XML: an explicit
-    // HitForce attribute wins (modder override), else the built-in Meridian value for the
-    // prototype's Name, else the value already resolved for its ParentPrototype (parents
-    // load first), else the default.
-    static float ResolveHitForce(const hta::m3d::cmn::XmlNode* node) {
-        if (const char* s = node->GetAttribute("HitForce")) {
-            return static_cast<float>(std::atof(s));
-        }
-        if (const char* name = node->GetAttribute("Name")) {
-            const auto& table = MeridianHitForceTable();
-            auto t = table.find(name);
-            if (t != table.end()) {
-                return t->second;
-            }
+    static float ResolveRamOffense(const hta::m3d::cmn::XmlNode* node) {
+        const char* name = node->GetAttribute("Name");
+        const char* protoName = name ? name : "<noname>";
+
+        if (const char* s = node->GetAttribute("RamOffense")) {
+            const float value = static_cast<float>(std::atof(s));
+            LOG_DEBUG("vehicle '%s': RamOffense = %.3f (from XML)", protoName, value);
+            return value;
         }
         if (const char* parent = node->GetAttribute("ParentPrototype")) {
-            auto p = g_hitForceByName.find(parent);
-            if (p != g_hitForceByName.end()) {
+            auto p = g_ramOffenseByName.find(parent);
+            if (p != g_ramOffenseByName.end()) {
+                LOG_DEBUG("vehicle '%s': RamOffense = %.3f (inherited from ParentPrototype '%s', no own attr)",
+                          protoName, p->second, parent);
                 return p->second;
             }
         }
-        return kDefaultHitForce;
+        LOG_DEBUG("vehicle '%s': RamOffense = %.3f (DEFAULT, no XML attr)", protoName, kDefaultRamOffense);
+        return kDefaultRamOffense;
     }
 
     using VehicleLoadXmlFn = bool(__fastcall*)(hta::ai::VehiclePrototypeInfo*, void*,
@@ -126,13 +84,34 @@ namespace {
             self, edx, xmlFile, xmlNode);
 
         if (xmlNode) {
-            const float hitForce = ResolveHitForce(xmlNode);
+            const float offense = ResolveRamOffense(xmlNode);
             if (const char* name = xmlNode->GetAttribute("Name")) {
-                g_hitForceByName[name] = hitForce;
+                g_ramOffenseByName[name] = offense;
             }
-            g_hitForceByProto[self] = hitForce;
+            g_ramOffenseByProto[self] = offense;
         }
         return result;
+    }
+
+    static inline float Lerp(float a, float b, float t) { return a + (b - a) * t; }
+
+    // Directional armor: how square the hit lands on a vehicle's own orientation.
+    // cosForward = dot(forward, dirFromCenterToContact): +1 front, 0 side, -1 rear.
+    static float DirectionalArmor(float cosForward) {
+        const kraken::Config& cfg = kraken::Config::Instance();
+        if (cosForward >= 0.0f) {
+            return Lerp(cfg.ram_armor_side.value, cfg.ram_armor_front.value, cosForward);
+        }
+        return Lerp(cfg.ram_armor_side.value, cfg.ram_armor_rear.value, -cosForward);
+    }
+
+    // GetVehicleThornForce returns 1.0 for a vehicle without a thorn, else the equipped
+    // appendix's ThornForce (25/50/75). Map that to a modest melee multiplier.
+    static float ThornMultiplier(float thornForce) {
+        if (thornForce <= 1.0f) {
+            return 1.0f;
+        }
+        return 1.0f + thornForce * kraken::Config::Instance().ram_thorn_scale.value;
     }
 
     static CVector NormalizeSafe(const CVector& vec) {
@@ -156,6 +135,30 @@ namespace kraken::fix::thorncollide {
     // published here for our own CollideVehiclePartAndVehiclePart to read.
     static float g_thornDamageToV2 = 0.0f;
 
+    // ===========================================================================
+    //  RAM DAMAGE — final formula (replaces HTA's stock ai::CalcDamageToVehicles)
+    // ---------------------------------------------------------------------------
+    //  For a contact between vehicles V1 and V2 (V2 absent => static landscape):
+    //
+    //    v       = |dot(contactNormal, pointVel1 - pointVel2)|   // normal approach speed
+    //    vEff    = max(0, v - speed_threshold)
+    //    term    = damage_coeff * vEff ^ speed_exponent          // p=1 impulse, 2 energy
+    //
+    //    m_i     = Vi.GetMass()
+    //    share1  = m2 / (m1 + m2)      share2 = m1 / (m1 + m2)    // landscape: 1 and 0
+    //
+    //    offense_i = RamOffense(Vi)  (default 1.0; static => landscape_offense)
+    //    thorn_i   = 1 + ThornForce(Vi) * thorn_scale            // 1.0 if no thorn
+    //    armor_i   = directional armor at the hit point, lerp over
+    //                cos(forward_i, dirToContact_i): front / side / rear
+    //
+    //    damageToV1 = clamp( term * share1 * offense2 * thorn2 * armor1, 0, max_damage )
+    //    damageToV2 = clamp( term * share2 * offense1 * thorn1 * armor2, 0, max_damage )
+    //
+    //  Defense is NOT in this formula: the engine's Vehicle::InflictDamage scales the
+    //  result by the target's blast resistance (damage type = DAMAGE_BLAST).
+    //  All coefficients live in kraken.ini [thorncollide]; see kraken::Config (ram_*).
+    // ===========================================================================
     void __fastcall CalcDamageToVehicles(
         ai::Vehicle *v1,
         ai::Vehicle *v2,
@@ -198,40 +201,55 @@ namespace kraken::fix::thorncollide {
             contactNormal = contactNormal * -1.0f;
         }
 
-        // 5. Вычисляем скорость удара (проекция относительной скорости на нормаль)
+        // 5. Тяжесть удара: нормальная скорость сближения за вычетом порога, возведённая
+        //    в степень p (1 = импульс, 2 = энергия), умноженная на общий коэффициент.
         *dSpeed = fabs(CVector::Dot(contactNormal, deltaVel));
-        float hitValue = ai::CalcHitValue(*dSpeed);
+        const kraken::Config& cfg = kraken::Config::Instance();
+        const float vEff = fmaxf(0.0f, *dSpeed - cfg.ram_speed_threshold.value);
+        const float speedTerm = (vEff > 0.0f)
+            ? cfg.ram_damage_coeff.value * powf(vEff, cfg.ram_speed_exponent.value)
+            : 0.0f;
 
-        // 6. Вычисляем множители стороны удара (лоб, бок, зад)
+        // 6. Массовые доли (приведённая масса): более лёгкое тело поглощает большую долю.
+        //    Против статики (нет v2) вся доля у v1, препятствие не получает ничего.
+        const float m1 = v1->GetMass();
+        float share1 = 1.0f;
+        float share2 = 0.0f;
+        if (isVehicle2 && v2) {
+            const float m2 = v2->GetMass();
+            const float total = m1 + m2;
+            if (total > 1e-3f) {
+                share1 = m2 / total;
+                share2 = m1 / total;
+            } else {
+                share1 = share2 = 0.5f;
+            }
+        }
+
+        // 7. Направленная броня каждой машины в точке удара (лоб крепче, борт/корма слабее).
         CVector v1Dir = v1->GetDirection();
-        float side1 = ai::CalcSideCoeff(CVector::Dot(v1Dir, dirToContact1));
-        float side2 = 1.0f;
-
+        const float armor1 = DirectionalArmor(CVector::Dot(v1Dir, dirToContact1));
+        float armor2 = 1.0f;
         if (isVehicle2 && v2) {
             CVector pos2 = v2->GetPosition();
             CVector dirToContact2 = NormalizeSafe(contactPos - pos2);
-
             CVector v2Dir = v2->GetDirection();
-            side2 = ai::CalcSideCoeff(CVector::Dot(v2Dir, dirToContact2));
+            armor2 = DirectionalArmor(CVector::Dot(v2Dir, dirToContact2));
         }
 
-        // 7. Сила шипов/бампера (Thorn Force)
-        float thorn1 = isVehicle1 ? kraken::ext::ai::GetVehicleThornForce(v1) : 1.0f;
-        float thorn2 = isVehicle2 ? kraken::ext::ai::GetVehicleThornForce(v2) : 1.0f;
+        // 8. Агрессия тарана (дефолт 1.0; у статики — константа из конфига) + множитель шипов.
+        const float offense1 = isVehicle1 ? GetPrototypeRamOffense(v1->GetPrototypeInfo()) : cfg.ram_landscape_offense.value;
+        const float offense2 = isVehicle2 ? GetPrototypeRamOffense(v2->GetPrototypeInfo()) : cfg.ram_landscape_offense.value;
+        const float thorn1 = isVehicle1 ? ThornMultiplier(kraken::ext::ai::GetVehicleThornForce(v1)) : 1.0f;
+        const float thorn2 = isVehicle2 ? ThornMultiplier(kraken::ext::ai::GetVehicleThornForce(v2)) : 1.0f;
 
-        // 8. Базовый урон машин из конфигурации (Prototype)
-        const ai::VehiclePrototypeInfo* proto1 = v1->GetPrototypeInfo();
-        const ai::VehiclePrototypeInfo* proto2 = v2 ? v2->GetPrototypeInfo() : proto1;
-
-        float v1HitForce = GetPrototypeHitForce(proto1);
-        float v2HitForce = GetPrototypeHitForce(proto2);
-
-        // 9. Итоговый расчет асимметричного урона
-        // Урон, который наносится второй машине (возвращается из функции)
-        double damageToV2 = (v1HitForce / side2) * thorn1 * side1 * hitValue;
-
-        // Урон, который получает первая машина (записывается в damageInfo)
-        float damageToV1 = (v2HitForce / side1) * thorn2 * side2 * hitValue;
+        // 9. Урон каждой машине = тяжесть * своя массовая доля * (offense*thorn атакующего)
+        //    * своя направленная броня, с ограничением. Сопротивление цели применит позже
+        //    InflictDamage (тип урона BLAST).
+        float damageToV1 = speedTerm * share1 * offense2 * thorn2 * armor1;
+        float damageToV2 = speedTerm * share2 * offense1 * thorn1 * armor2;
+        damageToV1 = fminf(fmaxf(damageToV1, 0.0f), cfg.ram_max_damage.value);
+        damageToV2 = fminf(fmaxf(damageToV2, 0.0f), cfg.ram_max_damage.value);
 
         // 10. Заполняем структуру отчета об уроне (DamageInfo)
         damageInfo->hitPos = contactPos;

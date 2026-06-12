@@ -110,20 +110,38 @@ namespace hta {
             if (!xmlNode || xmlNode->IsEmpty())
                 return result;
 
+            // Debug logging: report, per attribute, whether the value came from XML or
+            // the constructor default is kept. Gated by [logging] log_debug.
+            const char* nameAttr = xmlNode->GetAttribute("Name");
+            const char* protoName = nameAttr ? nameAttr : "<noname>";
+
             if (const char* appendixType = xmlNode->GetAttribute("AppendixType")) {
                 m_appendixType = static_cast<AppendixType>(std::atoi(appendixType));
+                LOG_DEBUG("appendix '%s': AppendixType = %d (from XML)", protoName, (int)m_appendixType);
+            } else {
+                LOG_DEBUG("appendix '%s': AppendixType = %d (DEFAULT, no XML attr)", protoName, (int)m_appendixType);
             }
 
             if (const char* thornForce = xmlNode->GetAttribute("ThornForce")) {
                 m_thornForce = static_cast<float>(std::atof(thornForce));
+                LOG_DEBUG("appendix '%s': ThornForce = %.3f (from XML)", protoName, m_thornForce);
+            } else {
+                LOG_DEBUG("appendix '%s': ThornForce = %.3f (DEFAULT, no XML attr)", protoName, m_thornForce);
             }
 
             if (const char* loadPoint = xmlNode->GetAttribute("LoadPoint")) {
                 m_lpName = loadPoint;
+                LOG_DEBUG("appendix '%s': LoadPoint = '%s' (from XML)", protoName, loadPoint);
+            } else {
+                LOG_DEBUG("appendix '%s': LoadPoint = '%s' (DEFAULT, no XML attr)",
+                          protoName, m_lpName.m_charPtr ? m_lpName.m_charPtr : "");
             }
 
             if (const char* scale = xmlNode->GetAttribute("Scale")) {
                 m_scale = static_cast<float>(std::atof(scale));
+                LOG_DEBUG("appendix '%s': Scale = %.3f (from XML)", protoName, m_scale);
+            } else {
+                LOG_DEBUG("appendix '%s': Scale = %.3f (DEFAULT, no XML attr)", protoName, m_scale);
             }
 
             return result;
