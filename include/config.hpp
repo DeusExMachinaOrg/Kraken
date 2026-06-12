@@ -71,6 +71,7 @@ namespace kraken {
         ConfigValue<uint32_t>                 cctl_leak_fix;
         ConfigValue<uint32_t>                 mortarvolleylauncherfix;
         ConfigValue<uint32_t>                 gunlights;
+        ConfigValue<uint32_t>                 appendix; // 0 disables Appendix (thorn) logic + the new ram-collision formulas
 
         // Thorn collision (Appendix melee weapon)
         ConfigValue<float>                    thorn_hit_speed_threshold;  // min |Δv| along contact normal for any damage

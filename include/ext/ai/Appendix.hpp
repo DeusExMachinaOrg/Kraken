@@ -36,6 +36,7 @@ namespace hta {
             AppendixType m_appendixType;
             CStr m_lpName;
             float m_thornForce;
+            float m_scale; // uniform scale applied to the spawned load-point clones (XML "Scale", default 1.0)
         };
 
         struct Appendix : public Gun {
@@ -69,6 +70,7 @@ namespace hta {
             CStr m_lpName;
             float m_thornForce;
             int32_t m_appendixType;
+            float m_scale;
             vc3::vector<m3d::SgNode*> m_appendices;
             vc3::vector<int> m_lpNums;
         };

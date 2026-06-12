@@ -79,6 +79,7 @@ namespace hta {
             : m_appendixType(AppendixType_Default)
             , m_lpName("")
             , m_thornForce(1.0f)
+            , m_scale(1.0f)
         {
             m_className = "Appendix";
         }
@@ -121,6 +122,10 @@ namespace hta {
                 m_lpName = loadPoint;
             }
 
+            if (const char* scale = xmlNode->GetAttribute("Scale")) {
+                m_scale = static_cast<float>(std::atof(scale));
+            }
+
             return result;
         }
 
@@ -131,6 +136,7 @@ namespace hta {
             m_appendixType = prototypeInfo ? prototypeInfo->m_appendixType : AppendixPrototypeInfo::AppendixType_Default;
             m_lpName = prototypeInfo ? prototypeInfo->m_lpName : "";
             m_thornForce = prototypeInfo ? prototypeInfo->m_thornForce : 1.0f;
+            m_scale = prototypeInfo ? prototypeInfo->m_scale : 1.0f;
         }
 
         Appendix::Appendix(AppendixPrototypeInfo* prototypeInfo)
@@ -140,11 +146,13 @@ namespace hta {
                 m_appendixType = prototypeInfo->m_appendixType;
                 m_lpName = prototypeInfo->m_lpName;
                 m_thornForce = prototypeInfo->m_thornForce;
+                m_scale = prototypeInfo->m_scale;
             }
             else {
                 m_appendixType = AppendixPrototypeInfo::AppendixType_Default;
                 m_lpName = "";
                 m_thornForce = 1.0f;
+                m_scale = 1.0f;
             }
         }
 
@@ -164,6 +172,7 @@ namespace hta {
                     appendix->m_appendixType = m_appendixType;
                     appendix->m_lpName = m_lpName;
                     appendix->m_thornForce = m_thornForce;
+                    appendix->m_scale = m_scale;
                 }
             }
             return clonedObject;
@@ -260,6 +269,10 @@ namespace hta {
             if (const char* appendixType = xmlNode->GetAttribute("AppendixType")) {
                 m_appendixType = static_cast<int32_t>(std::atoi(appendixType));
             }
+
+            if (const char* scale = xmlNode->GetAttribute("Scale")) {
+                m_scale = static_cast<float>(std::atof(scale));
+            }
         }
 
         void Appendix::SaveRuntimeValues(hta::m3d::cmn::XmlFile* xmlFile, hta::m3d::cmn::XmlNode* xmlNode) const {
@@ -275,6 +288,7 @@ namespace hta {
 
             xmlNode->SetAttribute("AppendixType", hta::CStr(appendixType).c_str());
             xmlNode->SetAttribute("ThornForce", hta::CStr(thornForce).c_str());
+            xmlNode->SetAttribute("Scale", hta::CStr(m_scale).c_str());
             if (loadPoint && loadPoint[0] != '\0') {
                 xmlNode->SetAttribute("LoadPoint", loadPoint);
             }
@@ -335,10 +349,10 @@ namespace hta {
                 hta::CMatrix loadPointMatrix = mdl->GetBoneMatrix(actualLpId);
                 node->SetOriginAbs(loadPointMatrix.GetOrigin());
                 node->SetRotation(hta::Quaternion(loadPointMatrix));
-                node->SetScale(hta::CVector(1.0f));
+                node->SetScale(hta::CVector(m_scale));
             }
             else {
-                node->SetScale(hta::CVector(1.0f));
+                node->SetScale(hta::CVector(m_scale));
             }
 
             m_appendices.push_back(node);
@@ -385,7 +399,7 @@ namespace hta {
 
                     if (part->m_suppressedLPs.find(lpId) != part->m_suppressedLPs.end()) continue;
 
-                    hta::CVector lpScale(1.0f, 1.0f, 1.0f);
+                    hta::CVector lpScale(m_scale, m_scale, m_scale);
                     hta::m3d::SgNode* node = createNodeFn(modelname, nullptr, &lpScale, nullptr, false);
                     if (!node) break;
 
@@ -400,7 +414,7 @@ namespace hta {
                     using FromMatrixFn = void(__thiscall*)(hta::Quaternion*, const hta::CMatrix*);
                     reinterpret_cast<FromMatrixFn>(0x005FFAF0)(&q, &lpMatrix);
                     node->SetRotation(q);
-                    node->SetScale(hta::CVector(1.0f));
+                    node->SetScale(hta::CVector(m_scale));
 
                     m_appendices.push_back(node);
                     m_lpNums.push_back(lpId);
@@ -461,6 +475,7 @@ namespace kraken::ext::ai {
         prototype->m_appendixType = hta::ai::AppendixPrototypeInfo::AppendixType_Default;
         prototype->m_thornForce = 1.0f;
         prototype->m_lpName = "";
+        prototype->m_scale = 1.0f;
         return prototype;
     }
 
@@ -578,6 +593,54 @@ namespace {
             RespreadVehicleAppendices(static_cast<hta::ai::ComplexPhysicObj*>(owner));
         }
     }
+
+    // --- Fix: ComplexPhysicObj::_TearOffPart null-deref on Appendix parts -------------
+    // When a vehicle explodes it tears off each part (Vehicle::_EvaluateToDead -> Flow ->
+    // _TearOffPart, RVA 0x2c0600). For a part that IsKindOf(Gun) the engine re-parents the
+    // barrel node off the part's m_Node:
+    //     call Gun::GetBarrelNode          ; eax = barrel
+    //     mov  ecx,[esi+0x124]             ; ecx = m_Node
+    //     mov  edx,[ecx]                   ; <-- AV: m_Node is null
+    // A mounted Appendix has m_Node == null (DestroyOwnVisual emulates m113's
+    // m_createModel=false), so this crashes (0x006C068E, random — only on a hit strong
+    // enough to tear the thorn part off). m113's _TearOffPart (RVA 0x439ba0) guards this:
+    // right after GetBarrelNode it does `test edi,edi; je <skip>` and skips the whole
+    // barrel branch when the barrel is null. HTA dropped that guard. We restore it with a
+    // detour at the m_Node load (the guard doesn't fit inline): if the barrel (eax) is
+    // null, jump to the branch's `pop edi` (0x006C06D8, balances the push edi at
+    // 0x006C0680); otherwise run the displaced `mov ecx,[esi+0x124]` and continue. Normal
+    // guns (non-null barrel) are unaffected.
+    static uint8_t s_tearOffPartCave[32];
+
+    void InstallTearOffPartFix() {
+        void* const patchSite = reinterpret_cast<void*>(0x006C0688); // mov ecx,[esi+0x124] (6 bytes)
+        const uintptr_t resumeAddr = 0x006C068E;                     // mov edx,[ecx]
+        const uintptr_t skipAddr   = 0x006C06D8;                     // pop edi (gun branch tail)
+
+        DWORD oldProt;
+        VirtualProtect(s_tearOffPartCave, sizeof(s_tearOffPartCave), PAGE_EXECUTE_READWRITE, &oldProt);
+
+        size_t i = 0;
+        s_tearOffPartCave[i++] = 0x85; s_tearOffPartCave[i++] = 0xC0;   // test eax, eax
+        s_tearOffPartCave[i++] = 0x0F; s_tearOffPartCave[i++] = 0x84;   // je rel32
+        int32_t* jeRel = reinterpret_cast<int32_t*>(&s_tearOffPartCave[i]); i += 4;
+        s_tearOffPartCave[i++] = 0x8B; s_tearOffPartCave[i++] = 0x8E;   // mov ecx,[esi+0x124]
+        s_tearOffPartCave[i++] = 0x24; s_tearOffPartCave[i++] = 0x01;
+        s_tearOffPartCave[i++] = 0x00; s_tearOffPartCave[i++] = 0x00;
+        s_tearOffPartCave[i++] = 0xE9;                                  // jmp rel32
+        int32_t* jmpRel = reinterpret_cast<int32_t*>(&s_tearOffPartCave[i]); i += 4;
+
+        const uintptr_t caveBase = reinterpret_cast<uintptr_t>(s_tearOffPartCave);
+        *jeRel  = static_cast<int32_t>(skipAddr   - (caveBase + 8));    // IP after je  = cave+8
+        *jmpRel = static_cast<int32_t>(resumeAddr - (caveBase + i));    // IP after jmp = cave+19
+
+        uint8_t patch[6];
+        patch[0] = 0xE9;                                               // jmp cave
+        *reinterpret_cast<int32_t*>(&patch[1]) =
+            static_cast<int32_t>(caveBase - (reinterpret_cast<uintptr_t>(patchSite) + 5));
+        patch[5] = 0x90;                                              // nop (6th displaced byte)
+        kraken::routines::Patch(patchSite, patch, sizeof(patch));
+    }
 }
 
 namespace kraken::ext::ai {
@@ -621,6 +684,10 @@ namespace kraken::ext::ai {
         const uintptr_t dlpJmpTarget = reinterpret_cast<uintptr_t>(origDefineLPs) + 5;
         *reinterpret_cast<int32_t*>(s_defineSuppressedLPsTrampoline + 6) = static_cast<int32_t>(dlpJmpTarget - dlpJmpSrc);
         kraken::routines::Redirect(5, origDefineLPs, reinterpret_cast<void*>(&DefineSuppressedLPs_Hook));
+
+        // Crash fix: guard _TearOffPart against the Appendix's null m_Node (see comment
+        // on InstallTearOffPartFix). Mirrors m113's barrel-null check.
+        InstallTearOffPartFix();
     }
 }
 

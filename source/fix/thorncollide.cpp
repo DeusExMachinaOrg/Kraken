@@ -6,11 +6,17 @@
 #include "hta/ai/DamageInfo.hpp"
 #include "hta/ai/Enums.hpp"
 #include "hta/ai/DynamicScene.hpp"
+#include "hta/m3d/cmn/XmlFile.hpp"
+#include "hta/m3d/cmn/XmlNode.hpp"
 #include "ext/ai/Appendix.hpp"
 #include "config.hpp"
 #include "routines.hpp"
 
+#include <cstdlib>
+#include <cstring>
+#include <string>
 #include <unordered_map>
+#include <Windows.h>
 
 using namespace hta;
 
@@ -43,20 +49,90 @@ namespace hta::ai {
 
 namespace {
     static auto dBodyGetPointVelPtr = reinterpret_cast<void(__fastcall*)(dxBody*, float, float, float, float*)>(0x007C49E0);
-    static std::unordered_map<const m3d::Class*, float> g_vehiclePrototypeHitForceByType;
+
+    // --- Per-vehicle ram strength (Meridian m_hitForce) -----------------------------
+    // Meridian scaled ram damage by a per-vehicle hitForce read from the prototype
+    // (ai::VehiclePrototypeInfo::m_hitForce, proto+0x4c, set by the XML "HitForce"
+    // attribute; e.g. Scout=25, Tank=200). HTA's VehiclePrototypeInfo has no such field
+    // (it rams by GetMass()), so we re-introduce the value: a side table keyed by the
+    // (concrete) prototype object, populated from XML at load time via the LoadFromXML
+    // trampoline below. The factory built-in carries Meridian's stock numbers so no
+    // vehicles.xml edits are required; a modder may still override a vehicle with an
+    // explicit HitForce="N" attribute, and ParentPrototype chains inherit the parent's
+    // value (e.g. Scout01 -> Scout = 25).
+    static const float kDefaultHitForce = 25.0f; // Meridian Scout baseline
+
+    static const std::unordered_map<std::string, float>& MeridianHitForceTable() {
+        static const std::unordered_map<std::string, float> table = {
+            { "Scout",           25.0f  }, { "RoboScout",       10.0f  },
+            { "Bug",             25.0f  }, { "Fighter",         50.0f  },
+            { "Hunter",          75.0f  }, { "Cruiser",         150.0f },
+            { "Dozer",           75.0f  }, { "Tank",            200.0f },
+            { "Dot",             50.0f  }, { "Molokovoz",       50.0f  },
+            { "Ural",            100.0f }, { "Belaz",           150.0f },
+            { "Mirotvorec",      200.0f },
+            { "Sml1",            10.0f  }, { "Sml2",            10.0f  },
+            { "Sml3",            10.0f  }, { "Sml4",            10.0f  },
+            { "Robot01",         100.0f }, { "Robot02",         150.0f },
+            { "Robot03_Big",     150.0f }, { "Robot04_SMALL",   75.0f  },
+            { "Robot_Player_01", 100.0f },
+        };
+        return table;
+    }
+
+    static std::unordered_map<const void*, float> g_hitForceByProto;
+    static std::unordered_map<std::string, float> g_hitForceByName;
 
     static float GetPrototypeHitForce(const ai::VehiclePrototypeInfo* prototype) {
         if (!prototype) {
-            return 10.0f;
+            return kDefaultHitForce;
         }
+        auto it = g_hitForceByProto.find(prototype);
+        return it != g_hitForceByProto.end() ? it->second : kDefaultHitForce;
+    }
 
-        const m3d::Class* prototypeClass = prototype->m_protoClassObject;
-        if (!prototypeClass) {
-            return 10.0f;
+    // Resolve a prototype's hitForce while it is being loaded from XML: an explicit
+    // HitForce attribute wins (modder override), else the built-in Meridian value for the
+    // prototype's Name, else the value already resolved for its ParentPrototype (parents
+    // load first), else the default.
+    static float ResolveHitForce(const hta::m3d::cmn::XmlNode* node) {
+        if (const char* s = node->GetAttribute("HitForce")) {
+            return static_cast<float>(std::atof(s));
         }
+        if (const char* name = node->GetAttribute("Name")) {
+            const auto& table = MeridianHitForceTable();
+            auto t = table.find(name);
+            if (t != table.end()) {
+                return t->second;
+            }
+        }
+        if (const char* parent = node->GetAttribute("ParentPrototype")) {
+            auto p = g_hitForceByName.find(parent);
+            if (p != g_hitForceByName.end()) {
+                return p->second;
+            }
+        }
+        return kDefaultHitForce;
+    }
 
-        auto it = g_vehiclePrototypeHitForceByType.find(prototypeClass);
-        return it != g_vehiclePrototypeHitForceByType.end() ? it->second : 10.0f;
+    using VehicleLoadXmlFn = bool(__fastcall*)(hta::ai::VehiclePrototypeInfo*, void*,
+                                               hta::m3d::cmn::XmlFile*, const hta::m3d::cmn::XmlNode*);
+    static uint8_t s_vehicleLoadXmlTramp[16];
+
+    bool __fastcall VehicleLoadFromXML_Hook(hta::ai::VehiclePrototypeInfo* self, void* edx,
+                                            hta::m3d::cmn::XmlFile* xmlFile,
+                                            const hta::m3d::cmn::XmlNode* xmlNode) {
+        bool result = reinterpret_cast<VehicleLoadXmlFn>(static_cast<void*>(s_vehicleLoadXmlTramp))(
+            self, edx, xmlFile, xmlNode);
+
+        if (xmlNode) {
+            const float hitForce = ResolveHitForce(xmlNode);
+            if (const char* name = xmlNode->GetAttribute("Name")) {
+                g_hitForceByName[name] = hitForce;
+            }
+            g_hitForceByProto[self] = hitForce;
+        }
+        return result;
     }
 
     static CVector NormalizeSafe(const CVector& vec) {
@@ -288,5 +364,19 @@ namespace kraken::fix::thorncollide {
         // so that native caller's stack cleanup stays correct.
         kraken::routines::Redirect(0x383, (void*)0x0088F700, (void*)&CalcDamageToVehicles);
         kraken::routines::Redirect(0x34A, (void*)0x00890430, (void*)&CollideVehiclePartAndVehiclePart);
+
+        // Capture each vehicle's Meridian hitForce as its prototype loads. Trampoline
+        // ai::VehiclePrototypeInfo::LoadFromXML (RVA 0x1e9ce0); the prologue is
+        // 83 EC 60 8B 44 24 64 (sub esp,0x60; mov eax,[esp+0x64]) — 7 position-independent
+        // bytes, so we copy 7 (a 5-byte copy would split the mov).
+        void* const origVehicleLoadXml = reinterpret_cast<void*>(0x005E9CE0);
+        DWORD oldProt;
+        VirtualProtect(s_vehicleLoadXmlTramp, sizeof(s_vehicleLoadXmlTramp), PAGE_EXECUTE_READWRITE, &oldProt);
+        std::memcpy(s_vehicleLoadXmlTramp, origVehicleLoadXml, 7);
+        s_vehicleLoadXmlTramp[7] = 0xE9;
+        *reinterpret_cast<int32_t*>(s_vehicleLoadXmlTramp + 8) = static_cast<int32_t>(
+            reinterpret_cast<uintptr_t>(origVehicleLoadXml) + 7
+            - (reinterpret_cast<uintptr_t>(s_vehicleLoadXmlTramp) + 12));
+        kraken::routines::Redirect(7, origVehicleLoadXml, reinterpret_cast<void*>(&VehicleLoadFromXML_Hook));
     }
 }

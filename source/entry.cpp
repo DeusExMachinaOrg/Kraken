@@ -93,8 +93,15 @@ namespace kraken {
         fix::gunlights::Apply();
         fix::cinematicmover::Apply();
         fix::watercollidefix::Apply();
-        fix::thorncollide::Apply();
-        fix::firingtype::Apply();
-        ext::ai::ApplyReconstructHook();
+        // Appendix (thorn melee weapons) + the Meridian ram-collision formulas.
+        // Gated by [constants] appendix so it can be fully disabled (vanilla HTA ram
+        // damage, no thorn hooks). The Appendix class itself stays registered in
+        // meta::Init above so existing thorn prototypes/items still load without a crash.
+        if (G_CONFIG->appendix.value) {
+            LOG_INFO("Appendix enabled");
+            fix::thorncollide::Apply();
+            fix::firingtype::Apply();
+            ext::ai::ApplyReconstructHook();
+        }
     };
 };

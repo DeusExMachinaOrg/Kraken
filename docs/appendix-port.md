@@ -198,10 +198,12 @@ kraken-фреймов → значит наш Appendix-прототип (пер�
    - для каждой части (кроме себя, с моделью) ищем load point'ы `<LoadPoint><N>`
      (`GetLoadPointIdByName`), клонируем `m_barrelNode`, ставим по `GetBoneMatrix`
      (origin+rotation), `AddChild` к `part->m_Node`; переиспользуем/обрезаем узлы.
-   - **Отличия от оригинала (HTA беднее Meridian):** нет карты масштабов по LP →
-     scale=1.0; нет `IsSuppressedLp` → проверка опущена; `gs` (глобальный масштаб
-     прототипа) не применяется; `Configuration::GetGroupVariants` (варианты в
-     `SetDependantCfg`) не переносится — в HTA этого механизма нет.
+   - **Отличия от оригинала (HTA беднее Meridian):** нет карты масштабов по LP;
+     вместо неё единый масштаб клонов из XML-атрибута `Scale` прототипа шипа
+     (`AppendixPrototypeInfo::m_scale`, дефолт 1.0) — применяется в
+     `ReconstructCallback`/`SetDependantCfg`. Нет `IsSuppressedLp` → проверка
+     опущена; `Configuration::GetGroupVariants` (варианты в `SetDependantCfg`)
+     не переносится — в HTA этого механизма нет.
 3. **`ClearAppendices`** → освобождение через `SgNode::GetGraph()->RemoveNode`.
 4. **`_InternalCreateVisualPart`** больше не вызывает `BuildVisualPart`
    (пред-спавн клонов в origin убран); спавн только из `ReconstructCallback`.
