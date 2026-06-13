@@ -295,11 +295,20 @@ namespace kraken {
                     GetPrivateProfileStringA(key, "Sound", "", buffer, sizeof(buffer), CONFIG_PATH);
                     std::string sound = buffer;
 
+                    GetPrivateProfileStringA(key, "Script", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    std::string script = buffer;
+
+                    // Consume defaults to true (legacy behaviour: a used ware is always spent).
+                    bool consume = true;
+                    GetPrivateProfileStringA(key, "Consume", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    if (strnlen_s(buffer, sizeof(buffer)) != 0)
+                        consume = (buffer[0] == '1' || buffer[0] == 't' || buffer[0] == 'T' || buffer[0] == 'y' || buffer[0] == 'Y');
+
                     configstructs::WareType type = (strcmp(prefix, configstructs::REPAIR) == 0) ? configstructs::WareType::REPAIR : configstructs::WareType::REFUEL;
 
-                    LOG_INFO("Loaded ware unit: Type=%s, Units=%.03f, Armor=%.03f, Ware=%s, Sound=%s", (type == configstructs::WareType::REPAIR) ? "REPAIR" : "REFUEL", units, armor, ware.c_str(), sound.c_str());
+                    LOG_INFO("Loaded ware unit: Type=%s, Units=%.03f, Armor=%.03f, Ware=%s, Sound=%s, Script=%s, Consume=%s", (type == configstructs::WareType::REPAIR) ? "REPAIR" : "REFUEL", units, armor, ware.c_str(), sound.c_str(), script.c_str(), consume ? "true" : "false");
 
-                    value->value.emplace_back(units, armor, ware, type, sound);
+                    value->value.emplace_back(units, armor, ware, type, sound, script, consume);
                 }
             }
         }
@@ -376,6 +385,12 @@ namespace kraken {
 
                 // Sound
                 WritePrivateProfileStringA(key, "Sound", wareUnit.Sound.c_str(), CONFIG_PATH);
+
+                // Script
+                WritePrivateProfileStringA(key, "Script", wareUnit.Script.c_str(), CONFIG_PATH);
+
+                // Consume
+                WritePrivateProfileStringA(key, "Consume", wareUnit.Consume ? "1" : "0", CONFIG_PATH);
             }
         }
         else {

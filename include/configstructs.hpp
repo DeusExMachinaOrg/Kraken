@@ -11,8 +11,8 @@ namespace kraken::configstructs {
         REFUEL
     };
     struct WareUnits {
-        WareUnits(float units, float armor, const std::string& ware, WareType type, const std::string& sound)
-            : Units(units), Armor(armor), Ware(ware), Type(type), Sound(sound)
+        WareUnits(float units, float armor, const std::string& ware, WareType type, const std::string& sound, const std::string& script, bool consume)
+            : Units(units), Armor(armor), Ware(ware), Type(type), Sound(sound), Script(script), Consume(consume)
         {
         }
         float Units;
@@ -20,6 +20,8 @@ namespace kraken::configstructs {
         std::string Ware;
         WareType Type;
         std::string Sound;
+        std::string Script;  // Optional Lua script executed on use (empty = none)
+        bool Consume;        // Whether using the ware removes it from the inventory
     };
 };
 

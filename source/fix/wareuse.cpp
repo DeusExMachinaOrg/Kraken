@@ -12,6 +12,8 @@
 #include "hta/ai/Player.hpp"
 #include "hta/ai/PrototypeManager.hpp"
 #include "hta/m3d/GameImpulse.hpp"
+#include "hta/m3d/Kernel.hpp"
+#include "hta/m3d/ScriptServer.hpp"
 #include "hta/m3d/ui/DragDropItemsWnd.hpp"
 #include "hta/m3d/ui/GarageWnd.hpp"
 #include "hta/m3d/ui/GfxServer.hpp"
@@ -114,43 +116,74 @@ namespace kraken::fix::wareuse {
         return true;
     }
 
-    bool TryRepair(hta::ai::Vehicle* playerVehicle, hta::CStr& name) {
-        for (auto wu : RepairWares) {
-            if (name == wu.Ware.c_str()) {
-                bool result = SmartRepair(wu.Units, wu.Armor);
+    // Outcome of trying to use a ware. `handled` means the click was consumed by us
+    // (suppress the vanilla handler); `consume` means the ware should be spent.
+    struct WareUseResult {
+        bool handled = false;
+        bool consume = false;
+    };
 
-                if (result)
+    void RunScript(const std::string& script) {
+        if (script.empty())
+            return;
+        if (auto* kernel = hta::m3d::Kernel::Instance()) {
+            if (auto* scriptServer = kernel->m_scriptServer) {
+                scriptServer->execute(script.c_str(), "Kraken");
+            }
+        }
+    }
+
+    WareUseResult TryRepair(hta::ai::Vehicle* playerVehicle, hta::CStr& name) {
+        for (const auto& wu : RepairWares) {
+            if (name == wu.Ware.c_str()) {
+                bool repaired = SmartRepair(wu.Units, wu.Armor);
+                bool hasScript = !wu.Script.empty();
+
+                // Nothing to restore and no script to run: let the vanilla handler deal
+                // with the click (e.g. clicking a repair kit at full health).
+                if (!repaired && !hasScript)
+                    return {};
+
+                RunScript(wu.Script);
+                if (!wu.Sound.empty())
                     hta::m3d::ui::GfxServer::Instance()->PlayControlSound(wu.Sound.c_str(), 0);
-                return result;
+                return { true, wu.Consume };
             }
         }
 
-        return false;
+        return {};
     }
 
-    bool TryRefuel(hta::ai::Vehicle* playerVehicle, hta::CStr& name) {
-        for (auto wu : RefuelWares) {
+    WareUseResult TryRefuel(hta::ai::Vehicle* playerVehicle, hta::CStr& name) {
+        for (const auto& wu : RefuelWares) {
             if (name == wu.Ware.c_str()) {
+                bool hasScript = !wu.Script.empty();
+
                 const int current = playerVehicle->GetFuel();
                 const int max = playerVehicle->GetMaxFuel();
 
-                if (current >= max) {
-                    return false;
+                bool refueled = false;
+                if (wu.Units > EPS && current < max) {
+                    int amount = static_cast<int>(wu.Units);
+                    if (current + amount > max)
+                        amount = max - current;
+
+                    Refuel(nullptr, amount);
+                    refueled = true;
                 }
 
-                int amount = wu.Units;
-                if (current + amount > max) {
-                    amount = max - current;
-                }
+                // Tank already full (or no fuel to add) and no script: defer to vanilla.
+                if (!refueled && !hasScript)
+                    return {};
 
-                Refuel(nullptr, amount);
+                RunScript(wu.Script);
                 if (!wu.Sound.empty())
                     hta::m3d::ui::GfxServer::Instance()->PlayControlSound(wu.Sound.c_str(), 0);
-                return true;
+                return { true, wu.Consume };
             }
         }
 
-        return false;
+        return {};
     }
 
     int __fastcall OnMouseButton0Hook(hta::m3d::ui::DragDropItemsWnd* self, void* _, uint32_t state, const hta::PointBase<float>* at) {
@@ -167,8 +200,13 @@ namespace kraken::fix::wareuse {
                     hta::CStr name = hta::ai::PrototypeManager::Instance()->GetPrototypeName(repositoryObj->m_prototypeId);
 
                     auto playerVehicle = hta::ai::Player::Instance()->GetVehicle();
-                    if (TryRepair(playerVehicle, name) || TryRefuel(playerVehicle, name)) {
-                        playerVehicle->m_repository->GiveUpThingByObjId(repositoryItem.m_objId);
+                    WareUseResult result = TryRepair(playerVehicle, name);
+                    if (!result.handled)
+                        result = TryRefuel(playerVehicle, name);
+
+                    if (result.handled) {
+                        if (result.consume)
+                            playerVehicle->m_repository->GiveUpThingByObjId(repositoryItem.m_objId);
                         app->m_pInterfaceManager->RemoveWindow(0x24); // Info window
                         return 1;
                     }
