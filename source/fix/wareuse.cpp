@@ -190,7 +190,10 @@ namespace kraken::fix::wareuse {
         auto app = hta::CMiracle3d::Instance();
         auto impulse = (hta::m3d::GameImpulse*)app->m_pImpulses;
 
-        if (!hta::m3d::ui::DragDropItemsWnd::m_dragSlot && impulse->m_curKeys.IsThere(0x105)) // ctrl
+        // The engine fires OnMouseButton0 twice per click: once on button-down
+        // (state != 0) and once on button-up (state == 0). Only act on the press,
+        // otherwise a ware with Consume=0 (not spent) gets used twice per click.
+        if (state && !hta::m3d::ui::DragDropItemsWnd::m_dragSlot && impulse->m_curKeys.IsThere(0x105)) // ctrl
         {
             hta::ai::GeomRepositoryItem repositoryItem = self->GetItemFromOrigin(*at);
             if (repositoryItem.IsValid()) {
