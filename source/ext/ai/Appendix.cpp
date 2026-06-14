@@ -175,6 +175,18 @@ namespace hta {
         }
 
         Appendix::~Appendix() {
+            // Meridian's Appendix is a native engine class, so destroying it runs the
+            // real engine ~PhysicBody (RVA 0x21d0b0), which tears down the body's
+            // collision geoms via _ClearGeoms(). Our HTA port recompiles the class in
+            // kraken, where the base destructors (~Gun/~VehiclePart/~PhysicBody) are
+            // empty stubs — so that cleanup never happens and the appendix's geoms
+            // leak into the world collision space. Once the object is freed (e.g. the
+            // transient object created by AddItemsToPlayerRepository("thorn3") is
+            // purged a couple of seconds later) the leaked geoms dangle and the world
+            // collision callback (NearCallback/GetCollider) reads a garbage geom-data
+            // pointer -> AV. Replicate the engine cleanup here (idempotent: a second
+            // _ClearGeoms on the empty geom vector is a no-op).
+            _ClearGeoms();
             ClearAppendices();
         }
 
