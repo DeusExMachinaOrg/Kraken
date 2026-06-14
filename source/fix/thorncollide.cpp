@@ -5,6 +5,9 @@
 #include "hta/ai/Gun.hpp"
 #include "hta/ai/Vehicle.hpp"
 #include "hta/ai/PhysicObj.hpp"
+#include "hta/ai/PhysicBody.hpp"
+#include "hta/ai/Wheel.hpp"
+#include "hta/m3d/Class.hpp"
 #include "hta/ai/DamageInfo.hpp"
 #include "hta/ai/Enums.hpp"
 #include "hta/ai/DynamicScene.hpp"
@@ -19,11 +22,17 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <Windows.h>
 
 using namespace hta;
+
+// Debug logging gated by [thorncollide] log (default 0). Still requires the global
+// log_debug level to admit DEBUG lines. Avoids spamming the hot physics path by default.
+#define RAM_LOG(fmt, ...) \
+    do { if (kraken::Config::Instance().ram_log.value) LOG_DEBUG(fmt, ##__VA_ARGS__); } while (0)
 
 namespace hta::ai {
     struct DynamicScene;
@@ -58,18 +67,18 @@ namespace {
 
         if (const char* s = node->GetAttribute("RamOffense")) {
             const float value = static_cast<float>(std::atof(s));
-            LOG_DEBUG("vehicle '%s': RamOffense = %.3f (from XML)", protoName, value);
+            RAM_LOG("vehicle '%s': RamOffense = %.3f (from XML)", protoName, value);
             return value;
         }
         if (const char* parent = node->GetAttribute("ParentPrototype")) {
             auto p = g_ramOffenseByName.find(parent);
             if (p != g_ramOffenseByName.end()) {
-                LOG_DEBUG("vehicle '%s': RamOffense = %.3f (inherited from ParentPrototype '%s', no own attr)",
-                          protoName, p->second, parent);
+                RAM_LOG("vehicle '%s': RamOffense = %.3f (inherited from ParentPrototype '%s', no own attr)",
+                        protoName, p->second, parent);
                 return p->second;
             }
         }
-        LOG_DEBUG("vehicle '%s': RamOffense = %.3f (DEFAULT, no XML attr)", protoName, kDefaultRamOffense);
+        RAM_LOG("vehicle '%s': RamOffense = %.3f (DEFAULT, no XML attr)", protoName, kDefaultRamOffense);
         return kDefaultRamOffense;
     }
 
@@ -372,6 +381,133 @@ namespace kraken::fix::thorncollide {
         return 1;
     }
 
+    // ===========================================================================
+    //  WHEEL RAM DAMAGE — closes the side-ram "dead zone".
+    // ---------------------------------------------------------------------------
+    //  Stock engine routes a contact that lands on a wheel geom to
+    //  ai::CollideWheelDefault (0x00891430), which only configures tyre friction/slip
+    //  and counts ground contacts — it never deals damage. Because wheels stick out
+    //  laterally, side-rams frequently catch a wheel first and do nothing (the classic
+    //  "ram the side and nothing happens" frustration).
+    //
+    //  That engine function is hooked by fix::cardan (moving-surface support), which is
+    //  installed unconditionally, whereas this module only runs when [constants] appendix
+    //  is set. To avoid two redirects fighting over the same 5-byte prologue, cardan owns
+    //  the hook and calls OnWheelCollision() below after the stock tyre logic. Here we run
+    //  the same ram-damage formula as the part-vs-part path when the wheel was struck by
+    //  ANOTHER vehicle, and InflictDamage on both. No-op unless appendix + wheel_damage.
+    // ===========================================================================
+
+    // Runtime classes (image base 0x400000): VA = RVA + 0x400000.
+    static m3d::Class* const kClassPhysicBody  = reinterpret_cast<m3d::Class*>(0x00A00CB0);
+    static m3d::Class* const kClassWheel       = reinterpret_cast<m3d::Class*>(0x00A00968);
+    static m3d::Class* const kClassVehiclePart = reinterpret_cast<m3d::Class*>(0x00A0223C);
+
+    // The engine hands the wheel collider the OTHER geom's owning object (edx). It can be
+    // any of three shapes, so resolve the vehicle the same way the engine's own paths do:
+    //   * the Vehicle body itself        -> cast<Vehicle>
+    //   * a part (VehiclePart/PhysicBody) -> PhysicBody::GetOwner() -> Vehicle
+    //   * another wheel (SimplePhysicObj) -> Wheel::GetVehicle()
+    // Landscape / props / null resolve to nullptr (driving over them must not hurt).
+    static ai::Vehicle* VehicleFromCollisionObject(m3d::Object* obj) {
+        if (!obj)
+            return nullptr;
+        if (ai::Vehicle* v = obj->cast<ai::Vehicle>())
+            return v;
+        if (obj->IsKindOf(kClassPhysicBody)) {
+            ai::PhysicObj* owner = reinterpret_cast<ai::PhysicBody*>(obj)->GetOwner();
+            return owner ? owner->cast<ai::Vehicle>() : nullptr;
+        }
+        if (obj->IsKindOf(kClassWheel))
+            return reinterpret_cast<ai::Wheel*>(obj)->GetVehicle();
+        return nullptr;
+    }
+
+    // Vehicle::InflictDamage only applies damage to a named VehiclePart it finds in the
+    // vehicle's parts map (ComplexPhysicObj::GetPartByName); an empty/unknown name is a
+    // logged no-op. Wheels are NOT in that map, so route a wheel hit to the body part
+    // nearest the contact — the closest real part to where the wheel was struck.
+    static const CStr* NearestPartName(ai::Vehicle* veh, const CVector& at) {
+        const CStr* best = nullptr;
+        float bestDist = (std::numeric_limits<float>::max)();
+        for (const auto& [name, part] : veh->m_vehicleParts) {
+            if (!part)
+                continue;
+            const float d = (part->GetPosition() - at).LengthSquare();
+            if (d < bestDist) {
+                bestDist = d;
+                best = &name;
+            }
+        }
+        return best;
+    }
+
+    // Where a wheel hit lands: always the cabin (per design). The wheel itself is not a
+    // damageable part, and routing wheel rams to the cabin makes side/wheel rams threaten
+    // the driver consistently. Falls back to the nearest part only if the vehicle somehow
+    // has no cabin.
+    static const CStr* WheelHitPartName(ai::Vehicle* veh, const CVector& at) {
+        if (ai::Cabin* cabin = veh->GetCabin())
+            return &cabin->m_partName;
+        return NearestPartName(veh, at);
+    }
+
+    // Part name to damage on 'veh' for a hit on 'hitObj'. If the struck object is itself a
+    // body part (e.g. a Cabin), damage exactly that; otherwise (a wheel) route to the cabin.
+    static const CStr* DamagedPartName(m3d::Object* hitObj, ai::Vehicle* veh, const CVector& at) {
+        if (hitObj && hitObj->IsKindOf(kClassVehiclePart))
+            return &reinterpret_cast<ai::VehiclePart*>(hitObj)->m_partName;
+        return WheelHitPartName(veh, at);
+    }
+
+    void OnWheelCollision(ai::Wheel* self, m3d::Object* other, dContact* contacts, unsigned int* numContacts) {
+        const kraken::Config& cfg = kraken::Config::Instance();
+        if (!cfg.appendix.value || !cfg.ram_wheel_damage.value)
+            return;
+        if (!self || !other || !contacts || !numContacts || *numContacts == 0)
+            return;
+
+        ai::Vehicle* wheelVeh = self->GetVehicle();
+        if (!wheelVeh)
+            return;
+
+        // 'other' is the object that struck the wheel (engine-resolved, edx).
+        ai::Vehicle* otherVeh = VehicleFromCollisionObject(other);
+        if (!otherVeh || otherVeh == wheelVeh)
+            return;
+
+        float dSpeed = 0.0f;
+        ai::DamageInfo damageInfo;
+        CalcDamageToVehicles(wheelVeh, otherVeh, contacts, &dSpeed, &damageInfo, nullptr);
+        const float damageToWheelVeh = damageInfo.damage;
+        const float damageToOther = g_thornDamageToV2;
+        const CVector at = damageInfo.hitPos; // contact point, set by CalcDamageToVehicles
+
+        // Damage the wheel's vehicle. 'self' is a wheel (not a damageable part) — route the
+        // hit to the cabin.
+        if (const CStr* wpart = WheelHitPartName(wheelVeh, at)) {
+            damageInfo.damagedPartName = *wpart;
+            damageInfo.attackerId = otherVeh->m_objId;
+            damageInfo.attackingAgentId = otherVeh->m_objId;
+            wheelVeh->InflictDamage(damageInfo);
+        }
+
+        // Reciprocal damage to the other vehicle, on the part actually struck (its Cabin/
+        // body part), or the nearest part if a wheel hit a wheel.
+        if (const CStr* opart = DamagedPartName(other, otherVeh, at)) {
+            damageInfo.hitDir = damageInfo.hitDir * -1.0f;
+            damageInfo.normal = damageInfo.normal * -1.0f;
+            damageInfo.damage = damageToOther;
+            damageInfo.damagedPartName = *opart;
+            damageInfo.attackerId = wheelVeh->m_objId;
+            damageInfo.attackingAgentId = wheelVeh->m_objId;
+            otherVeh->InflictDamage(damageInfo);
+        }
+
+        RAM_LOG("wheel ram: dmg_to_wheelVeh=%.1f dmg_to_other=%.1f dSpeed=%.2f (other='%s')",
+                damageToWheelVeh, damageToOther, dSpeed, other->GetClassNameA());
+    }
+
     void Apply() {
         // Replace the engine's ram-damage model with Meridian's globally. Meridian's
         // CalcDamageToVehicles (linear hit curve + side coefficient + thorn force,
@@ -396,5 +532,9 @@ namespace kraken::fix::thorncollide {
             reinterpret_cast<uintptr_t>(origVehicleLoadXml) + 7
             - (reinterpret_cast<uintptr_t>(s_vehicleLoadXmlTramp) + 12));
         kraken::routines::Redirect(7, origVehicleLoadXml, reinterpret_cast<void*>(&VehicleLoadFromXML_Hook));
+
+        // NB: ai::CollideWheelDefault (0x00891430) is hooked by fix::cardan, which forwards
+        // to OnWheelCollision() above for ram damage. We deliberately do NOT redirect it
+        // here — a second patch over the same prologue would corrupt cardan's trampoline.
     }
 }

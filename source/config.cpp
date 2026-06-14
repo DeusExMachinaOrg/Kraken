@@ -57,6 +57,8 @@ namespace kraken {
         this->ram_armor_rear                    = { "thorncollide", "armor_rear",                   1.0f,    true,  0.01f, 100.0f    };
         this->ram_landscape_offense             = { "thorncollide", "landscape_offense",            0.5f,    true,  0.0f,  100.0f    };
         this->ram_thorn_scale                   = { "thorncollide", "thorn_scale",                  0.02f,   true,  0.0f,  100.0f    };
+        this->ram_wheel_damage                  = { "thorncollide", "wheel_damage",                 1,       true,  0,     1         };
+        this->ram_log                           = { "thorncollide", "log",                          0,       true,  0,     1         };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -131,6 +133,8 @@ namespace kraken {
         this->LoadValue(&this->ram_armor_rear);
         this->LoadValue(&this->ram_landscape_offense);
         this->LoadValue(&this->ram_thorn_scale);
+        this->LoadValue(&this->ram_wheel_damage);
+        this->LoadValue(&this->ram_log);
     };
 
     void Config::Dump() {
@@ -181,6 +185,8 @@ namespace kraken {
         this->DumpValue(&this->ram_armor_rear);
         this->DumpValue(&this->ram_landscape_offense);
         this->DumpValue(&this->ram_thorn_scale);
+        this->DumpValue(&this->ram_wheel_damage);
+        this->DumpValue(&this->ram_log);
     };
 
     template<typename T>

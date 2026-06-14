@@ -87,6 +87,8 @@ namespace kraken {
         ConfigValue<float>                    ram_armor_rear;         // directional armor: hit from the rear
         ConfigValue<float>                    ram_landscape_offense;  // "ram offense" of static obstacles (walls/pipes)
         ConfigValue<float>                    ram_thorn_scale;        // thorn multiplier = 1 + ThornForce * this
+        ConfigValue<uint32_t>                 ram_wheel_damage;       // 1: ramming a wheel also damages the vehicle (fixes the side-ram dead zone)
+        ConfigValue<uint32_t>                 ram_log;                // 1: thorncollide debug logging (RamOffense load + wheel ram) — needs log_debug=0
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;

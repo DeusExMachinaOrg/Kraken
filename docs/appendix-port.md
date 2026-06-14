@@ -355,6 +355,43 @@ car(1) теперь: Hook C убирает LP-клоны до разрушени
 узлы частей мимо наших хуков; сироты-клоны подберёт первый же respread на новой
 карте, но указатели в `m_appendices` в этом окне могут протухнуть (не наблюдалось).
 
+## 10. Урон по колёсам при таране в борт — СДЕЛАНО
+
+Претензия: таран в бок «зачастую не наносит урон». Причина (разобрано по game.pdb):
+движок разводит контакты по разным обработчикам в зависимости от задетой геометрии.
+- часть↔часть → `ai::CollideVehiclePartAndVehiclePart` (0x890430) — **урон** (наш порт).
+- машина↔ландшафт → `ai::CollideVehicleAndLandscape` (0x88fc20) — урон.
+- **колесо↔что угодно → `ai::CollideWheelDefault` (0x891430)** — только трение/сцепление
+  шины + `IncNumWheelsTouchingGround`, **урона нет вообще**.
+
+`thorncollide::Apply()` редиректил только `0x88F700`/`0x890430`/LoadFromXML, т.е.
+колёсный путь не трогался. Колёса торчат вбок → таран в борт часто цепляет колесо →
+ноль урона. Это **штатное поведение движка**, не регрессия порта.
+
+**ВАЖНО — конфликт хука:** `CollideWheelDefault` (0x891430) **уже хукается
+`fix::cardan`** (Hook_CollideWheelDefault_Naked, moving-surface). cardan ставится
+безусловно, thorncollide — только при `appendix=1`. Два `Redirect(5,0x891430,…)` затёрли
+бы пролог друг друга (а трамплин второго скопировал бы чужой jmp → краш). Решение:
+**хук принадлежит cardan** (один Redirect). Наклонный naked-хук переписан в C-обёртку
+`Hook_CollideWheelDefault` (`__fastcall(self=ecx, surface=edx, contacts, num, reverse)`,
+трамплин из 5-байт пролога `83 EC 24 53 55` + jmp 0x891435): сначала
+`HandleWheelSurfaceTouch` (как раньше), затем оригинал через трамплин, затем
+`thorncollide::OnWheelCollision(self, contacts, num)`.
+
+Урон (`thorncollide::OnWheelCollision`, гейт `appendix && [thorncollide] wheel_damage`,
+дефолт 1): резолвим вторую геометрию контакта `contacts->geom.g1/g2`: `dGeomGetBody`
+(0x600370; null → статика, урон не наносим) + `dGeomGetData` (0x6002b0) → `m3d::Object*`,
+проверка `IsKindOf(PhysicBody@0xA00CB0)`, `GetOwner()→cast<Vehicle>`. Если ударила другая
+машина — общий `CalcDamageToVehicles` + `InflictDamage` обеим (реципрокно), как в
+part↔part. Урон в HP/корпус (пустой `damagedPartName` = blast-путь, как у взрыва).
+Шипы/RamOffense — автоматически. (edx=surface на входе — конвенция движкового диспатча,
+cardan на ней уже полагается; но я резолвю через geom'ы контакта, независимо от edx.)
+
+Открытые риски (горячий физический путь, нужен тест в игре): возможный двойной учёт
+(тот же таран может дать ещё и part↔part контакты — суммируется, клампится `max_damage`);
+пустой `damagedPartName` в `Vehicle::InflictDamage` (0x1e68a0) предполагается безопасным
+(тот же путь у BlastWave).
+
 ## Как воспроизвести анализ
 ```powershell
 py -3 e:\KrakenWorkspace\scripts3\_probe.py find                 # типы Appendix в обеих PDB

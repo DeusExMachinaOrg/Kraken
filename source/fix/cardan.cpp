@@ -7,14 +7,21 @@
 
 #include "hta/CVector.hpp"
 #include "hta/ai/Vehicle.hpp"
+#include "hta/ai/Wheel.hpp"
 #include "hta/ActionType.hpp"
 #include "hta/ai/Cabin.hpp"
 #include "hta/ai/Basket.hpp"
 #include "hta/m3d/AnimInfo.hpp"
 #include "hta/m3d/Object.hpp"
 #include "hta/Shared.hpp"
+#include "ode/ode.hpp"
 
 #include "fix/cardan.hpp"
+#include "fix/thorncollide.hpp"
+
+#include <cstring>
+#include <cstdint>
+#include <Windows.h>
 
 namespace kraken::fix::cardan {
     static std::unordered_map<hta::ai::Vehicle*, hta::CVector> surfaceVelocities;
@@ -269,25 +276,28 @@ namespace kraken::fix::cardan {
         }
     }
 
-    const uintptr_t kReturnAddr = 0x00891435;
+    // Trampoline holding ai::CollideWheelDefault's original 5-byte prologue
+    // (83 EC 24 53 55 = sub esp,0x24; push ebx; push ebp) + a jmp back to 0x00891435,
+    // so the wrapper below can run the stock tyre logic and still execute code afterwards.
+    using WheelCollideFn = int(__fastcall*)(hta::ai::Wheel*, void*, dContact*, unsigned int*, bool);
+    static uint8_t s_wheelCollideTramp[16];
 
-    __declspec(naked) void Hook_CollideWheelDefault_Naked() {
-        __asm {
-            pushad
+    // Shared hook for ai::CollideWheelDefault (0x00891430). Two features need this entry:
+    //   1) cardan — moving-surface velocity bookkeeping (HandleWheelSurfaceTouch);
+    //   2) thorncollide — ram damage when a wheel is hit by another vehicle.
+    // cardan owns the single redirect (it installs unconditionally; thorncollide only when
+    // [constants] appendix is set) and forwards to thorncollide::OnWheelCollision.
+    // self=ecx (Wheel), surface=edx (the struck object) — the engine's dispatch convention.
+    int __fastcall Hook_CollideWheelDefault(hta::ai::Wheel* self, void* surface,
+                                            dContact* contacts, unsigned int* numContacts, bool reverse) {
+        auto* surfaceObj = reinterpret_cast<hta::m3d::Object*>(surface);
+        HandleWheelSurfaceTouch(self, surfaceObj);
 
-            push edx
-            push ecx
-            call HandleWheelSurfaceTouch
+        const int result = reinterpret_cast<WheelCollideFn>(static_cast<void*>(s_wheelCollideTramp))(
+            self, surface, contacts, numContacts, reverse);
 
-            popad
-
-            sub esp, 0x24
-            push ebx
-            push ebp
-
-            mov eax, kReturnAddr
-            jmp eax
-        }
+        kraken::fix::thorncollide::OnWheelCollision(self, surfaceObj, contacts, numContacts);
+        return result;
     }
 
     void Apply()
@@ -302,6 +312,17 @@ namespace kraken::fix::cardan {
         kraken::routines::Nop((void*)0x005ECCD3, 2);
         kraken::routines::ChangeCall((void*) 0x005ECCD6, HookVehicleDtor);
         kraken::routines::Redirect(0x26, (void*) 0x005EDD60, VehiclePrototypeInfo_CreateTargetObject);
-        kraken::routines::Redirect(5, (void*)0x00891430, Hook_CollideWheelDefault_Naked);
+
+        // Build the trampoline from the original prologue BEFORE redirecting (otherwise we
+        // would copy our own jmp), then point 0x00891430 at the C wrapper.
+        void* const origWheelCollide = reinterpret_cast<void*>(0x00891430);
+        DWORD oldProt;
+        VirtualProtect(s_wheelCollideTramp, sizeof(s_wheelCollideTramp), PAGE_EXECUTE_READWRITE, &oldProt);
+        std::memcpy(s_wheelCollideTramp, origWheelCollide, 5);
+        s_wheelCollideTramp[5] = 0xE9;
+        *reinterpret_cast<int32_t*>(s_wheelCollideTramp + 6) = static_cast<int32_t>(
+            reinterpret_cast<uintptr_t>(origWheelCollide) + 5
+            - (reinterpret_cast<uintptr_t>(s_wheelCollideTramp) + 10));
+        kraken::routines::Redirect(5, origWheelCollide, reinterpret_cast<void*>(&Hook_CollideWheelDefault));
     }
 }
