@@ -1,6 +1,7 @@
 # Directories
 build
 .vscode
+.vs
 
 # Bindary files
 **/*.obj
@@ -9,3 +10,7 @@ build
 **/*.lib
 **/*.ilk
 **/*.pdb
+
+.claude
+provider
+.mcp.json

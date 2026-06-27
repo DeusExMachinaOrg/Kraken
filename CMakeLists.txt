@@ -38,10 +38,18 @@ add_library(kraken SHARED
     source/fix/difficultywndescapefix.cpp
     source/fix/mortarvolleylauncherfix.cpp
     source/fix/gunlights.cpp
+    source/fix/cinematicmover.cpp
+    source/fix/watercollidefix.cpp
+    source/fix/thorncollide.cpp
+    source/fix/firingtype.cpp
+    source/fix/radiomanagerfix.cpp
 
+    source/ext/memory.cpp
     source/ext/logger.cpp
     source/ext/impulse.cpp
     source/ext/runtime.cpp
+    source/ext/meta.cpp
+    source/ext/ai/Appendix.cpp
 )
 
 # Include directories

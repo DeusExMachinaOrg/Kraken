@@ -4,3 +4,4 @@
 [submodule "extern/hta"]
 	path = extern/hta
 	url = https://github.com/DeusExMachinaOrg/Headers
+	branch = KVehicle

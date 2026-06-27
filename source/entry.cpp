@@ -6,7 +6,9 @@
 
 #include "ext/logger.hpp"
 #include "ext/runtime.hpp"
+#include "ext/meta.hpp"
 #include "ext/impulse.hpp"
+#include "ext/ai/Appendix.hpp"
 
 #include "fix/fileserver.hpp"
 #include "fix/physic.hpp"
@@ -28,6 +30,12 @@
 #include "fix/difficultywndescapefix.hpp"
 #include "fix/mortarvolleylauncherfix.hpp"
 #include "fix/gunlights.hpp"
+#include "fix/cinematicmover.hpp"
+#include "fix/watercollidefix.hpp"
+#include "fix/thorncollide.hpp"
+#include "fix/firingtype.hpp"
+#include "fix/radiomanagerfix.hpp"
+
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
     Config* G_CONFIG = new Config();
@@ -59,6 +67,7 @@ namespace kraken {
 
         logger::Init();
         runtime::Init();
+        kraken::meta::Init();
         impulse::Init();
 
         LOG_INFO("Prepare patches");
@@ -83,5 +92,18 @@ namespace kraken {
         fix::difficultywndescapefix::Apply();
         fix::mortarvolleylauncherfix::Apply();
         fix::gunlights::Apply();
+        fix::cinematicmover::Apply();
+        fix::watercollidefix::Apply();
+        fix::radiomanagerfix::Apply();
+        // Appendix (thorn melee weapons) + the Meridian ram-collision formulas.
+        // Gated by [constants] appendix so it can be fully disabled (vanilla HTA ram
+        // damage, no thorn hooks). The Appendix class itself stays registered in
+        // meta::Init above so existing thorn prototypes/items still load without a crash.
+        if (G_CONFIG->appendix.value) {
+            LOG_INFO("Appendix enabled");
+            fix::thorncollide::Apply();
+            fix::firingtype::Apply();
+            ext::ai::ApplyReconstructHook();
+        }
     };
 };

@@ -14,7 +14,6 @@
 #include "hta/Enums.hpp"
 #include "hta/m3d/WeatherManager.hpp"
 #include "hta/m3d/SgAnimatedModelNode.hpp"
-
 #include "routines.hpp"
 
 namespace kraken::fix::gunlights {
