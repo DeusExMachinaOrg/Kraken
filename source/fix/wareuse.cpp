@@ -9,6 +9,7 @@
 #include "hta/CMiracle3d.hpp"
 #include "hta/DragSlot.hpp"
 #include "hta/PointBase.hpp"
+#include "hta/ai/GeomRepository.hpp"
 #include "hta/ai/Player.hpp"
 #include "hta/ai/PrototypeManager.hpp"
 #include "hta/m3d/GameImpulse.hpp"
@@ -17,6 +18,7 @@
 #include "hta/m3d/ui/DragDropItemsWnd.hpp"
 #include "hta/m3d/ui/GarageWnd.hpp"
 #include "hta/m3d/ui/GfxServer.hpp"
+#include "hta/m3d/ui/VehiclePartWnd.hpp"
 
 namespace kraken::fix::wareuse {
     static std::vector<configstructs::WareUnits> RepairWares;
@@ -186,6 +188,19 @@ namespace kraken::fix::wareuse {
         return {};
     }
 
+    // Trampoline back into the real DragDropItemsWnd::OnMouseButton0 (0x00443840).
+    // We detour that function at its entry, so calling 0x00443840 directly would
+    // re-enter our hook. Instead re-execute the 5 prologue bytes the detour
+    // overwrote (push ebx; mov ebx, [esp+8]) and jump past the patch.
+    __declspec(naked) int __fastcall OnMouseButton0_Original(hta::m3d::ui::DragDropItemsWnd*, void*, uint32_t, const hta::PointBase<float>*) {
+        static constexpr auto kResume = 0x00443845;
+        __asm {
+            push ebx
+            mov  ebx, [esp + 8]
+            jmp  kResume
+        }
+    }
+
     int __fastcall OnMouseButton0Hook(hta::m3d::ui::DragDropItemsWnd* self, void* _, uint32_t state, const hta::PointBase<float>* at) {
         auto app = hta::CMiracle3d::Instance();
         auto impulse = (hta::m3d::GameImpulse*)app->m_pImpulses;
@@ -198,18 +213,50 @@ namespace kraken::fix::wareuse {
             hta::ai::GeomRepositoryItem repositoryItem = self->GetItemFromOrigin(*at);
             if (repositoryItem.IsValid()) {
                 auto repositoryObj = repositoryItem.GetObj();
-                if (repositoryObj && repositoryObj->IsKindOf((hta::m3d::Class*)0x00A0238C)) // Ware class
+                auto playerVehicle = hta::ai::Player::Instance()->GetVehicle();
+
+                // Decide whether the player may use this ware, and how to spend it.
+                //  - Repository-backed windows: the item carries its repository
+                //    (m_parentRepository). Allow the player's own inventory
+                //    (GetVehicle() == player) and the ground-loot repository the
+                //    player is standing over (Vehicle::m_groundRepository). A
+                //    trader's repository is neither, so shop goods stay blocked.
+                //    Spend through that repository (GiveUpThingByObjId).
+                //  - Equipped active slot (VehiclePartWnd): the ware is mounted as a
+                //    vehicle part and has no backing repository (owner == null). It
+                //    is owned if the slot's vehicle id matches the player's. Spend
+                //    by clearing the slot, which removes the mounted part.
+                hta::ai::GeomRepository* owner = repositoryItem.m_parentRepository;
+                hta::m3d::ui::VehiclePartWnd* equippedSlot = nullptr;
+                bool owned = false;
+                if (owner) {
+                    owned = playerVehicle
+                            && (owner->GetVehicle() == playerVehicle
+                                || owner == playerVehicle->m_groundRepository);
+                } else if (playerVehicle) {
+                    if (auto* partWnd = self->cast<hta::m3d::ui::VehiclePartWnd>()) {
+                        if (partWnd->m_vehicleId == playerVehicle->m_objId) {
+                            owned = true;
+                            equippedSlot = partWnd;
+                        }
+                    }
+                }
+
+                if (repositoryObj && owned)
                 {
                     hta::CStr name = hta::ai::PrototypeManager::Instance()->GetPrototypeName(repositoryObj->m_prototypeId);
 
-                    auto playerVehicle = hta::ai::Player::Instance()->GetVehicle();
                     WareUseResult result = TryRepair(playerVehicle, name);
                     if (!result.handled)
                         result = TryRefuel(playerVehicle, name);
 
                     if (result.handled) {
-                        if (result.consume)
-                            playerVehicle->m_repository->GiveUpThingByObjId(repositoryItem.m_objId);
+                        if (result.consume) {
+                            if (equippedSlot)
+                                equippedSlot->SetItemObjId(-1); // clear slot -> remove the mounted ware
+                            else
+                                owner->GiveUpThingByObjId(repositoryItem.m_objId);
+                        }
                         app->m_pInterfaceManager->RemoveWindow(0x24); // Info window
                         return 1;
                     }
@@ -217,9 +264,7 @@ namespace kraken::fix::wareuse {
             }
         }
 
-        auto OnMouseButton0 = (int (__fastcall*)(hta::m3d::ui::DragDropItemsWnd* dragDropItemsWnd, void* _, uint32_t state, const hta::PointBase<float>* at))0x00443840;
-
-        return OnMouseButton0(self, _, state, at);
+        return OnMouseButton0_Original(self, _, state, at);
     }
 
     void Apply() {
@@ -232,7 +277,15 @@ namespace kraken::fix::wareuse {
                 RefuelWares.push_back(wu);
             }
         }
-        kraken::routines::OverrideValue(reinterpret_cast<void*>(0x009CB32C), (void*)&OnMouseButton0Hook);
+        // Inventory and active equipped-item slots are different DragDropItemsWnd
+        // subclasses, but none of them override OnMouseButton0 — every one
+        // dispatches straight to DragDropItemsWnd::OnMouseButton0 (0x00443840).
+        // Patching individual class vtables is whack-a-mole (the active slot is
+        // yet another subclass), so detour the shared function itself. Now ctrl+
+        // click activation fires for a ware wherever it sits; GetItemFromOrigin is
+        // virtual, so it resolves to that window's item, and unhandled clicks fall
+        // through to the original via OnMouseButton0_Original.
+        kraken::routines::Redirect(5, reinterpret_cast<void*>(0x00443840), (void*)&OnMouseButton0Hook);
         if (config.wares.value) {
             routines::Override(32, (void*)0x0047FD7F, "\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90\x90");
         }
