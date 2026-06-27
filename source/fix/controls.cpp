@@ -203,8 +203,11 @@ namespace kraken::fix::controls {
             eff.lpvTypeSpecificParams = &cf;
             HRESULT hr = g_ffbEffect->SetParameters(&eff, DIEP_TYPESPECIFICPARAMS | DIEP_START);
             if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED) {
+                // Lost the device (e.g. Alt+Tab). Reacquire, restart and retry so
+                // the force resumes the same frame focus returns.
                 g_ffbDev->Acquire();
                 g_ffbEffect->Start(1, 0);
+                g_ffbEffect->SetParameters(&eff, DIEP_TYPESPECIFICPARAMS | DIEP_START);
             }
         }
 
@@ -214,9 +217,53 @@ namespace kraken::fix::controls {
             SetFFBMagnitude(0);
         }
 
+        // Self-heal the device every frame. Alt+Tab (and the game's own focus /
+        // D3D device-reset handling) can silently unacquire the device, stop the
+        // effect, pause it, or switch the actuators off — and the triggering
+        // window message isn't always one we see. So instead of relying on a
+        // focus event, we poll the FF state each frame and revive whatever is
+        // wrong. Cheap, and independent of how focus actually changed.
+        void EnsureFFBLive() {
+            if (!g_ffbDev || !g_ffbEffect)
+                return;
+
+            DWORD   state = 0;
+            HRESULT hr    = g_ffbDev->GetForceFeedbackState(&state);
+            if (FAILED(hr)) {
+                // Any failure after Alt+Tab — INPUTLOST, NOTACQUIRED, or
+                // NOTEXCLUSIVEACQUIRED (0x80040205): the device dropped or got
+                // re-acquired NON-exclusively, and FFB needs exclusive. A bare
+                // Acquire() on an already (non-exclusively) acquired device just
+                // returns S_FALSE and does NOT upgrade it, so we must Unacquire
+                // first to force a fresh exclusive acquisition.
+                g_ffbDev->Unacquire();
+                HRESULT ah = g_ffbDev->Acquire();
+                if (SUCCEEDED(ah))
+                    g_ffbEffect->Start(1, 0);
+                if (g_ffbLog)
+                    LOG_DEBUG("FFB revive: getstate=0x%08lX acquire=0x%08lX", hr, ah);
+                return;
+            }
+
+            if (state & DIGFFS_ACTUATORSOFF) {
+                if (g_ffbLog) LOG_DEBUG("FFB actuators off -> on (state=0x%lX)", state);
+                g_ffbDev->SendForceFeedbackCommand(DISFFC_SETACTUATORSON);
+            }
+            if (state & DIGFFS_PAUSED) {
+                if (g_ffbLog) LOG_DEBUG("FFB paused -> continue (state=0x%lX)", state);
+                g_ffbDev->SendForceFeedbackCommand(DISFFC_CONTINUE);
+            }
+            if (state & (DIGFFS_STOPPED | DIGFFS_EMPTY)) {
+                if (g_ffbLog) LOG_DEBUG("FFB stopped/empty -> Start (state=0x%lX)", state);
+                g_ffbEffect->Start(1, 0); // (re)downloads + plays the effect
+            }
+        }
+
         void UpdateFFB(hta::ai::Vehicle* vehicle) {
             if (!g_ffbEffect)
                 return;
+
+            EnsureFFBLive();
 
             hta::CVector vel = vehicle->GetLinearVelocity();
             float   speed = std::sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
@@ -249,6 +296,15 @@ namespace kraken::fix::controls {
         void OnImpulse(const impulse::Impulse& ev) {
             using namespace kraken::impulse;
             switch (ev.type) {
+                case eImpulseFocus:
+                    // Alt+Tab unacquires the exclusive FFB device; reacquire and
+                    // re-download the effect when the window regains focus.
+                    if (ev.focus.state && g_ffbReady && g_ffbDev) {
+                        g_ffbDev->Acquire();
+                        if (g_ffbEffect)
+                            g_ffbEffect->Start(1, 0);
+                    }
+                    break;
                 case eImpulseJoyConnection:
                     if (ev.joy_connect.device == g_device)
                         g_present = (ev.joy_connect.status == eJoyStatusConnected);
