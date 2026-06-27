@@ -1,10 +1,14 @@
+#define LOGGER "impulse"
+
 #include "ext/impulse.hpp"
+#include "ext/logger.hpp"
 #include "routines.hpp"
 
 #include <list>
 #include <array>
 
 #include <windows.h>
+#include <mmsystem.h>   // winmm joystick API (joyGetPosEx / joyGetDevCaps)
 
 namespace kraken::impulse {
     using Listeners = std::list<Listener>;
@@ -20,9 +24,146 @@ namespace kraken::impulse {
         bool     supress                   { false };
     } self;
 
+    // ---------------------------------------------------------------------
+    // Joystick / steering-wheel support (MOZA R5 and any DirectInput device
+    // exposed through the legacy winmm joystick API).
+    //
+    // Why this lives here and not in the WndProc switch above: HID game
+    // controllers (wheels, gamepads) do NOT post WM_KEYDOWN/WM_CHAR window
+    // messages, so their buttons/axes can never reach the message hook. The
+    // engine itself imports no joystick API at all (hta.exe pulls only
+    // timeGetTime from WINMM, no DirectInput/RawInput), so there is no native
+    // path to lean on either. We therefore poll the device ourselves.
+    //
+    // The poll is driven by a WM_TIMER on the game window so it runs on the
+    // same thread as the message pump (and thus the rest of the impulse
+    // listeners) — no extra thread, no cross-thread event delivery.
+    // ---------------------------------------------------------------------
+    namespace {
+        constexpr UINT_PTR JOY_TIMER_ID = 0x4B524A59; // 'KRJY'
+        constexpr UINT     JOY_POLL_MS  = 16;         // ~60 Hz
+        constexpr int      JOY_MAX_DEV  = 16;
+        constexpr int      JOY_BUTTONS  = 16;         // eKeyJoyKey0..15
+        constexpr int      JOY_AXES     = 6;          // eKeyJoyAxis0..5 / X Y Z R U V
+        constexpr DWORD    JOY_AXIS_DZ  = 768;        // raw [0..65535] noise threshold
+
+        struct JoyDevState {
+            bool  present  = false;
+            bool  axisInit = false;
+            DWORD buttons  = 0;
+            DWORD axes[JOY_AXES] = { 0 };
+        };
+
+        JoyDevState g_joy[JOY_MAX_DEV] = {};
+        bool        g_joyTimerSet      = false;
+    }
+
+    void _PollJoysticks(void) {
+        UINT count = joyGetNumDevs();
+        if (count > JOY_MAX_DEV)
+            count = JOY_MAX_DEV;
+
+        for (UINT id = 0; id < count; ++id) {
+            JoyDevState& st = g_joy[id];
+
+            JOYINFOEX info = {};
+            info.dwSize  = sizeof(info);
+            info.dwFlags = JOY_RETURNALL;
+
+            if (joyGetPosEx(id, &info) != JOYERR_NOERROR) {
+                if (st.present) {
+                    st.present = false;
+                    LOG_INFO("Joystick %u disconnected", id);
+                    Impulse ev          = {};
+                    ev.type             = eImpulseJoyConnection;
+                    ev.frame            = self.frame_id;
+                    ev.joy_connect.status = eJoyStatusDisconnected;
+                    ev.joy_connect.device = id;
+                    Immediate(ev);
+                }
+                continue;
+            }
+
+            if (!st.present) {
+                st.present  = true;
+                st.buttons  = 0;
+                st.axisInit = false;
+
+                JOYCAPSA caps = {};
+                if (joyGetDevCapsA(id, &caps, sizeof(caps)) == JOYERR_NOERROR) {
+                    LOG_INFO("Joystick %u connected: '%s' buttons=%u axes=%u "
+                             "X[%lu..%lu] Y[%lu..%lu] Z[%lu..%lu]",
+                             id, caps.szPname, caps.wNumButtons, caps.wNumAxes,
+                             caps.wXmin, caps.wXmax, caps.wYmin, caps.wYmax,
+                             caps.wZmin, caps.wZmax);
+                } else {
+                    LOG_INFO("Joystick %u connected (caps unavailable)", id);
+                }
+
+                Impulse ev            = {};
+                ev.type               = eImpulseJoyConnection;
+                ev.frame              = self.frame_id;
+                ev.joy_connect.status = eJoyStatusConnected;
+                ev.joy_connect.device = id;
+                Immediate(ev);
+            }
+
+            // --- buttons ---
+            DWORD changed = info.dwButtons ^ st.buttons;
+            if (changed) {
+                for (int b = 0; b < JOY_BUTTONS; ++b) {
+                    DWORD mask = 1u << b;
+                    if (!(changed & mask))
+                        continue;
+                    bool pressed = (info.dwButtons & mask) != 0;
+                    //LOG_INFO("Joy %u button %d %s", id, b, pressed ? "DOWN" : "UP");
+
+                    Impulse ev           = {};
+                    ev.type              = eImpulseJoyButton;
+                    ev.frame             = self.frame_id;
+                    ev.joy_button.key    = (eKey)(eKeyJoyKey0 + b);
+                    ev.joy_button.pressed = pressed;
+                    ev.joy_button.repeat  = false;
+                    Immediate(ev);
+                }
+                st.buttons = info.dwButtons;
+            }
+
+            // --- axes ---
+            const DWORD raw[JOY_AXES] = {
+                info.dwXpos, info.dwYpos, info.dwZpos,
+                info.dwRpos, info.dwUpos, info.dwVpos,
+            };
+
+            if (!st.axisInit) {
+                for (int a = 0; a < JOY_AXES; ++a)
+                    st.axes[a] = raw[a];
+                st.axisInit = true;
+            } else {
+                for (int a = 0; a < JOY_AXES; ++a) {
+                    long delta = (long)raw[a] - (long)st.axes[a];
+                    if (delta < 0) delta = -delta;
+                    if (delta < (long)JOY_AXIS_DZ)
+                        continue;
+                    st.axes[a] = raw[a];
+
+                    float value = ((float)raw[a] - 32767.5f) / 32767.5f; // -> [-1..1]
+                    //LOG_DEBUG("Joy %u axis %d = %lu (%.3f)", id, a, raw[a], value);
+
+                    Impulse ev        = {};
+                    ev.type           = eImpulseJoyAxis;
+                    ev.frame          = self.frame_id;
+                    ev.joy_axis.axis  = (eJoyAxis)a;
+                    ev.joy_axis.value = value;
+                    Immediate(ev);
+                }
+            }
+        }
+    }
+
     eKey _MapKeyCode(uint32_t wparam, uint32_t lparam) {
         bool extended = (lparam >> 24) & 0x1;
-        
+
         switch (wparam) {
             case VK_SPACE:      return eKeySpace;
             case VK_OEM_7:      return eKeyApostrophe;
@@ -152,7 +293,23 @@ namespace kraken::impulse {
         self.supress  = false;
         Impulse event = {};
 
+        // Arm the joystick poll timer once we have a live window on this
+        // (the message-pump) thread. The game window does not exist yet at
+        // impulse::Init time, so this is the first safe opportunity.
+        if (!g_joyTimerSet && hWnd) {
+            SetTimer(hWnd, JOY_TIMER_ID, JOY_POLL_MS, nullptr);
+            g_joyTimerSet = true;
+            LOG_INFO("Joystick poll timer armed (%u ms, devs=%u)", JOY_POLL_MS, joyGetNumDevs());
+        }
+
         switch (uMsg) {
+            case WM_TIMER: {
+                if (wParam == JOY_TIMER_ID) {
+                    _PollJoysticks();
+                    return 0; // our timer — consume it, don't bother the engine
+                }
+                break;    // someone else's timer — forward to the base proc
+            }
             case WM_CLOSE: {
                 event.type      = eImpulseQuit;
                 event.frame     = self.frame_id;
@@ -365,7 +522,7 @@ namespace kraken::impulse {
     void Init(void) {
         routines::RemapPtr((void*)0x005A8F88, _HOOK_WndProc);
     };
-    
+
     void Clear(void) {
         for (auto& listeners : self.handlers)
             listeners.clear();

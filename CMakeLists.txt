@@ -43,6 +43,7 @@ add_library(kraken SHARED
     source/fix/thorncollide.cpp
     source/fix/firingtype.cpp
     source/fix/radiomanagerfix.cpp
+    source/fix/controls.cpp
 
     source/ext/memory.cpp
     source/ext/logger.cpp
@@ -79,6 +80,7 @@ target_compile_definitions(kraken PRIVATE WIN32_LEAN_AND_MEAN)
 target_link_libraries(kraken PRIVATE
     kernel32
     user32
+    winmm     # joystick / steering-wheel polling (joyGetPosEx)
     lim
     hta
 )

@@ -74,6 +74,20 @@ namespace kraken {
         ConfigValue<uint32_t>                 radio_manager_fix; // 0 disables the RadioManager map-transition self-heal
         ConfigValue<uint32_t>                 appendix; // 0 disables Appendix (thorn) logic + the new ram-collision formulas
 
+        // Steering wheel (MOZA R5 and any winmm joystick). See fix/controls.cpp.
+        ConfigValue<uint32_t>                 wheel;                 // master enable for analog wheel control
+        ConfigValue<uint32_t>                 wheel_device;          // winmm joystick id (0 = first)
+        ConfigValue<uint32_t>                 wheel_steer_axis;      // axis index for steering (0=X 1=Y 2=Z 3=R 4=U 5=V)
+        ConfigValue<uint32_t>                 wheel_throttle_axis;   // axis index for throttle pedal
+        ConfigValue<uint32_t>                 wheel_brake_axis;      // axis index for brake pedal
+        ConfigValue<float>                    wheel_deadzone;        // steering deadzone around center [0..1]
+        ConfigValue<float>                    wheel_pedal_deadzone;  // pedal deadzone at rest (cuts idle creep) [0..1]
+        ConfigValue<float>                    wheel_steer_range;     // multiplier on the engine's full-lock steer magnitude
+        ConfigValue<uint32_t>                 wheel_invert_steer;    // 1: flip steering left/right
+        ConfigValue<uint32_t>                 wheel_invert_throttle; // 1: pedal rests pressed (invert 0..1)
+        ConfigValue<uint32_t>                 wheel_invert_brake;    // 1: pedal rests pressed (invert 0..1)
+        ConfigValue<uint32_t>                 wheel_log;             // 1: log applied steer/throttle each frame (needs log_debug=0)
+
         // Ram collision model (vehicle/landscape impacts + Appendix thorns).
         // damage_i = clamp( coeff * (v - threshold)^exponent * massShare_i
         //                   * offense_other * thornMult_other * dirArmor_i , 0, max_damage )
