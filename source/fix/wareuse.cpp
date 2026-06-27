@@ -29,7 +29,7 @@ namespace kraken::fix::wareuse {
     #define EPS 0.001f
 
     const hta::CStr& getChassisName() {
-        static const hta::CStr name = "CHASSIS_7";
+        static const hta::CStr name = "CHASSIS";
         return name;
     }
 
