@@ -1,6 +1,8 @@
 #define LOGGER "controls"
 
 #include <windows.h>
+#define DIRECTINPUT_VERSION 0x0800
+#include <dinput.h>
 #include <stdint.h>
 #include <cstring>
 #include <cmath>
@@ -11,6 +13,7 @@
 #include "ext/logger.hpp"
 #include "ext/impulse.hpp"
 
+#include "hta/CVector.hpp"
 #include "hta/ai/Vehicle.hpp"
 
 // Analog steering-wheel control for the player vehicle (MOZA R5 etc.).
@@ -66,6 +69,172 @@ namespace kraken::fix::controls {
         bool     g_invBrake     = false;
         bool     g_log          = false;
 
+        // --- force feedback (DirectInput8) ---
+        // winmm can only read the wheel; FFB output requires DirectInput. We load
+        // the real dinput8 from System32 (bypassing the game's dinput8 proxy),
+        // grab the first attached force-feedback game controller, and drive a
+        // single constant-force effect on the X axis that we re-aim every frame
+        // to self-center the wheel (stronger with speed).
+        bool                   g_ffbEnabled   = false;
+        bool                   g_ffbInitTried = false;
+        bool                   g_ffbReady     = false;
+        float                  g_ffbStrength  = 1.0f;
+        float                  g_ffbCenter    = 0.12f;
+        float                  g_ffbSpeed     = 0.03f;
+        bool                   g_ffbInvert    = false;
+        bool                   g_ffbLog       = false;
+        IDirectInput8A*        g_di           = nullptr;
+        IDirectInputDevice8A*  g_ffbDev       = nullptr;
+        IDirectInputEffect*    g_ffbEffect    = nullptr;
+        GUID                   g_ffbGuid      = {};
+        bool                   g_ffbFound     = false;
+
+        HWND GameWindow() {
+            void* app = *reinterpret_cast<void**>(G_PAPP_VA);
+            if (!app)
+                return nullptr;
+            // m3d::Application::m_renderWindow (same offset borderless.cpp uses)
+            HWND wnd = *reinterpret_cast<HWND*>(static_cast<char*>(app) + 0x8B258);
+            return (wnd && IsWindow(wnd)) ? wnd : nullptr;
+        }
+
+        BOOL CALLBACK EnumFFBDeviceCb(const DIDEVICEINSTANCEA* inst, void*) {
+            g_ffbGuid  = inst->guidInstance;
+            g_ffbFound = true;
+            LOG_INFO("FFB device found: '%s'", inst->tszProductName);
+            return DIENUM_STOP; // take the first force-feedback controller
+        }
+
+        bool InitFFB() {
+            HWND wnd = GameWindow();
+            if (!wnd) {
+                g_ffbInitTried = false; // window not ready yet — retry next frame
+                return false;
+            }
+
+            wchar_t path[MAX_PATH];
+            UINT n = GetSystemDirectoryW(path, MAX_PATH);
+            wcscpy_s(path + n, MAX_PATH - n, L"\\dinput8.dll");
+            HMODULE dll = LoadLibraryW(path);
+            if (!dll) {
+                LOG_ERROR("FFB: cannot load %ls", path);
+                return false;
+            }
+
+            using DI8Create_t = HRESULT(WINAPI*)(HINSTANCE, DWORD, REFIID, LPVOID*, LPUNKNOWN);
+            auto DI8Create = reinterpret_cast<DI8Create_t>(GetProcAddress(dll, "DirectInput8Create"));
+            if (!DI8Create) {
+                LOG_ERROR("FFB: DirectInput8Create not found");
+                return false;
+            }
+
+            HINSTANCE hinst = GetModuleHandleW(nullptr);
+            if (FAILED(DI8Create(hinst, DIRECTINPUT_VERSION, IID_IDirectInput8A,
+                                 reinterpret_cast<void**>(&g_di), nullptr))) {
+                LOG_ERROR("FFB: DirectInput8Create failed");
+                return false;
+            }
+
+            g_di->EnumDevices(DI8DEVCLASS_GAMECTRL, EnumFFBDeviceCb, nullptr,
+                              DIEDFL_ATTACHEDONLY | DIEDFL_FORCEFEEDBACK);
+            if (!g_ffbFound) {
+                LOG_WARNING("FFB: no force-feedback controller attached");
+                return false;
+            }
+
+            if (FAILED(g_di->CreateDevice(g_ffbGuid, &g_ffbDev, nullptr))) {
+                LOG_ERROR("FFB: CreateDevice failed");
+                return false;
+            }
+            g_ffbDev->SetDataFormat(&c_dfDIJoystick);
+            g_ffbDev->SetCooperativeLevel(wnd, DISCL_EXCLUSIVE | DISCL_BACKGROUND);
+
+            // Disable the device's own auto-center; we provide centering ourselves.
+            DIPROPDWORD ac = {};
+            ac.diph.dwSize       = sizeof(DIPROPDWORD);
+            ac.diph.dwHeaderSize = sizeof(DIPROPHEADER);
+            ac.diph.dwObj        = 0;
+            ac.diph.dwHow        = DIPH_DEVICE;
+            ac.dwData            = DIPROPAUTOCENTER_OFF;
+            g_ffbDev->SetProperty(DIPROP_AUTOCENTER, &ac.diph);
+
+            g_ffbDev->Acquire();
+
+            DICONSTANTFORCE cf = {};
+            cf.lMagnitude = 0;
+            DWORD axes[1]  = { DIJOFS_X };
+            LONG  dir[1]   = { 0 };
+            DIEFFECT eff   = {};
+            eff.dwSize                = sizeof(DIEFFECT);
+            eff.dwFlags               = DIEFF_CARTESIAN | DIEFF_OBJECTOFFSETS;
+            eff.dwDuration            = INFINITE;
+            eff.dwSamplePeriod        = 0;
+            eff.dwGain                = DI_FFNOMINALMAX;
+            eff.dwTriggerButton       = DIEB_NOTRIGGER;
+            eff.dwTriggerRepeatInterval = 0;
+            eff.cAxes                 = 1;
+            eff.rgdwAxes              = axes;
+            eff.rglDirection          = dir;
+            eff.lpEnvelope            = nullptr;
+            eff.cbTypeSpecificParams  = sizeof(DICONSTANTFORCE);
+            eff.lpvTypeSpecificParams = &cf;
+            eff.dwStartDelay          = 0;
+
+            if (FAILED(g_ffbDev->CreateEffect(GUID_ConstantForce, &eff, &g_ffbEffect, nullptr))
+                || !g_ffbEffect) {
+                LOG_ERROR("FFB: CreateEffect(ConstantForce) failed");
+                return false;
+            }
+            g_ffbEffect->Start(1, 0);
+
+            LOG_INFO("Force feedback enabled (strength=%.2f center=%.2f speed_gain=%.2f)",
+                     g_ffbStrength, g_ffbCenter, g_ffbSpeed);
+            return true;
+        }
+
+        void SetFFBMagnitude(LONG mag) {
+            if (!g_ffbEffect)
+                return;
+            DICONSTANTFORCE cf = {};
+            cf.lMagnitude = mag;
+            DIEFFECT eff = {};
+            eff.dwSize                = sizeof(DIEFFECT);
+            eff.cbTypeSpecificParams  = sizeof(DICONSTANTFORCE);
+            eff.lpvTypeSpecificParams = &cf;
+            HRESULT hr = g_ffbEffect->SetParameters(&eff, DIEP_TYPESPECIFICPARAMS | DIEP_START);
+            if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED) {
+                g_ffbDev->Acquire();
+                g_ffbEffect->Start(1, 0);
+            }
+        }
+
+        // Let go of the wheel (no force) — used when there is no live player
+        // vehicle, so death/menus don't leave the wheel slammed against a stop.
+        void ReleaseFFB() {
+            SetFFBMagnitude(0);
+        }
+
+        void UpdateFFB(hta::ai::Vehicle* vehicle) {
+            if (!g_ffbEffect)
+                return;
+
+            hta::CVector vel = vehicle->GetLinearVelocity();
+            float   speed = std::sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
+
+            // Self-centering: force opposes wheel deflection, scaled by speed.
+            float frac = -(g_ffbCenter + g_ffbSpeed * speed) * g_steer;
+            if (g_ffbInvert) frac = -frac;
+            frac *= g_ffbStrength;
+            if (frac >  1.0f) frac =  1.0f;
+            if (frac < -1.0f) frac = -1.0f;
+            LONG mag = static_cast<LONG>(frac * DI_FFNOMINALMAX);
+
+            SetFFBMagnitude(mag);
+
+            if (g_ffbLog)
+                LOG_DEBUG("ffb mag=%ld (speed=%.2f steer=%.3f)", mag, speed, g_steer);
+        }
+
         float PedalValue(float axis, bool invert) {
             float p = (axis + 1.0f) * 0.5f; // [-1..1] -> [0..1]
             if (p < 0.0f) p = 0.0f;
@@ -104,8 +273,15 @@ namespace kraken::fix::controls {
             if (!g_present)
                 return;
             hta::ai::Vehicle* vehicle = GetPlayerVehicle();
-            if (!vehicle)
+
+            // No live player vehicle (menus, or the player just died): let go of
+            // the wheel and don't push any steer/throttle. Otherwise the dead
+            // car's lingering speed keeps the centering force pinned to a stop.
+            if (!vehicle || vehicle->IsHealthZero()) {
+                if (g_ffbReady)
+                    ReleaseFFB();
                 return;
+            }
 
             // Steering: deadzone around center, then rescale to keep full range.
             float s = g_steer;
@@ -131,6 +307,15 @@ namespace kraken::fix::controls {
             if (g_log)
                 LOG_DEBUG("steer=%.3f throttle=%.3f (gas=%.2f brake=%.2f)",
                           s, thr, g_throttle01, g_brake01);
+
+            if (g_ffbEnabled) {
+                if (!g_ffbReady && !g_ffbInitTried) {
+                    g_ffbInitTried = true;
+                    g_ffbReady     = InitFFB();
+                }
+                if (g_ffbReady)
+                    UpdateFFB(vehicle);
+            }
         }
 
         // Naked detour: preserve Controls' __usercall contract.
@@ -198,6 +383,13 @@ namespace kraken::fix::controls {
         g_invThrottle  = config.wheel_invert_throttle.value != 0;
         g_invBrake     = config.wheel_invert_brake.value != 0;
         g_log          = config.wheel_log.value != 0;
+
+        g_ffbEnabled   = config.ffb.value != 0;
+        g_ffbStrength  = config.ffb_strength.value;
+        g_ffbCenter    = config.ffb_center.value;
+        g_ffbSpeed     = config.ffb_speed_gain.value;
+        g_ffbInvert    = config.ffb_invert.value != 0;
+        g_ffbLog       = config.ffb_log.value != 0;
 
         impulse::Attach(impulse::eImpulseAny, OnImpulse);
 

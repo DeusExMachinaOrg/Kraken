@@ -87,6 +87,12 @@ namespace kraken {
         ConfigValue<uint32_t>                 wheel_invert_throttle; // 1: pedal rests pressed (invert 0..1)
         ConfigValue<uint32_t>                 wheel_invert_brake;    // 1: pedal rests pressed (invert 0..1)
         ConfigValue<uint32_t>                 wheel_log;             // 1: log applied steer/throttle each frame (needs log_debug=0)
+        ConfigValue<uint32_t>                 ffb;                   // force feedback enable (DirectInput8)
+        ConfigValue<float>                    ffb_strength;          // master FFB gain [0..2]
+        ConfigValue<float>                    ffb_center;            // self-centering strength at standstill [0..1]
+        ConfigValue<float>                    ffb_speed_gain;        // extra centering per unit speed [0..1]
+        ConfigValue<uint32_t>                 ffb_invert;            // 1: flip force direction
+        ConfigValue<uint32_t>                 ffb_log;               // 1: log FFB magnitude (needs log_debug=0)
 
         // Ram collision model (vehicle/landscape impacts + Appendix thorns).
         // damage_i = clamp( coeff * (v - threshold)^exponent * massShare_i

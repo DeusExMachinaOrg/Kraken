@@ -81,6 +81,8 @@ target_link_libraries(kraken PRIVATE
     kernel32
     user32
     winmm     # joystick / steering-wheel polling (joyGetPosEx)
+    dinput8   # force feedback output (loaded from System32 at runtime)
+    dxguid    # c_dfDIJoystick + GUID_ConstantForce / IID_IDirectInput8A
     lim
     hta
 )

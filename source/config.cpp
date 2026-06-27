@@ -60,6 +60,12 @@ namespace kraken {
         this->wheel_invert_throttle             = { "wheel",     "invert_throttle",                 0,     true,  0,     1           };
         this->wheel_invert_brake                = { "wheel",     "invert_brake",                    0,     true,  0,     1           };
         this->wheel_log                         = { "wheel",     "log",                             0,     true,  0,     1           };
+        this->ffb                               = { "wheel",     "ffb",                             0,     true,  0,     1           };
+        this->ffb_strength                      = { "wheel",     "ffb_strength",                    1.0f,  true,  0.0f,  2.0f        };
+        this->ffb_center                        = { "wheel",     "ffb_center",                      0.12f, true,  0.0f,  1.0f        };
+        this->ffb_speed_gain                    = { "wheel",     "ffb_speed_gain",                  0.03f, true,  0.0f,  1.0f        };
+        this->ffb_invert                        = { "wheel",     "ffb_invert",                      0,     true,  0,     1           };
+        this->ffb_log                           = { "wheel",     "ffb_log",                         0,     true,  0,     1           };
         this->ram_speed_threshold               = { "thorncollide", "speed_threshold",              5.0f,    true,  0.0f,  1000.0f   };
         this->ram_damage_coeff                  = { "thorncollide", "damage_coeff",                 2.7f,    true,  0.0f,  100000.0f };
         this->ram_speed_exponent                = { "thorncollide", "speed_exponent",               1.0f,    true,  0.1f,  4.0f      };
@@ -148,6 +154,12 @@ namespace kraken {
         this->LoadValue(&this->wheel_invert_throttle);
         this->LoadValue(&this->wheel_invert_brake);
         this->LoadValue(&this->wheel_log);
+        this->LoadValue(&this->ffb);
+        this->LoadValue(&this->ffb_strength);
+        this->LoadValue(&this->ffb_center);
+        this->LoadValue(&this->ffb_speed_gain);
+        this->LoadValue(&this->ffb_invert);
+        this->LoadValue(&this->ffb_log);
         this->LoadValue(&this->ram_speed_threshold);
         this->LoadValue(&this->ram_damage_coeff);
         this->LoadValue(&this->ram_speed_exponent);
@@ -212,6 +224,12 @@ namespace kraken {
         this->DumpValue(&this->wheel_invert_throttle);
         this->DumpValue(&this->wheel_invert_brake);
         this->DumpValue(&this->wheel_log);
+        this->DumpValue(&this->ffb);
+        this->DumpValue(&this->ffb_strength);
+        this->DumpValue(&this->ffb_center);
+        this->DumpValue(&this->ffb_speed_gain);
+        this->DumpValue(&this->ffb_invert);
+        this->DumpValue(&this->ffb_log);
         this->DumpValue(&this->ram_speed_threshold);
         this->DumpValue(&this->ram_damage_coeff);
         this->DumpValue(&this->ram_speed_exponent);
