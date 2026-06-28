@@ -63,8 +63,18 @@ namespace kraken::impulse {
         if (count > JOY_MAX_DEV)
             count = JOY_MAX_DEV;
 
+        // joyGetPosEx on absent device slots is comparatively expensive, and this
+        // runs on the message-pump thread every tick. So only poll devices already
+        // known present each tick, and do a full scan (to pick up newly plugged
+        // controllers) roughly once a second.
+        static UINT s_rescan = 0;
+        const bool  fullScan = (s_rescan == 0);
+        s_rescan = fullScan ? 60 : (s_rescan - 1);
+
         for (UINT id = 0; id < count; ++id) {
             JoyDevState& st = g_joy[id];
+            if (!fullScan && !st.present)
+                continue;
 
             JOYINFOEX info = {};
             info.dwSize  = sizeof(info);
