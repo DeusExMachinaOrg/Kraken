@@ -64,16 +64,27 @@ namespace kraken::impulse {
             count = JOY_MAX_DEV;
 
         // joyGetPosEx on absent device slots is comparatively expensive, and this
-        // runs on the message-pump thread every tick. So only poll devices already
-        // known present each tick, and do a full scan (to pick up newly plugged
-        // controllers) roughly once a second.
-        static UINT s_rescan = 0;
-        const bool  fullScan = (s_rescan == 0);
-        s_rescan = fullScan ? 60 : (s_rescan - 1);
+        // runs on the message-pump thread every tick. So poll already-present
+        // devices every tick, and probe for hot-plugged controllers by checking a
+        // SINGLE absent slot per scan, round-robin. (Scanning all 16 slots at once
+        // — the previous behaviour — produced a frame spike at a regular ~1s
+        // interval; probing one slot at a time spreads that cost out.)
+        static UINT s_rescan    = 0;
+        static UINT s_probeSlot = 0;
+        int probeSlot = -1;
+        if (s_rescan == 0) {
+            s_rescan  = 60;                       // keep the ~1s cadence per slot
+            if (count) {
+                probeSlot   = static_cast<int>(s_probeSlot % count);
+                s_probeSlot = (s_probeSlot + 1) % count;
+            }
+        } else {
+            s_rescan--;
+        }
 
         for (UINT id = 0; id < count; ++id) {
             JoyDevState& st = g_joy[id];
-            if (!fullScan && !st.present)
+            if (!st.present && static_cast<int>(id) != probeSlot)
                 continue;
 
             JOYINFOEX info = {};

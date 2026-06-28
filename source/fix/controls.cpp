@@ -68,7 +68,40 @@ namespace kraken::fix::controls {
         bool     g_invSteer     = false;
         bool     g_invThrottle  = false;
         bool     g_invBrake     = false;
+        // Combined L2/R2 trigger axis (DualSense): one axis carries both pedals,
+        // resting at center. -1 = off (separate throttle/brake pedals, MOZA-style).
+        int      g_triggerAxis  = -1;
+        float    g_triggerDead  = 0.06f;
+        bool     g_invTrigger   = false;
+        // Steering response curve: s = sign(s)*|s|^expo (1 = linear).
+        float    g_steerExpo    = 1.0f;
+        // Right-stick camera look.
+        int      g_camYawAxis   = -1;
+        int      g_camPitchAxis = -1;
+        float    g_camDeadzone  = 0.15f;
+        float    g_camYawSpeed  = 2.5f;
+        float    g_camPitchSpeed= 1.8f;
+        bool     g_invCamYaw    = false;
+        bool     g_invCamPitch  = false;
+        float    g_camX         = 0.0f; // right-stick X [-1..1]
+        float    g_camY         = 0.0f; // right-stick Y [-1..1]
         bool     g_log          = false;
+
+        // Camera fields inside CMiracle3d (== g_pApp). Each frame the original
+        // Controls does: m_camYaw -= m_flyCamTurn.x; m_camPitch -= m_flyCamTurn.y
+        // (plus auto-follow slide), then ValidateCameraAngles clamps and
+        // UpdateCameraPosition rebuilds. OnGameMouse feeds m_flyCamTurn from the
+        // mouse. We feed the same fields from the right stick *before* the original
+        // Controls runs, so it consumes our delta the same frame, on the same code
+        // path the mouse uses — staying in sync with the world (no fast-drive jitter).
+        constexpr uintptr_t FLYCAMTURN_X_OFF = 0x8b2dc; // m_flyCamTurn.x -> yaw delta
+        constexpr uintptr_t FLYCAMTURN_Y_OFF = 0x8b2e0; // m_flyCamTurn.y -> pitch delta
+        constexpr uintptr_t CAM_MODE_OFF     = 0x8b290; // m_player.m_cameraMode (look enabled in 2/3)
+        // Per-frame look delta = stick * (speed_rad_per_s * NOMINAL_DT). Using a
+        // fixed nominal step instead of a measured dt keeps the camera advancing on
+        // the engine's own frame cadence (like the mouse's per-event delta), which
+        // is what avoids the jitter; turn rate then scales gently with frame rate.
+        constexpr float     CAM_NOMINAL_DT    = 1.0f / 60.0f;
 
         // --- force feedback (DirectInput8) ---
         // winmm can only read the wheel; FFB output requires DirectInput. We load
@@ -314,16 +347,97 @@ namespace kraken::fix::controls {
                 case eImpulseJoyAxis: {
                     int   a = static_cast<int>(ev.joy_axis.axis);
                     float v = ev.joy_axis.value; // [-1..1]
+                    // Per-axis diagnostic: with log=1 this prints which axis moves
+                    // when you press R2/L2, so trigger_axis can be set correctly.
+                    if (g_log)
+                        LOG_DEBUG("axis %d = %.3f", a, v);
                     if (a == g_steerAxis)
                         g_steer = v;
-                    else if (a == g_throttleAxis)
+                    if (g_triggerAxis >= 0) {
+                        // Combined trigger axis: one axis, resting at center, with
+                        // R2 deflecting it one way (throttle) and L2 the other
+                        // (brake). DualSense exposes its two triggers this way.
+                        if (a == g_triggerAxis) {
+                            float t = g_invTrigger ? -v : v;
+                            if (t > g_triggerDead) {
+                                g_throttle01 = (t - g_triggerDead) / (1.0f - g_triggerDead);
+                                g_brake01    = 0.0f;
+                            } else if (t < -g_triggerDead) {
+                                g_brake01    = (-t - g_triggerDead) / (1.0f - g_triggerDead);
+                                g_throttle01 = 0.0f;
+                            } else {
+                                g_throttle01 = 0.0f;
+                                g_brake01    = 0.0f;
+                            }
+                            if (g_throttle01 > 1.0f) g_throttle01 = 1.0f;
+                            if (g_brake01    > 1.0f) g_brake01    = 1.0f;
+                        }
+                    } else if (a == g_throttleAxis) {
                         g_throttle01 = PedalValue(v, g_invThrottle);
-                    else if (a == g_brakeAxis)
+                    } else if (a == g_brakeAxis) {
                         g_brake01 = PedalValue(v, g_invBrake);
+                    }
+                    // Right-stick camera (independent of the throttle/brake mapping).
+                    if (a == g_camYawAxis)
+                        g_camX = v;
+                    if (a == g_camPitchAxis)
+                        g_camY = v;
                     break;
                 }
                 default:
                     break;
+            }
+        }
+
+        // Apply a deadzone to a single stick axis and rescale the remainder to
+        // keep the full [0..1] range past the deadzone.
+        float CamAxis(float v) {
+            if (v > -g_camDeadzone && v < g_camDeadzone)
+                return 0.0f;
+            float sign = (v < 0.0f) ? -1.0f : 1.0f;
+            v = (v - sign * g_camDeadzone) / (1.0f - g_camDeadzone);
+            if (v >  1.0f) v =  1.0f;
+            if (v < -1.0f) v = -1.0f;
+            return v;
+        }
+
+        // Right-stick camera. Runs *before* the original Controls so it consumes
+        // our delta this frame, exactly like the mouse. We write m_flyCamTurn (the
+        // mouse-look input field), not the persistent angles, so the engine does the
+        // accumulate/clamp/rebuild on its normal path. Only orbit/look camera modes
+        // (2,3) take a look input, matching OnGameMouse. When the stick is centered
+        // we leave m_flyCamTurn alone so the mouse keeps working; on release we clear
+        // it once so any residual delta doesn't keep the camera drifting.
+        void ApplyCameraPre() {
+            if (g_camYawAxis < 0 && g_camPitchAxis < 0)
+                return;
+            char* app = static_cast<char*>(*reinterpret_cast<void**>(G_PAPP_VA));
+            if (!app)
+                return;
+
+            static bool wasActive = false;
+            int mode = *reinterpret_cast<int*>(app + CAM_MODE_OFF);
+            if (mode != 2 && mode != 3) {
+                wasActive = false;
+                return;
+            }
+
+            float rx = CamAxis(g_camX);
+            float ry = CamAxis(g_camY);
+            if (g_invCamYaw)   rx = -rx;
+            if (g_invCamPitch) ry = -ry;
+
+            float* ftx = reinterpret_cast<float*>(app + FLYCAMTURN_X_OFF);
+            float* fty = reinterpret_cast<float*>(app + FLYCAMTURN_Y_OFF);
+
+            if (rx != 0.0f || ry != 0.0f) {
+                *ftx = rx * g_camYawSpeed   * CAM_NOMINAL_DT;
+                *fty = ry * g_camPitchSpeed * CAM_NOMINAL_DT;
+                wasActive = true;
+            } else if (wasActive) {
+                *ftx = 0.0f;
+                *fty = 0.0f;
+                wasActive = false;
             }
         }
 
@@ -350,6 +464,10 @@ namespace kraken::fix::controls {
                 s = (s - sign * g_deadzone) / (1.0f - g_deadzone);
                 if (s >  1.0f) s =  1.0f;
                 if (s < -1.0f) s = -1.0f;
+                // Response curve: ease the center so a short-throw spring stick
+                // gives proportional control instead of feeling all-or-nothing.
+                if (g_steerExpo != 1.0f)
+                    s = sign * std::pow(s < 0.0f ? -s : s, g_steerExpo);
             }
             if (g_invSteer)
                 s = -s;
@@ -363,8 +481,8 @@ namespace kraken::fix::controls {
             vehicle->SetThrottle(thr, true);
 
             if (g_log)
-                LOG_DEBUG("steer=%.3f throttle=%.3f (gas=%.2f brake=%.2f)",
-                          s, thr, g_throttle01, g_brake01);
+                LOG_DEBUG("steer=%.3f throttle=%.3f (gas=%.2f brake=%.2f) cam=(%.2f,%.2f)",
+                          s, thr, g_throttle01, g_brake01, g_camX, g_camY);
 
             if (g_ffbEnabled) {
                 if (!g_ffbReady && !g_ffbInitTried) {
@@ -385,6 +503,9 @@ namespace kraken::fix::controls {
         // original, then apply the analog wheel override. Callee-cleans (ret 8).
         __declspec(naked) void Controls_Detour() {
             __asm {
+                call    ApplyCameraPre               ; feed m_flyCamTurn from the right stick
+                                                     ; BEFORE the original consumes it (cdecl,
+                                                     ; preserves esi/edi/ebx)
                 mov     eax, 0x00A0A55C              ; &g_pApp (MSVC inline asm: a bracketed
                 mov     esi, dword ptr [eax]         ; literal is an immediate, so deref via reg)
                 push    dword ptr [esp + 8]          ; a1
@@ -442,6 +563,17 @@ namespace kraken::fix::controls {
         g_invSteer     = config.wheel_invert_steer.value != 0;
         g_invThrottle  = config.wheel_invert_throttle.value != 0;
         g_invBrake     = config.wheel_invert_brake.value != 0;
+        g_triggerAxis  = config.wheel_trigger_axis.value;
+        g_triggerDead  = config.wheel_trigger_deadzone.value;
+        g_invTrigger   = config.wheel_invert_trigger.value != 0;
+        g_steerExpo    = config.wheel_steer_expo.value;
+        g_camYawAxis   = config.wheel_cam_yaw_axis.value;
+        g_camPitchAxis = config.wheel_cam_pitch_axis.value;
+        g_camDeadzone  = config.wheel_cam_deadzone.value;
+        g_camYawSpeed  = config.wheel_cam_yaw_speed.value;
+        g_camPitchSpeed= config.wheel_cam_pitch_speed.value;
+        g_invCamYaw    = config.wheel_cam_invert_yaw.value != 0;
+        g_invCamPitch  = config.wheel_cam_invert_pitch.value != 0;
         g_log          = config.wheel_log.value != 0;
 
         g_ffbEnabled   = config.ffb.value != 0;
@@ -453,8 +585,13 @@ namespace kraken::fix::controls {
 
         impulse::Attach(impulse::eImpulseAny, OnImpulse);
 
-        if (InstallControlsHook())
-            LOG_INFO("Analog wheel control enabled (device=%u steer=%d throttle=%d brake=%d)",
-                     g_device, g_steerAxis, g_throttleAxis, g_brakeAxis);
+        if (InstallControlsHook()) {
+            if (g_triggerAxis >= 0)
+                LOG_INFO("Analog wheel control enabled (device=%u steer=%d trigger_axis=%d [combined L2/R2])",
+                         g_device, g_steerAxis, g_triggerAxis);
+            else
+                LOG_INFO("Analog wheel control enabled (device=%u steer=%d throttle=%d brake=%d)",
+                         g_device, g_steerAxis, g_throttleAxis, g_brakeAxis);
+        }
     }
 }

@@ -86,7 +86,27 @@ namespace kraken {
         ConfigValue<uint32_t>                 wheel_invert_steer;    // 1: flip steering left/right
         ConfigValue<uint32_t>                 wheel_invert_throttle; // 1: pedal rests pressed (invert 0..1)
         ConfigValue<uint32_t>                 wheel_invert_brake;    // 1: pedal rests pressed (invert 0..1)
-        ConfigValue<uint32_t>                 wheel_log;             // 1: log applied steer/throttle each frame (needs log_debug=0)
+        // Combined throttle/brake on a single axis (DualSense L2/R2 share one
+        // axis that rests at center): positive half = throttle (R2), negative
+        // half = brake (L2). -1 = off (use separate throttle_axis/brake_axis).
+        ConfigValue<int32_t>                  wheel_trigger_axis;    // combined L2/R2 axis index, or -1
+        ConfigValue<float>                    wheel_trigger_deadzone;// center deadzone for the combined trigger axis [0..1]
+        ConfigValue<uint32_t>                 wheel_invert_trigger;  // 1: swap which half is throttle vs brake
+        // Steering response curve: s = sign(s)*|s|^expo after deadzone. 1.0 = linear
+        // (wheels). >1 softens the center so a short-throw spring stick gives fine
+        // control instead of feeling all-or-nothing (WASD-like).
+        ConfigValue<float>                    wheel_steer_expo;      // steering response exponent (1 = linear)
+        // Right-stick camera look. Each frame the stick is written into the engine's
+        // persistent camera yaw/pitch (the same fields mouse-look drives), so the
+        // engine's clamping/follow keeps working. -1 axis = disabled.
+        ConfigValue<int32_t>                  wheel_cam_yaw_axis;    // axis for camera yaw (right-stick X), or -1
+        ConfigValue<int32_t>                  wheel_cam_pitch_axis;  // axis for camera pitch (right-stick Y), or -1
+        ConfigValue<float>                    wheel_cam_deadzone;    // right-stick deadzone [0..1]
+        ConfigValue<float>                    wheel_cam_yaw_speed;   // camera yaw speed at full deflection (rad/s)
+        ConfigValue<float>                    wheel_cam_pitch_speed; // camera pitch speed at full deflection (rad/s)
+        ConfigValue<uint32_t>                 wheel_cam_invert_yaw;  // 1: flip horizontal look
+        ConfigValue<uint32_t>                 wheel_cam_invert_pitch;// 1: flip vertical look
+        ConfigValue<uint32_t>                 wheel_log;             // 1: log applied steer/throttle + raw axes each frame (needs log_debug=0)
         ConfigValue<uint32_t>                 ffb;                   // force feedback enable (DirectInput8)
         ConfigValue<float>                    ffb_strength;          // master FFB gain [0..2]
         ConfigValue<float>                    ffb_center;            // self-centering strength at standstill [0..1]
