@@ -66,6 +66,34 @@ namespace kraken {
         this->ffb_speed_gain                    = { "wheel",     "ffb_speed_gain",                  0.03f, true,  0.0f,  1.0f        };
         this->ffb_invert                        = { "wheel",     "ffb_invert",                      0,     true,  0,     1           };
         this->ffb_log                           = { "wheel",     "ffb_log",                         0,     true,  0,     1           };
+        this->gamepad                           = { "gamepad",   "enabled",                         0,     true,  0,     1           };
+        this->gamepad_log                       = { "gamepad",   "log",                             0,     true,  0,     1           };
+        this->gamepad_mode                      = { "gamepad",   "game_mode",                       std::string("GS_GAME"), false      };
+        {
+            // DualSense winmm button order: 0=Square 1=Cross 2=Circle 3=Triangle
+            // 4=L1 5=R1 6=L2 7=R2 8=Share 9=Options. L2/R2 are analog axes (never
+            // reported as buttons), so their default action is empty — gas/brake
+            // are handled analog in fix/controls.cpp.
+            static const char* const kKeys[10] = {
+                "button0","button1","button2","button3","button4",
+                "button5","button6","button7","button8","button9"
+            };
+            static const char* const kDefaults[10] = {
+                "IM_UI_INVENTORY",     // Square
+                "IM_CAR_HAND_BREAK",   // Cross
+                "IM_CAR_SWITCHCAMERA", // Circle
+                "IM_RELOAD_WEAPON",    // Triangle
+                "IM_CAR_FIRE_1",       // L1
+                "IM_CAR_FIRE_0",       // R1
+                "",                    // L2 (analog brake)
+                "",                    // R2 (analog throttle)
+                "IM_UI_MAP",           // Share
+                "IM_MODE_GAME_MENU"    // Options
+            };
+            for (int i = 0; i < 10; ++i)
+                this->gamepad_button[i] = { "gamepad", kKeys[i], std::string(kDefaults[i]), false };
+        }
+        this->gamepad_autobind                  = { "gamepad",   "autobind",                        1,     true,  0,     1           };
         this->ram_speed_threshold               = { "thorncollide", "speed_threshold",              5.0f,    true,  0.0f,  1000.0f   };
         this->ram_damage_coeff                  = { "thorncollide", "damage_coeff",                 2.7f,    true,  0.0f,  100000.0f };
         this->ram_speed_exponent                = { "thorncollide", "speed_exponent",               1.0f,    true,  0.1f,  4.0f      };
@@ -160,6 +188,12 @@ namespace kraken {
         this->LoadValue(&this->ffb_speed_gain);
         this->LoadValue(&this->ffb_invert);
         this->LoadValue(&this->ffb_log);
+        this->LoadValue(&this->gamepad);
+        this->LoadValue(&this->gamepad_log);
+        this->LoadValue(&this->gamepad_mode);
+        for (int i = 0; i < 10; ++i)
+            this->LoadValue(&this->gamepad_button[i]);
+        this->LoadValue(&this->gamepad_autobind);
         this->LoadValue(&this->ram_speed_threshold);
         this->LoadValue(&this->ram_damage_coeff);
         this->LoadValue(&this->ram_speed_exponent);
@@ -230,6 +264,12 @@ namespace kraken {
         this->DumpValue(&this->ffb_speed_gain);
         this->DumpValue(&this->ffb_invert);
         this->DumpValue(&this->ffb_log);
+        this->DumpValue(&this->gamepad);
+        this->DumpValue(&this->gamepad_log);
+        this->DumpValue(&this->gamepad_mode);
+        for (int i = 0; i < 10; ++i)
+            this->DumpValue(&this->gamepad_button[i]);
+        this->DumpValue(&this->gamepad_autobind);
         this->DumpValue(&this->ram_speed_threshold);
         this->DumpValue(&this->ram_damage_coeff);
         this->DumpValue(&this->ram_speed_exponent);

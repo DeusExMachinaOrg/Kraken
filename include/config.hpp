@@ -94,6 +94,23 @@ namespace kraken {
         ConfigValue<uint32_t>                 ffb_invert;            // 1: flip force direction
         ConfigValue<uint32_t>                 ffb_log;               // 1: log FFB magnitude (needs log_debug=0)
 
+        // Gamepad (DualSense and any winmm joystick). See fix/gamepad.cpp.
+        // Bridges controller buttons into the engine's built-in (but dormant)
+        // joystick input, so JOY_BUTTON_0..9 become bindable to any action in the
+        // in-game control-settings menu. Driving axes (steer/throttle/brake) stay
+        // analog through the [wheel] path in fix/controls.cpp.
+        ConfigValue<uint32_t>                 gamepad;               // master enable for the gamepad button bridge
+        ConfigValue<uint32_t>                 gamepad_log;           // 1: log each button->engine event (needs log_debug=0)
+        // Per-button action binding. The engine's own joystick-binding UI is a
+        // dead subsystem in this build, so we bind JOY_BUTTON_0..9 to engine
+        // impulses ourselves (re-applied after every binding load). Value = an
+        // engine impulse name, e.g. IM_UI_INVENTORY / IM_CAR_HORN / IM_CAR_FIRE_0
+        // (empty = leave unbound). DualSense winmm order: 0=Square 1=Cross
+        // 2=Circle 3=Triangle 4=L1 5=R1 6=L2 7=R2 8=Share 9=Options.
+        ConfigValue<std::string>              gamepad_mode;          // engine game-mode for the bindings (GS_GAME)
+        ConfigValue<std::string>              gamepad_button[10];    // button N -> impulse name
+        ConfigValue<uint32_t>                 gamepad_autobind;      // 1: apply [gamepad] button* on every load (ini is authority). 0: let the in-game menu / saved profile own the bindings.
+
         // Ram collision model (vehicle/landscape impacts + Appendix thorns).
         // damage_i = clamp( coeff * (v - threshold)^exponent * massShare_i
         //                   * offense_other * thornMult_other * dirArmor_i , 0, max_damage )

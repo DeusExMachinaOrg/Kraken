@@ -44,6 +44,7 @@ add_library(kraken SHARED
     source/fix/firingtype.cpp
     source/fix/radiomanagerfix.cpp
     source/fix/controls.cpp
+    source/fix/gamepad.cpp
 
     source/ext/memory.cpp
     source/ext/logger.cpp
