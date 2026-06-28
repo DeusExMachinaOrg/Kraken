@@ -45,6 +45,7 @@ add_library(kraken SHARED
     source/fix/radiomanagerfix.cpp
     source/fix/controls.cpp
     source/fix/gamepad.cpp
+    source/fix/dualsense.cpp
 
     source/ext/memory.cpp
     source/ext/logger.cpp
@@ -84,6 +85,8 @@ target_link_libraries(kraken PRIVATE
     winmm     # joystick / steering-wheel polling (joyGetPosEx)
     dinput8   # force feedback output (loaded from System32 at runtime)
     dxguid    # c_dfDIJoystick + GUID_ConstantForce / IID_IDirectInput8A
+    hid       # DualSense HID output reports (rumble / adaptive triggers)
+    setupapi  # enumerating the DualSense HID device path
     lim
     hta
 )

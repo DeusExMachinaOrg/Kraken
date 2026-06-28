@@ -1,0 +1,28 @@
+#ifndef KRAKEN_FIX_DUALSENSE
+#define KRAKEN_FIX_DUALSENSE
+
+namespace hta::ai { struct Vehicle; }
+
+namespace kraken::fix::dualsense {
+    // Opens the DualSense over HID (Bluetooth report 0x31 / USB 0x02) and starts
+    // the output worker. No-op unless [dualsense] enabled.
+    void Apply();
+
+    // Called once per frame from the controls hook while a live player vehicle
+    // exists: derives rumble (and later adaptive-trigger) force from the vehicle's
+    // motion and publishes it to the worker thread.
+    void Update(hta::ai::Vehicle* vehicle);
+
+    // Called when there is no live player vehicle (menus / death): fades the
+    // actuators out so the pad doesn't keep buzzing.
+    void Idle();
+
+    // Wireless path: read the DualSense input report (0x31) over HID and inject
+    // axes/buttons into the impulse bus (bypassing winmm, which can't read the
+    // controller once it switches to full-report mode). Called from the joystick
+    // poll timer (message-pump thread), so dispatched events run on the right
+    // thread. No-op unless [dualsense] hid_input is set.
+    void PumpInput();
+}
+
+#endif

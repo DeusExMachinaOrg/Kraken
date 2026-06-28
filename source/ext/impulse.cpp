@@ -3,6 +3,7 @@
 #include "ext/impulse.hpp"
 #include "ext/logger.hpp"
 #include "routines.hpp"
+#include "fix/dualsense.hpp"
 
 #include <list>
 #include <array>
@@ -327,6 +328,7 @@ namespace kraken::impulse {
             case WM_TIMER: {
                 if (wParam == JOY_TIMER_ID) {
                     _PollJoysticks();
+                    fix::dualsense::PumpInput(); // wireless DualSense: HID input -> impulse bus
                     return 0; // our timer — consume it, don't bother the engine
                 }
                 break;    // someone else's timer — forward to the base proc

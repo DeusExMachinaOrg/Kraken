@@ -86,6 +86,7 @@ namespace kraken {
         ConfigValue<uint32_t>                 wheel_invert_steer;    // 1: flip steering left/right
         ConfigValue<uint32_t>                 wheel_invert_throttle; // 1: pedal rests pressed (invert 0..1)
         ConfigValue<uint32_t>                 wheel_invert_brake;    // 1: pedal rests pressed (invert 0..1)
+        ConfigValue<uint32_t>                 wheel_auto_brake;      // 0: coast when throttle released; 1: engine auto-brake
         // Combined throttle/brake on a single axis (DualSense L2/R2 share one
         // axis that rests at center): positive half = throttle (R2), negative
         // half = brake (L2). -1 = off (use separate throttle_axis/brake_axis).
@@ -130,6 +131,17 @@ namespace kraken {
         ConfigValue<std::string>              gamepad_mode;          // engine game-mode for the bindings (GS_GAME)
         ConfigValue<std::string>              gamepad_button[10];    // button N -> impulse name
         ConfigValue<uint32_t>                 gamepad_autobind;      // 1: apply [gamepad] button* on every load (ini is authority). 0: let the in-game menu / saved profile own the bindings.
+
+        // DualSense haptic feedback (HID rumble; adaptive triggers later). See
+        // fix/dualsense.cpp. Force is derived from the player vehicle's motion.
+        ConfigValue<uint32_t>                 dualsense;             // master enable for DualSense feedback
+        ConfigValue<float>                    dualsense_strength;    // overall rumble gain [0..2]
+        ConfigValue<float>                    dualsense_impact;      // impact (strong motor) gain
+        ConfigValue<float>                    dualsense_offroad;     // rough-ground buzz (weak motor) gain
+        ConfigValue<float>                    dualsense_damage;      // pulse gain when the vehicle takes damage (health drop)
+        ConfigValue<float>                    dualsense_damage_full; // fraction of max HP lost (in one hit) that gives a full pulse
+        ConfigValue<uint32_t>                 dualsense_hid_input;   // 1: read sticks/buttons from HID and inject (wireless; bypass winmm)
+        ConfigValue<uint32_t>                 dualsense_log;         // 1: log accel/speed/rumble (needs log_debug=0)
 
         // Ram collision model (vehicle/landscape impacts + Appendix thorns).
         // damage_i = clamp( coeff * (v - threshold)^exponent * massShare_i

@@ -9,6 +9,7 @@
 #include <atomic>
 
 #include "fix/controls.hpp"
+#include "fix/dualsense.hpp"
 #include "config.hpp"
 #include "routines.hpp"
 #include "ext/logger.hpp"
@@ -68,6 +69,9 @@ namespace kraken::fix::controls {
         bool     g_invSteer     = false;
         bool     g_invThrottle  = false;
         bool     g_invBrake     = false;
+        // SetThrottle's autoBrake flag. false = coast when throttle is released
+        // (sim pedals); true = vanilla engine auto-brake on release.
+        bool     g_autoBrake    = false;
         // Combined L2/R2 trigger axis (DualSense): one axis carries both pedals,
         // resting at center. -1 = off (separate throttle/brake pedals, MOZA-style).
         int      g_triggerAxis  = -1;
@@ -452,6 +456,7 @@ namespace kraken::fix::controls {
             if (!vehicle || vehicle->IsHealthZero()) {
                 if (g_ffbReady)
                     ReleaseFFB();
+                dualsense::Idle();
                 return;
             }
 
@@ -478,9 +483,12 @@ namespace kraken::fix::controls {
             float thr = g_throttle01 - g_brake01;
             if (thr >  1.0f) thr =  1.0f;
             if (thr < -1.0f) thr = -1.0f;
-            vehicle->SetThrottle(thr, true);
+            // autoBrake=false -> releasing the throttle coasts instead of braking
+            // (the engine's auto-brake-on-zero). Explicit braking still works via
+            // a negative throttle from the brake pedal / L2.
+            vehicle->SetThrottle(thr, g_autoBrake);
 
-            if (g_log)
+            if (g_log && (s != 0.0f || thr != 0.0f || g_camX != 0.0f || g_camY != 0.0f))
                 LOG_DEBUG("steer=%.3f throttle=%.3f (gas=%.2f brake=%.2f) cam=(%.2f,%.2f)",
                           s, thr, g_throttle01, g_brake01, g_camX, g_camY);
 
@@ -494,6 +502,8 @@ namespace kraken::fix::controls {
                 if (g_ffbReady)
                     UpdateFFB(vehicle);
             }
+
+            dualsense::Update(vehicle); // DualSense haptic feedback (no-op unless enabled)
         }
 
         // Naked detour: preserve Controls' __usercall contract.
@@ -563,6 +573,7 @@ namespace kraken::fix::controls {
         g_invSteer     = config.wheel_invert_steer.value != 0;
         g_invThrottle  = config.wheel_invert_throttle.value != 0;
         g_invBrake     = config.wheel_invert_brake.value != 0;
+        g_autoBrake    = config.wheel_auto_brake.value != 0;
         g_triggerAxis  = config.wheel_trigger_axis.value;
         g_triggerDead  = config.wheel_trigger_deadzone.value;
         g_invTrigger   = config.wheel_invert_trigger.value != 0;

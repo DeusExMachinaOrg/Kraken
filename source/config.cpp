@@ -59,6 +59,7 @@ namespace kraken {
         this->wheel_invert_steer                = { "wheel",     "invert_steer",                    0,     true,  0,     1           };
         this->wheel_invert_throttle             = { "wheel",     "invert_throttle",                 0,     true,  0,     1           };
         this->wheel_invert_brake                = { "wheel",     "invert_brake",                    0,     true,  0,     1           };
+        this->wheel_auto_brake                  = { "wheel",     "auto_brake",                      0,     true,  0,     1           };
         this->wheel_trigger_axis                = { "wheel",     "trigger_axis",                    -1,    true,  -1,    5           };
         this->wheel_trigger_deadzone            = { "wheel",     "trigger_deadzone",                0.06f, true,  0.0f,  0.9f        };
         this->wheel_invert_trigger              = { "wheel",     "invert_trigger",                  0,     true,  0,     1           };
@@ -105,6 +106,14 @@ namespace kraken {
                 this->gamepad_button[i] = { "gamepad", kKeys[i], std::string(kDefaults[i]), false };
         }
         this->gamepad_autobind                  = { "gamepad",   "autobind",                        1,     true,  0,     1           };
+        this->dualsense                         = { "dualsense", "enabled",                         0,     true,  0,     1           };
+        this->dualsense_strength                = { "dualsense", "strength",                        1.0f,  true,  0.0f,  2.0f        };
+        this->dualsense_impact                  = { "dualsense", "impact",                          1.0f,  true,  0.0f,  4.0f        };
+        this->dualsense_offroad                 = { "dualsense", "offroad",                         1.0f,  true,  0.0f,  4.0f        };
+        this->dualsense_damage                  = { "dualsense", "damage",                          1.0f,  true,  0.0f,  4.0f        };
+        this->dualsense_damage_full             = { "dualsense", "damage_full",                     0.20f, true,  0.01f, 1.0f        };
+        this->dualsense_hid_input               = { "dualsense", "hid_input",                       0,     true,  0,     1           };
+        this->dualsense_log                     = { "dualsense", "log",                             0,     true,  0,     1           };
         this->ram_speed_threshold               = { "thorncollide", "speed_threshold",              5.0f,    true,  0.0f,  1000.0f   };
         this->ram_damage_coeff                  = { "thorncollide", "damage_coeff",                 2.7f,    true,  0.0f,  100000.0f };
         this->ram_speed_exponent                = { "thorncollide", "speed_exponent",               1.0f,    true,  0.1f,  4.0f      };
@@ -192,6 +201,7 @@ namespace kraken {
         this->LoadValue(&this->wheel_invert_steer);
         this->LoadValue(&this->wheel_invert_throttle);
         this->LoadValue(&this->wheel_invert_brake);
+        this->LoadValue(&this->wheel_auto_brake);
         this->LoadValue(&this->wheel_trigger_axis);
         this->LoadValue(&this->wheel_trigger_deadzone);
         this->LoadValue(&this->wheel_invert_trigger);
@@ -216,6 +226,14 @@ namespace kraken {
         for (int i = 0; i < 10; ++i)
             this->LoadValue(&this->gamepad_button[i]);
         this->LoadValue(&this->gamepad_autobind);
+        this->LoadValue(&this->dualsense);
+        this->LoadValue(&this->dualsense_strength);
+        this->LoadValue(&this->dualsense_impact);
+        this->LoadValue(&this->dualsense_offroad);
+        this->LoadValue(&this->dualsense_damage);
+        this->LoadValue(&this->dualsense_damage_full);
+        this->LoadValue(&this->dualsense_hid_input);
+        this->LoadValue(&this->dualsense_log);
         this->LoadValue(&this->ram_speed_threshold);
         this->LoadValue(&this->ram_damage_coeff);
         this->LoadValue(&this->ram_speed_exponent);
@@ -279,6 +297,7 @@ namespace kraken {
         this->DumpValue(&this->wheel_invert_steer);
         this->DumpValue(&this->wheel_invert_throttle);
         this->DumpValue(&this->wheel_invert_brake);
+        this->DumpValue(&this->wheel_auto_brake);
         this->DumpValue(&this->wheel_trigger_axis);
         this->DumpValue(&this->wheel_trigger_deadzone);
         this->DumpValue(&this->wheel_invert_trigger);
@@ -303,6 +322,14 @@ namespace kraken {
         for (int i = 0; i < 10; ++i)
             this->DumpValue(&this->gamepad_button[i]);
         this->DumpValue(&this->gamepad_autobind);
+        this->DumpValue(&this->dualsense);
+        this->DumpValue(&this->dualsense_strength);
+        this->DumpValue(&this->dualsense_impact);
+        this->DumpValue(&this->dualsense_offroad);
+        this->DumpValue(&this->dualsense_damage);
+        this->DumpValue(&this->dualsense_damage_full);
+        this->DumpValue(&this->dualsense_hid_input);
+        this->DumpValue(&this->dualsense_log);
         this->DumpValue(&this->ram_speed_threshold);
         this->DumpValue(&this->ram_damage_coeff);
         this->DumpValue(&this->ram_speed_exponent);
