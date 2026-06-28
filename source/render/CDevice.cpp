@@ -1113,6 +1113,10 @@ namespace kraken::render {
         const char* filename, const char* entry, IHlslShader::Profile profile, const std::vector<CompileParam>& params
     ) {
         CDevice* render = CDevice::Instance();
+        // Keep the as-requested profile: `profile` is mutated below by the ps_1_x->ps_2_0
+        // force-upgrade, and ReloadShaders() must replay the original to reproduce the same
+        // compile (otherwise a ps_2_0 shader drifts to ps_3_0 on every reload).
+        const IHlslShader::Profile originalProfile = profile;
         bool is_pixel   = PS_SHADERS.find(profile) != PS_SHADERS.end();
         if (is_pixel && render->IsFeatureSupported(FEATURE_PS_2_0))
             profile = profile >= PS_2_0 ? PS_3_0 : PS_2_0;
@@ -1152,7 +1156,11 @@ namespace kraken::render {
             &AUX_SHADER_INCLUDE,
             entry,
             SM_ALIAS[profile],
-            D3DXSHADER_SKIPOPTIMIZATION,
+            // raw ps_1_x/vs_1_x shaders (e.g. landscapesolid_ps11) must keep ps_1_x semantics when the
+            // modern compiler upgrades them to ps_2_0 — without /Gec the implicit [0,1] clamp and
+            // declaration-order sampler binding are lost (landscape blend mask renders as color).
+            // Matches the EffectImpl path which already passes this flag.
+            D3DXSHADER_SKIPOPTIMIZATION | D3DXSHADER_ENABLE_BACKWARDS_COMPATIBILITY,
             &object,
             &errors,
             &this->m_constantTable
@@ -1178,9 +1186,11 @@ namespace kraken::render {
         D3DXCONSTANTTABLE_DESC desc;
         this->m_constantTable->GetDesc(&desc);
         this->m_constantTable->SetDefaults(render->m_pd3dDevice);
-        this->m_numConstants = desc.Constants;
-        this->mFileName      = filename;
-        this->m_profile      = profile;
+        this->m_numConstants  = desc.Constants;
+        this->mFileName       = filename;
+        this->m_profile       = originalProfile;
+        this->m_entryPoint    = entry;             // ReloadShaders() replays this; was never stored -> X3501 ''
+        this->m_compileParams = params;            // likewise, so reload recompiles the same variant
 
         return true;
     };
@@ -1385,6 +1395,10 @@ namespace kraken::render {
                 this->m_ps->Release();
                 break;
             }
+            // Null after release: matches HlslShaderImpl::Invalidate. Without this, m_ps dangles ->
+            // double-free in ReloadShaders temp cleanup, and Apply()->setPixelShader(dangling) crashes
+            // (PostEffectManager::Render after a resolution-change reset).
+            this->m_shader = nullptr;
         }
     };
 
@@ -2964,7 +2978,8 @@ namespace kraken::render {
             !FindTexFormat(m_texFormatRt, TargetFormat, tfRgbaFormatsRts, tfRgbaBitsRts, 7, 16, D3DUSAGE_RENDERTARGET)) {
             return 0;
         }
-        if (!FindTexFormat(m_texFormatShadow, TargetFormat, tfRgbaFormatsRts, tfRgbaBitsRts, 7, 16, D3DUSAGE_RENDERTARGET)) {
+        if (!FindTexFormat(m_texFormatShadow, TargetFormat, tfRgbaFormatsRts, tfRgbaBitsRts, 7, 32, D3DUSAGE_RENDERTARGET) &&
+            !FindTexFormat(m_texFormatShadow, TargetFormat, tfRgbaFormatsRts, tfRgbaBitsRts, 7, 16, D3DUSAGE_RENDERTARGET)) {
             return 0;
         }
         if (!FindTexFormat(m_texFormatDepth, TargetFormat, tfDepthFormats, tfDepthBits, 6, 32, D3DUSAGE_DEPTHSTENCIL) &&
@@ -3693,6 +3708,17 @@ namespace kraken::render {
         LOG_INFO("WHQLLevel:    %d", id.WHQLLevel);
 
         _SetLastResult(m_pd3dDevice->GetDeviceCaps(&m_d3dCaps));
+
+        // m_maxLights was never assigned, so GetMaxLights() returned 0. The native
+        // SceneGraph::LightSwitchOffAllLights() loops `for (i=0; i<GetMaxLights(); i++)
+        // LightEnable(i,false)` before the shadow-caster pack pass; with 0 it never ran,
+        // leaving the directional sun enabled. Casters then rendered white (all RGB)
+        // instead of a single COLOR_MASK primary, collapsing the 3-channel shadow
+        // packing and bleeding shadows onto the wrong terrain chunks. CDevice supports
+        // 8 FFP lights (m_lights[8], `numLight < 8` guards), so clamp caps accordingly.
+        m_maxLights = (int32_t)m_d3dCaps.MaxActiveLights;
+        if (m_maxLights <= 0 || m_maxLights > 8)
+            m_maxLights = 8;
 
         SetupAllFeaturesSupport("data\\DeviceCompatible.xml");
         logCaps();

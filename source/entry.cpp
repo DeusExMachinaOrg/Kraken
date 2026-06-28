@@ -24,6 +24,11 @@
 #include "fix/complexschwarz.hpp"
 #include "fix/skinfix.hpp"
 #include "fix/render.hpp"
+#include "fix/cctlleakfix.hpp"
+#include "fix/locationdebug.hpp"
+#include "fix/difficultywndescapefix.hpp"
+#include "fix/mortarvolleylauncherfix.hpp"
+#include "fix/gunlights.hpp"
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
@@ -67,7 +72,7 @@ namespace kraken {
         fix::luabinds::Apply(G_CONFIG);
         fix::posteffectreload::Apply(G_CONFIG);
         fix::wareuse::Apply();
-        //fix::recollection::Apply();
+        fix::recollection::Apply();
         fix::ultrawide::Apply();
         fix::fastloading::Apply();
         //fix::kineticfriction::Apply();
@@ -76,5 +81,10 @@ namespace kraken {
         fix::complexschwarz::Apply();
         fix::skinfix::Apply();
         fix::render::Apply();
+        fix::cctlleakfix::Apply();
+        fix::locationdebug::Apply();
+        fix::difficultywndescapefix::Apply();
+        fix::mortarvolleylauncherfix::Apply();
+        fix::gunlights::Apply();
     };
 };

@@ -1,5 +1,8 @@
 # Directories
 build
+provider
+
+.build
 .vscode
 
 # Bindary files
@@ -9,3 +12,4 @@ build
 **/*.lib
 **/*.ilk
 **/*.pdb
+**/*.pyc

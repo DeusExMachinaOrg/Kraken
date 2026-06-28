@@ -65,8 +65,11 @@ add_library(kraken SHARED
     source/fix/complexschwarz.cpp
     source/fix/skinfix.cpp
     source/fix/render.cpp
-
-    source/hta/m3d/ui/GarageWnd.cpp
+    source/fix/cctlleakfix.cpp
+    source/fix/locationdebug.cpp
+    source/fix/difficultywndescapefix.cpp
+    source/fix/mortarvolleylauncherfix.cpp
+    source/fix/gunlights.cpp
 
     source/render/native/Image.cpp
     source/render/native/Debug.cpp
@@ -89,13 +92,13 @@ target_include_directories(kraken PRIVATE
 # Windows-specific settings
 if(MSVC)
     # Disable specific warnings if needed
-    target_compile_options(kraken PRIVATE 
+    target_compile_options(kraken PRIVATE
         /W3
         /arch:AVX2    # AVX2 поддержка
         /fp:fast      # Быстрая float арифметика
         /MP
     )
-    
+
     # Set runtime library
     set_property(TARGET kraken PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 else()

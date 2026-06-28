@@ -296,7 +296,7 @@ namespace kraken::render {
         /* 0x0008 */ hta::CStr mFileName{};
         /* 0x0014 */ IAsmShader::Type m_type{};
         union {
-            /* 0x0018 */ void* m_shader;
+            /* 0x0018 */ void* m_shader{nullptr};  // default-init: unloaded/failed shader is null, not garbage
             /* 0x0018 */ IDirect3DVertexShader9* m_vs;
             /* 0x0018 */ IDirect3DPixelShader9* m_ps;
         };

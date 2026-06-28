@@ -40,8 +40,8 @@ PATCHES: list[Patch] = [
     ),
 ]
 
-EXE = pathlib.Path(r"C:\Program Files (x86)\Steam\steamapps\common\Hard Truck Apocalypse\hta.exe")
-BAK = pathlib.Path(r"C:\Program Files (x86)\Steam\steamapps\common\Hard Truck Apocalypse\hta.dat")
+EXE = pathlib.Path(r"hta.exe")
+BAK = pathlib.Path(r"hta.dat")
 
 with open(EXE, 'rb+') as stream:
     patch: Patch
