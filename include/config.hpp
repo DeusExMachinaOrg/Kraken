@@ -107,6 +107,12 @@ namespace kraken {
         ConfigValue<float>                    wheel_cam_pitch_speed; // camera pitch speed at full deflection (rad/s)
         ConfigValue<uint32_t>                 wheel_cam_invert_yaw;  // 1: flip horizontal look
         ConfigValue<uint32_t>                 wheel_cam_invert_pitch;// 1: flip vertical look
+        // Auto-return the camera behind the car after the look is idle (mouse /
+        // wheel / gamepad — device-agnostic, gated only by this flag).
+        ConfigValue<uint32_t>                 wheel_cam_return;       // 1: enable camera auto-return / chase-follow
+        ConfigValue<float>                    wheel_cam_return_delay; // idle seconds before returning
+        ConfigValue<float>                    wheel_cam_return_speed; // ease rate toward behind
+        ConfigValue<float>                    wheel_cam_follow_offset;// radians added to car heading to mean "behind" (calibration)
         ConfigValue<uint32_t>                 wheel_log;             // 1: log applied steer/throttle + raw axes each frame (needs log_debug=0)
         ConfigValue<uint32_t>                 ffb;                   // force feedback enable (DirectInput8)
         ConfigValue<float>                    ffb_strength;          // master FFB gain [0..2]
@@ -142,6 +148,11 @@ namespace kraken {
         ConfigValue<float>                    dualsense_damage_full; // fraction of max HP lost (in one hit) that gives a full pulse
         ConfigValue<uint32_t>                 dualsense_hid_input;   // 1: read sticks/buttons from HID and inject (wireless; bypass winmm)
         ConfigValue<uint32_t>                 dualsense_log;         // 1: log accel/speed/rumble (needs log_debug=0)
+
+        // Gun auto-return: ease the player's guns back to forward when idle.
+        ConfigValue<uint32_t>                 gunreturn;             // master enable
+        ConfigValue<float>                    gunreturn_timeout;     // idle seconds before guns return
+        ConfigValue<uint32_t>                 gunreturn_log;         // reserved debug flag
 
         // Ram collision model (vehicle/landscape impacts + Appendix thorns).
         // damage_i = clamp( coeff * (v - threshold)^exponent * massShare_i

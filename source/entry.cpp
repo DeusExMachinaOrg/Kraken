@@ -38,6 +38,7 @@
 #include "fix/controls.hpp"
 #include "fix/gamepad.hpp"
 #include "fix/dualsense.hpp"
+#include "fix/gunreturn.hpp"
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
@@ -101,6 +102,7 @@ namespace kraken {
         fix::controls::Apply();
         fix::gamepad::Apply();
         fix::dualsense::Apply();
+        fix::gunreturn::Apply();
         // Appendix (thorn melee weapons) + the Meridian ram-collision formulas.
         // Gated by [constants] appendix so it can be fully disabled (vanilla HTA ram
         // damage, no thorn hooks). The Appendix class itself stays registered in

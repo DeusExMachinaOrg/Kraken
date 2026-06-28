@@ -71,6 +71,10 @@ namespace kraken {
         this->wheel_cam_pitch_speed             = { "wheel",     "cam_pitch_speed",                 1.8f,  true,  0.0f,  20.0f       };
         this->wheel_cam_invert_yaw              = { "wheel",     "cam_invert_yaw",                  0,     true,  0,     1           };
         this->wheel_cam_invert_pitch            = { "wheel",     "cam_invert_pitch",                0,     true,  0,     1           };
+        this->wheel_cam_return                  = { "wheel",     "cam_return",                      0,     true,  0,     1           };
+        this->wheel_cam_return_delay            = { "wheel",     "cam_return_delay",                1.5f,  true,  0.0f,  10.0f       };
+        this->wheel_cam_return_speed            = { "wheel",     "cam_return_speed",                3.0f,  true,  0.1f,  20.0f       };
+        this->wheel_cam_follow_offset           = { "wheel",     "cam_follow_offset",               0.0f,  true,  -6.3f, 6.3f        };
         this->wheel_log                         = { "wheel",     "log",                             0,     true,  0,     1           };
         this->ffb                               = { "wheel",     "ffb",                             0,     true,  0,     1           };
         this->ffb_strength                      = { "wheel",     "ffb_strength",                    1.0f,  true,  0.0f,  2.0f        };
@@ -114,6 +118,9 @@ namespace kraken {
         this->dualsense_damage_full             = { "dualsense", "damage_full",                     0.20f, true,  0.01f, 1.0f        };
         this->dualsense_hid_input               = { "dualsense", "hid_input",                       0,     true,  0,     1           };
         this->dualsense_log                     = { "dualsense", "log",                             0,     true,  0,     1           };
+        this->gunreturn                         = { "gunreturn", "enabled",                         0,     true,  0,     1           };
+        this->gunreturn_timeout                 = { "gunreturn", "timeout",                         3.0f,  true,  0.0f,  60.0f       };
+        this->gunreturn_log                     = { "gunreturn", "log",                             0,     true,  0,     1           };
         this->ram_speed_threshold               = { "thorncollide", "speed_threshold",              5.0f,    true,  0.0f,  1000.0f   };
         this->ram_damage_coeff                  = { "thorncollide", "damage_coeff",                 2.7f,    true,  0.0f,  100000.0f };
         this->ram_speed_exponent                = { "thorncollide", "speed_exponent",               1.0f,    true,  0.1f,  4.0f      };
@@ -213,6 +220,10 @@ namespace kraken {
         this->LoadValue(&this->wheel_cam_pitch_speed);
         this->LoadValue(&this->wheel_cam_invert_yaw);
         this->LoadValue(&this->wheel_cam_invert_pitch);
+        this->LoadValue(&this->wheel_cam_return);
+        this->LoadValue(&this->wheel_cam_return_delay);
+        this->LoadValue(&this->wheel_cam_return_speed);
+        this->LoadValue(&this->wheel_cam_follow_offset);
         this->LoadValue(&this->wheel_log);
         this->LoadValue(&this->ffb);
         this->LoadValue(&this->ffb_strength);
@@ -234,6 +245,9 @@ namespace kraken {
         this->LoadValue(&this->dualsense_damage_full);
         this->LoadValue(&this->dualsense_hid_input);
         this->LoadValue(&this->dualsense_log);
+        this->LoadValue(&this->gunreturn);
+        this->LoadValue(&this->gunreturn_timeout);
+        this->LoadValue(&this->gunreturn_log);
         this->LoadValue(&this->ram_speed_threshold);
         this->LoadValue(&this->ram_damage_coeff);
         this->LoadValue(&this->ram_speed_exponent);
@@ -309,6 +323,10 @@ namespace kraken {
         this->DumpValue(&this->wheel_cam_pitch_speed);
         this->DumpValue(&this->wheel_cam_invert_yaw);
         this->DumpValue(&this->wheel_cam_invert_pitch);
+        this->DumpValue(&this->wheel_cam_return);
+        this->DumpValue(&this->wheel_cam_return_delay);
+        this->DumpValue(&this->wheel_cam_return_speed);
+        this->DumpValue(&this->wheel_cam_follow_offset);
         this->DumpValue(&this->wheel_log);
         this->DumpValue(&this->ffb);
         this->DumpValue(&this->ffb_strength);
@@ -330,6 +348,9 @@ namespace kraken {
         this->DumpValue(&this->dualsense_damage_full);
         this->DumpValue(&this->dualsense_hid_input);
         this->DumpValue(&this->dualsense_log);
+        this->DumpValue(&this->gunreturn);
+        this->DumpValue(&this->gunreturn_timeout);
+        this->DumpValue(&this->gunreturn_log);
         this->DumpValue(&this->ram_speed_threshold);
         this->DumpValue(&this->ram_damage_coeff);
         this->DumpValue(&this->ram_speed_exponent);

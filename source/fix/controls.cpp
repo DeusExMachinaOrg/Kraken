@@ -89,6 +89,14 @@ namespace kraken::fix::controls {
         bool     g_invCamPitch  = false;
         float    g_camX         = 0.0f; // right-stick X [-1..1]
         float    g_camY         = 0.0f; // right-stick Y [-1..1]
+        // Camera auto-return behind the car after the look is idle. Device-agnostic
+        // (mouse / wheel / gamepad), gated only by g_camReturn.
+        bool     g_camReturn      = false;
+        float    g_camReturnDelay = 1.5f; // idle seconds before returning
+        float    g_camReturnSpeed = 3.0f; // ease rate toward "behind"
+        float    g_camIdle        = 0.0f; // seconds since last look input
+        float    g_camFollowOffset= 0.0f; // calibrate which orbit yaw is "behind"
+        float    g_camHeading     = 0.0f; // last known car heading (held while stopped)
         bool     g_log          = false;
 
         // Camera fields inside CMiracle3d (== g_pApp). Each frame the original
@@ -100,6 +108,8 @@ namespace kraken::fix::controls {
         // path the mouse uses — staying in sync with the world (no fast-drive jitter).
         constexpr uintptr_t FLYCAMTURN_X_OFF = 0x8b2dc; // m_flyCamTurn.x -> yaw delta
         constexpr uintptr_t FLYCAMTURN_Y_OFF = 0x8b2e0; // m_flyCamTurn.y -> pitch delta
+        constexpr uintptr_t CAM_YAW_OFF      = 0x8b278; // persistent camera yaw offset (0 = behind the car)
+        constexpr uintptr_t CAM_PITCH_OFF    = 0x8b27c; // persistent camera pitch offset
         constexpr uintptr_t CAM_MODE_OFF     = 0x8b290; // m_player.m_cameraMode (look enabled in 2/3)
         // Per-frame look delta = stick * (speed_rad_per_s * NOMINAL_DT). Using a
         // fixed nominal step instead of a measured dt keeps the camera advancing on
@@ -445,6 +455,81 @@ namespace kraken::fix::controls {
             }
         }
 
+        // Camera auto-return / chase-follow: when the look has been idle for
+        // cam_return_delay, drive the camera orbit yaw to the car's heading so the
+        // view sits behind the car and tracks it through turns (comfortable for
+        // wheel driving with no mouse). m_camYaw is an absolute world yaw (world is
+        // Y-up, horizontal plane XZ), so "behind" = the car's heading, taken from
+        // the velocity direction. cam_follow_offset / cam_follow_invert calibrate
+        // which way is "behind". Runs before the original Controls so the eased
+        // angle is used the same frame. Device-agnostic: any look input (mouse via
+        // m_flyCamTurn, or the right stick) resets the idle timer.
+        void CameraReturn() {
+            if (!g_camReturn)
+                return;
+            char* app = static_cast<char*>(*reinterpret_cast<void**>(G_PAPP_VA));
+            if (!app)
+                return;
+            int mode = *reinterpret_cast<int*>(app + CAM_MODE_OFF);
+            if (mode != 2 && mode != 3) {
+                g_camIdle = 0.0f;
+                return;
+            }
+
+            static LARGE_INTEGER freq = {};
+            static LARGE_INTEGER last = {};
+            if (freq.QuadPart == 0)
+                QueryPerformanceFrequency(&freq);
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            float dt = last.QuadPart
+                ? static_cast<float>(now.QuadPart - last.QuadPart) / static_cast<float>(freq.QuadPart)
+                : 0.016f;
+            last = now;
+            if (dt < 0.001f) dt = 0.001f;
+            if (dt > 0.1f)   dt = 0.1f;
+
+            // m_flyCamTurn still holds this frame's mouse delta here (we run before
+            // ApplyCameraPre overwrites it); g_camX/g_camY hold the right stick.
+            float ftx = *reinterpret_cast<float*>(app + FLYCAMTURN_X_OFF);
+            float fty = *reinterpret_cast<float*>(app + FLYCAMTURN_Y_OFF);
+            bool mouseActive = (ftx != 0.0f || fty != 0.0f);
+            bool stickActive = (g_camX >  g_camDeadzone || g_camX < -g_camDeadzone ||
+                                g_camY >  g_camDeadzone || g_camY < -g_camDeadzone);
+            if (mouseActive || stickActive) {
+                g_camIdle = 0.0f;
+                return;
+            }
+
+            g_camIdle += dt;
+            if (g_camIdle < g_camReturnDelay)
+                return;
+
+            // Car heading from the horizontal velocity direction (XZ plane, Y-up).
+            // Hold the last heading while nearly stopped so the camera doesn't spin.
+            hta::ai::Vehicle* vehicle = GetPlayerVehicle();
+            if (!vehicle)
+                return;
+            hta::CVector vel = vehicle->GetLinearVelocity();
+            float hspeed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+            if (hspeed > 1.0f)
+                g_camHeading = -std::atan2(vel.x, vel.z); // sign that matches the orbit yaw
+
+            float target = g_camHeading + g_camFollowOffset;
+
+            float* yaw   = reinterpret_cast<float*>(app + CAM_YAW_OFF);
+            float* pitch = reinterpret_cast<float*>(app + CAM_PITCH_OFF);
+
+            // Ease yaw to the target along the shortest angular path.
+            float d = target - *yaw;
+            while (d >  3.14159265f) d -= 6.28318531f;
+            while (d < -3.14159265f) d += 6.28318531f;
+            float k = g_camReturnSpeed * dt;
+            if (k > 1.0f) k = 1.0f;
+            *yaw   += d * k;
+            *pitch -= *pitch * k; // level the pitch behind the car
+        }
+
         void ApplyWheel() {
             if (!g_present)
                 return;
@@ -513,6 +598,8 @@ namespace kraken::fix::controls {
         // original, then apply the analog wheel override. Callee-cleans (ret 8).
         __declspec(naked) void Controls_Detour() {
             __asm {
+                call    CameraReturn                 ; idle look -> ease camera behind the car
+                                                     ; (reads m_flyCamTurn before ApplyCameraPre)
                 call    ApplyCameraPre               ; feed m_flyCamTurn from the right stick
                                                      ; BEFORE the original consumes it (cdecl,
                                                      ; preserves esi/edi/ebx)
@@ -585,6 +672,10 @@ namespace kraken::fix::controls {
         g_camPitchSpeed= config.wheel_cam_pitch_speed.value;
         g_invCamYaw    = config.wheel_cam_invert_yaw.value != 0;
         g_invCamPitch  = config.wheel_cam_invert_pitch.value != 0;
+        g_camReturn      = config.wheel_cam_return.value != 0;
+        g_camReturnDelay = config.wheel_cam_return_delay.value;
+        g_camReturnSpeed = config.wheel_cam_return_speed.value;
+        g_camFollowOffset= config.wheel_cam_follow_offset.value;
         g_log          = config.wheel_log.value != 0;
 
         g_ffbEnabled   = config.ffb.value != 0;
