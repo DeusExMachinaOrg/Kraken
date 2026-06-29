@@ -10,6 +10,7 @@
 
 #include "fix/controls.hpp"
 #include "fix/dualsense.hpp"
+#include "fix/xinputrumble.hpp"
 #include "config.hpp"
 #include "routines.hpp"
 #include "ext/logger.hpp"
@@ -131,15 +132,24 @@ namespace kraken::fix::controls {
         float                  g_ffbSpeed     = 0.03f;
         bool                   g_ffbInvert    = false;
         bool                   g_ffbLog       = false;
+        // Vibration channel: gains for each source + the shared frequency.
+        float                  g_ffbDamage    = 1.0f;
+        float                  g_ffbCollision = 1.0f;
+        float                  g_ffbOffroad   = 1.0f;
+        float                  g_ffbEngine    = 0.3f;
+        DWORD                  g_ffbVibePeriod = 18000; // microseconds (from ffb_vibe_hz)
         IDirectInput8A*        g_di           = nullptr;
         IDirectInputDevice8A*  g_ffbDev       = nullptr;
-        IDirectInputEffect*    g_ffbEffect    = nullptr;
+        IDirectInputEffect*    g_ffbEffect    = nullptr; // constant force (centering)
+        IDirectInputEffect*    g_ffbVibeEffect = nullptr; // periodic sine (vibration)
         GUID                   g_ffbGuid      = {};
         bool                   g_ffbFound     = false;
 
         // FFB device I/O runs on its own thread so USB round-trips never stall a
-        // frame. The game thread only publishes a target magnitude here.
+        // frame. The game thread only publishes target magnitudes here: the signed
+        // centering force and the unsigned vibration amplitude (0..DI_FFNOMINALMAX).
         std::atomic<LONG>      g_ffbTarget    { 0 };
+        std::atomic<LONG>      g_ffbVibe      { 0 };
         volatile bool          g_ffbThreadRun = false;
         HANDLE                 g_ffbThread    = nullptr;
 
@@ -241,8 +251,30 @@ namespace kraken::fix::controls {
             }
             g_ffbEffect->Start(1, 0);
 
-            LOG_INFO("Force feedback enabled (strength=%.2f center=%.2f speed_gain=%.2f)",
-                     g_ffbStrength, g_ffbCenter, g_ffbSpeed);
+            // Vibration channel: a periodic sine on the same X axis. The driver
+            // superimposes it on the centering force; we only drive its amplitude
+            // (and period) from game events. Non-fatal if the wheel rejects it.
+            DIPERIODIC pf = {};
+            pf.dwMagnitude = 0;
+            pf.lOffset     = 0;
+            pf.dwPhase     = 0;
+            pf.dwPeriod    = g_ffbVibePeriod;
+            LONG vdir[1]   = { 1 };
+            DIEFFECT veff  = eff;            // reuse axes/flags/duration from above
+            veff.rglDirection          = vdir;
+            veff.cbTypeSpecificParams  = sizeof(DIPERIODIC);
+            veff.lpvTypeSpecificParams = &pf;
+            if (SUCCEEDED(g_ffbDev->CreateEffect(GUID_Sine, &veff, &g_ffbVibeEffect, nullptr))
+                && g_ffbVibeEffect) {
+                g_ffbVibeEffect->Start(1, 0);
+            } else {
+                g_ffbVibeEffect = nullptr;
+                LOG_WARNING("FFB: CreateEffect(Sine) failed — vibration effects disabled");
+            }
+
+            LOG_INFO("Force feedback enabled (strength=%.2f center=%.2f speed_gain=%.2f vibe=%uHz)",
+                     g_ffbStrength, g_ffbCenter, g_ffbSpeed,
+                     g_ffbVibePeriod ? 1000000u / g_ffbVibePeriod : 0u);
             return true;
         }
 
@@ -270,6 +302,27 @@ namespace kraken::fix::controls {
             }
         }
 
+        // Push the vibration amplitude (and current period) to the sine effect.
+        void PushVibe(LONG mag) {
+            if (!g_ffbVibeEffect)
+                return;
+            DIPERIODIC pf = {};
+            pf.dwMagnitude = mag;            // 0..DI_FFNOMINALMAX
+            pf.lOffset     = 0;
+            pf.dwPhase     = 0;
+            pf.dwPeriod    = g_ffbVibePeriod;
+            DIEFFECT eff = {};
+            eff.dwSize                = sizeof(DIEFFECT);
+            eff.cbTypeSpecificParams  = sizeof(DIPERIODIC);
+            eff.lpvTypeSpecificParams = &pf;
+            if (FAILED(g_ffbVibeEffect->SetParameters(&eff, DIEP_TYPESPECIFICPARAMS))) {
+                // Recovery is driven by the constant-force path (PushFFB / the
+                // health check below); just retry a start here.
+                g_ffbVibeEffect->Start(1, 0);
+                g_ffbVibeEffect->SetParameters(&eff, DIEP_TYPESPECIFICPARAMS | DIEP_START);
+            }
+        }
+
         // Periodic health check: a power-cycled wheel can come back acquired but
         // with actuators OFF or the effect STOPPED (SetParameters then succeeds yet
         // no force is felt). Switch actuators back on / restart as needed.
@@ -278,26 +331,36 @@ namespace kraken::fix::controls {
             HRESULT hr    = g_ffbDev->GetForceFeedbackState(&state);
             if (FAILED(hr)) {
                 g_ffbDev->Unacquire();
-                if (SUCCEEDED(g_ffbDev->Acquire()))
+                if (SUCCEEDED(g_ffbDev->Acquire())) {
                     g_ffbEffect->Start(1, 0);
+                    if (g_ffbVibeEffect) g_ffbVibeEffect->Start(1, 0);
+                }
                 return;
             }
             if (state & DIGFFS_ACTUATORSOFF)
                 g_ffbDev->SendForceFeedbackCommand(DISFFC_SETACTUATORSON);
             if (state & DIGFFS_PAUSED)
                 g_ffbDev->SendForceFeedbackCommand(DISFFC_CONTINUE);
-            if (state & (DIGFFS_STOPPED | DIGFFS_EMPTY))
+            if (state & (DIGFFS_STOPPED | DIGFFS_EMPTY)) {
                 g_ffbEffect->Start(1, 0);
+                if (g_ffbVibeEffect) g_ffbVibeEffect->Start(1, 0);
+            }
         }
 
         DWORD WINAPI FFBThread(LPVOID) {
-            LONG lastMag = 0x7fffffff;
-            int  hb      = 0;
+            LONG lastMag  = 0x7fffffff;
+            LONG lastVibe = 0x7fffffff;
+            int  hb       = 0;
             while (g_ffbThreadRun) {
                 LONG mag = g_ffbTarget.load(std::memory_order_relaxed);
                 if (mag != lastMag) {
                     PushFFB(mag);
                     lastMag = mag;
+                }
+                LONG vibe = g_ffbVibe.load(std::memory_order_relaxed);
+                if (vibe != lastVibe) {
+                    PushVibe(vibe);
+                    lastVibe = vibe;
                 }
                 if (++hb >= 60) { // health check ~ twice a second
                     hb = 0;
@@ -319,8 +382,41 @@ namespace kraken::fix::controls {
 
         // Let go of the wheel (no force) — used when there is no live player
         // vehicle, so death/menus don't leave the wheel slammed against a stop.
+        // --- vibration-channel state (game thread) ---
+        bool         g_ffbHaveVel    = false;
+        hta::CVector g_ffbPrevVel;
+        bool         g_ffbHaveHealth = false;
+        float        g_ffbPrevHealth = 0.0f;
+        float        g_ffbImpactEnv  = 0.0f; // collisions/rams (accel spike)
+        float        g_ffbOffroadEnv = 0.0f; // rough-ground buzz (smoothed)
+        float        g_ffbDamageEnv  = 0.0f; // taking damage (health drop)
+
         void ReleaseFFB() {
             g_ffbTarget.store(0, std::memory_order_relaxed);
+            g_ffbVibe.store(0, std::memory_order_relaxed);
+            // Re-baseline next time there's a live vehicle, so respawn/repair (a
+            // health jump) and the velocity discontinuity don't fire a fake pulse.
+            g_ffbHaveVel    = false;
+            g_ffbHaveHealth = false;
+            g_ffbImpactEnv  = 0.0f;
+            g_ffbOffroadEnv = 0.0f;
+            g_ffbDamageEnv  = 0.0f;
+        }
+
+        float FfbDt() {
+            static LARGE_INTEGER freq = {};
+            static LARGE_INTEGER last = {};
+            if (freq.QuadPart == 0)
+                QueryPerformanceFrequency(&freq);
+            LARGE_INTEGER now;
+            QueryPerformanceCounter(&now);
+            float dt = last.QuadPart
+                ? static_cast<float>(now.QuadPart - last.QuadPart) / static_cast<float>(freq.QuadPart)
+                : 0.016f;
+            last = now;
+            if (dt < 0.001f) dt = 0.001f;
+            if (dt > 0.1f)   dt = 0.1f;
+            return dt;
         }
 
         void UpdateFFB(hta::ai::Vehicle* vehicle) {
@@ -336,6 +432,67 @@ namespace kraken::fix::controls {
 
             g_ffbTarget.store(static_cast<LONG>(frac * DI_FFNOMINALMAX),
                               std::memory_order_relaxed);
+
+            // ---- vibration channel (periodic sine), built from four sources ----
+            float dt = FfbDt();
+
+            if (!g_ffbHaveVel) { g_ffbPrevVel = vel; g_ffbHaveVel = true; }
+            hta::CVector dv = vel - g_ffbPrevVel;
+            g_ffbPrevVel = vel;
+            float accel = std::sqrt(dv.x * dv.x + dv.y * dv.y + dv.z * dv.z) / dt;
+
+            // Collision/ram: sharp envelope on large acceleration spikes.
+            float impact = (accel - 60.0f) / 240.0f;
+            if (impact < 0.0f) impact = 0.0f;
+            if (impact > 1.0f) impact = 1.0f;
+            g_ffbImpactEnv *= std::exp(-dt / 0.10f); // ~100 ms decay
+            if (impact > g_ffbImpactEnv) g_ffbImpactEnv = impact;
+
+            // Rough ground: sustained moderate jitter scaled by speed, smoothed.
+            float buzz = (accel - 12.0f) / 50.0f;
+            if (buzz < 0.0f) buzz = 0.0f;
+            if (buzz > 1.0f) buzz = 1.0f;
+            float speedFactor = speed / 20.0f;
+            if (speedFactor > 1.0f) speedFactor = 1.0f;
+            float rough = buzz * speedFactor;
+            float k = dt / 0.05f;
+            if (k > 1.0f) k = 1.0f;
+            g_ffbOffroadEnv += (rough - g_ffbOffroadEnv) * k;
+
+            // Damage: a punchy pulse when the vehicle's health drops.
+            float health = vehicle->GetHealth();
+            if (!g_ffbHaveHealth) { g_ffbPrevHealth = health; g_ffbHaveHealth = true; }
+            float drop = g_ffbPrevHealth - health;
+            g_ffbPrevHealth = health;
+            g_ffbDamageEnv *= std::exp(-dt / 0.22f); // ~220 ms decay
+            if (drop > 0.0001f) {
+                float maxH = vehicle->GetMaxHealth();
+                if (maxH > 0.0f) {
+                    float dmg = (drop / maxH) / 0.20f; // 20% of max HP -> full pulse
+                    if (dmg > 1.0f) dmg = 1.0f;
+                    if (dmg > g_ffbDamageEnv) g_ffbDamageEnv = dmg;
+                }
+            }
+
+            // Engine: gentle always-on rumble while moving (idle + speed).
+            float engine = g_ffbEngine > 0.0f ? (0.10f + 0.35f * speedFactor) : 0.0f;
+
+            // Combine: the strongest sustained source plus the transient kicks.
+            float vibe = engine * g_ffbEngine;
+            float off  = g_ffbOffroadEnv * g_ffbOffroad;
+            if (off > vibe) vibe = off;
+            vibe += g_ffbImpactEnv * g_ffbCollision; // collisions add on top
+            vibe += g_ffbDamageEnv * g_ffbDamage;    // damage adds on top
+            vibe *= g_ffbStrength;
+            if (vibe < 0.0f) vibe = 0.0f;
+            if (vibe > 1.0f) vibe = 1.0f;
+
+            g_ffbVibe.store(static_cast<LONG>(vibe * DI_FFNOMINALMAX),
+                            std::memory_order_relaxed);
+
+            if (g_ffbLog && vibe > 0.001f)
+                LOG_DEBUG("ffb vibe=%.2f (eng=%.2f off=%.2f imp=%.2f dmg=%.2f) speed=%.1f",
+                          vibe, engine * g_ffbEngine, off, g_ffbImpactEnv, g_ffbDamageEnv, speed);
         }
 
         float PedalValue(float axis, bool invert) {
@@ -542,6 +699,7 @@ namespace kraken::fix::controls {
                 if (g_ffbReady)
                     ReleaseFFB();
                 dualsense::Idle();
+                xinputrumble::Idle();
                 return;
             }
 
@@ -588,7 +746,8 @@ namespace kraken::fix::controls {
                     UpdateFFB(vehicle);
             }
 
-            dualsense::Update(vehicle); // DualSense haptic feedback (no-op unless enabled)
+            dualsense::Update(vehicle);    // DualSense HID feedback (no-op unless enabled)
+            xinputrumble::Update(vehicle); // XInput pad rumble (no-op unless enabled)
         }
 
         // Naked detour: preserve Controls' __usercall contract.
@@ -684,6 +843,15 @@ namespace kraken::fix::controls {
         g_ffbSpeed     = config.ffb_speed_gain.value;
         g_ffbInvert    = config.ffb_invert.value != 0;
         g_ffbLog       = config.ffb_log.value != 0;
+        g_ffbDamage    = config.ffb_damage.value;
+        g_ffbCollision = config.ffb_collision.value;
+        g_ffbOffroad   = config.ffb_offroad.value;
+        g_ffbEngine    = config.ffb_engine.value;
+        {
+            float hz = config.ffb_vibe_hz.value;
+            if (hz < 1.0f) hz = 1.0f;
+            g_ffbVibePeriod = static_cast<DWORD>(1000000.0f / hz); // Hz -> microseconds
+        }
 
         impulse::Attach(impulse::eImpulseAny, OnImpulse);
 

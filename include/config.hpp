@@ -120,6 +120,12 @@ namespace kraken {
         ConfigValue<float>                    ffb_speed_gain;        // extra centering per unit speed [0..1]
         ConfigValue<uint32_t>                 ffb_invert;            // 1: flip force direction
         ConfigValue<uint32_t>                 ffb_log;               // 1: log FFB magnitude (needs log_debug=0)
+        // Vibration channel (periodic effect layered on the centering force).
+        ConfigValue<float>                    ffb_damage;            // shake on taking damage (health drop) [0..2]
+        ConfigValue<float>                    ffb_collision;         // jolt on collisions/rams (accel spike) [0..2]
+        ConfigValue<float>                    ffb_offroad;           // rough-ground vibration, scaled by speed [0..2]
+        ConfigValue<float>                    ffb_engine;            // continuous engine rumble from throttle/speed [0..2]
+        ConfigValue<float>                    ffb_vibe_hz;           // vibration frequency in Hz [5..100]
 
         // Gamepad (DualSense and any winmm joystick). See fix/gamepad.cpp.
         // Bridges controller buttons into the engine's built-in (but dormant)
@@ -150,6 +156,18 @@ namespace kraken {
         ConfigValue<uint32_t>                 dualsense_log;         // 1: log accel/speed/rumble (needs log_debug=0)
         // Adaptive triggers (L2/R2 resistance + buzz/kick), encoded in the same HID
         // output report. See the trigger model in fix/dualsense.cpp.
+        // XInput rumble (for a pad bridged to a virtual Xbox controller via DSX /
+        // Steam Input, where the native DualSense HID is unavailable). See
+        // fix/xinputrumble.cpp. Same motion-derived force model as [dualsense].
+        ConfigValue<uint32_t>                 xinput;                // master enable for XInput rumble
+        ConfigValue<float>                    xinput_strength;       // overall rumble gain [0..2]
+        ConfigValue<float>                    xinput_impact;         // impact (strong motor) gain
+        ConfigValue<float>                    xinput_offroad;        // rough-ground buzz (weak motor) gain
+        ConfigValue<float>                    xinput_damage;         // pulse gain when the vehicle takes damage
+        ConfigValue<float>                    xinput_damage_full;    // fraction of max HP lost (one hit) for a full pulse
+        ConfigValue<int32_t>                  xinput_index;          // XInput slot 0..3, or -1 = auto-detect
+        ConfigValue<uint32_t>                 xinput_log;            // 1: log accel/speed/rumble (needs log_debug=0)
+
         ConfigValue<uint32_t>                 dualsense_triggers;        // master enable for adaptive triggers
         ConfigValue<float>                    dualsense_trigger_brake;   // L2 brake-pedal resistance gain [0..2]
         ConfigValue<float>                    dualsense_trigger_throttle;// R2 throttle (engine-load) resistance gain [0..2]

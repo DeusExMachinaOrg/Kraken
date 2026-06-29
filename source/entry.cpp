@@ -38,6 +38,7 @@
 #include "fix/controls.hpp"
 #include "fix/gamepad.hpp"
 #include "fix/dualsense.hpp"
+#include "fix/xinputrumble.hpp"
 #include "fix/gunreturn.hpp"
 
 namespace kraken {
@@ -102,6 +103,7 @@ namespace kraken {
         fix::controls::Apply();
         fix::gamepad::Apply();
         fix::dualsense::Apply();
+        fix::xinputrumble::Apply();
         fix::gunreturn::Apply();
         // Appendix (thorn melee weapons) + the Meridian ram-collision formulas.
         // Gated by [constants] appendix so it can be fully disabled (vanilla HTA ram
