@@ -9,8 +9,9 @@ namespace kraken::fix::dualsense {
     void Apply();
 
     // Called once per frame from the controls hook while a live player vehicle
-    // exists: derives rumble (and later adaptive-trigger) force from the vehicle's
-    // motion and publishes it to the worker thread.
+    // exists: derives rumble and adaptive-trigger force (L2/R2 resistance, plus a
+    // kick on impacts/damage and a buzz on rough ground) from the vehicle's motion
+    // and publishes it to the worker thread.
     void Update(hta::ai::Vehicle* vehicle);
 
     // Called when there is no live player vehicle (menus / death): fades the

@@ -49,6 +49,14 @@ namespace kraken::fix::dualsense {
         float g_damageFull   = 0.20f; // fraction of max HP lost that gives a full pulse
         bool  g_log          = false;
 
+        // adaptive triggers
+        bool  g_triggers       = false;
+        float g_trigBrake      = 1.0f; // L2 brake-pedal resistance gain
+        float g_trigThrottle   = 1.0f; // R2 throttle (engine-load) resistance gain
+        float g_trigKickGain   = 1.0f; // collision/impact kick gain
+        float g_trigDamageGain = 1.0f; // taking-damage kick gain
+        float g_trigBuzzGain   = 1.0f; // rough-ground buzz gain
+
         // --- device ---
         constexpr int OUT_BUF_MAX = 1024;
         HANDLE g_dev        = INVALID_HANDLE_VALUE;
@@ -80,6 +88,11 @@ namespace kraken::fix::dualsense {
         // --- published actuator targets (game thread -> worker thread) ---
         std::atomic<int> g_motorStrong { 0 }; // low-frequency (left), 0..255
         std::atomic<int> g_motorWeak   { 0 }; // high-frequency (right), 0..255
+        // adaptive-trigger targets (game thread -> worker), all 0..255
+        std::atomic<int> g_r2Force     { 0 }; // R2 base resistance (throttle/engine load)
+        std::atomic<int> g_l2Force     { 0 }; // L2 base resistance (brake pedal)
+        std::atomic<int> g_trigKick    { 0 }; // transient kick added to BOTH triggers (impact/damage)
+        std::atomic<int> g_trigBuzz    { 0 }; // rough-ground buzz amplitude added to R2 (oscillated by worker)
         volatile bool    g_workerRun   = false;
         HANDLE           g_worker      = nullptr;
 
@@ -209,8 +222,24 @@ namespace kraken::fix::dualsense {
             return true;
         }
 
+        // Write one adaptive-trigger effect into the common output block. The DS5
+        // common block holds the right trigger (R2) at offset 10 (mode + 10 params)
+        // and the left trigger (L2) at offset 21. We use the simplest firmware mode,
+        // 0x01 "continuous resistance": from `start` onward the trigger pushes back
+        // with `force`. force==0 -> mode 0x00 (off, free trigger).
+        void SetTriggerEffect(uint8_t* common, int modeOff, uint8_t force, uint8_t start) {
+            common[modeOff + 0] = 0x00; // default: off
+            common[modeOff + 1] = 0x00;
+            common[modeOff + 2] = 0x00;
+            if (force == 0)
+                return;
+            common[modeOff + 0] = 0x01;  // continuous resistance
+            common[modeOff + 1] = start; // start position (0..255 along travel)
+            common[modeOff + 2] = force; // resistance force
+        }
+
         // ---- output report ----------------------------------------------------
-        void SendReport(uint8_t strong, uint8_t weak) {
+        void SendReport(uint8_t strong, uint8_t weak, uint8_t r2, uint8_t l2) {
             if (g_dev == INVALID_HANDLE_VALUE)
                 return;
 
@@ -225,10 +254,19 @@ namespace kraken::fix::dualsense {
                 common  = buf + 1;
             }
 
-            common[0] = 0x03;          // flag0: COMPATIBLE_VIBRATION | HAPTICS_SELECT
+            // flag0: COMPATIBLE_VIBRATION | HAPTICS_SELECT, plus the right/left
+            // trigger FFB enables (0x04|0x08) when adaptive triggers are on.
+            common[0] = g_triggers ? 0x0F : 0x03;
             common[1] = 0x00;          // flag1
             common[2] = strong;        // left  motor (low frequency)
             common[3] = weak;          // right motor (high frequency)
+
+            if (g_triggers) {
+                // R2 resistance bites a bit before half-travel so the load is felt
+                // while accelerating; L2 starts near the top for a firm brake feel.
+                SetTriggerEffect(common, 10, r2, 0x40); // right trigger (R2)
+                SetTriggerEffect(common, 21, l2, 0x30); // left  trigger (L2)
+            }
 
             if (g_bluetooth) {
                 uint8_t  seed = 0xA2;
@@ -253,22 +291,47 @@ namespace kraken::fix::dualsense {
         }
 
         DWORD WINAPI Worker(LPVOID) {
-            int lastS = -1, lastW = -1;
+            int lastS = -1, lastW = -1, lastR2 = -1, lastL2 = -1;
             int heartbeat = 0;
+            float phase = 0.0f; // seconds, drives the rough-ground trigger buzz
+            const float kBuzzHz = 18.0f;
             while (g_workerRun) {
                 int s = g_motorStrong.load(std::memory_order_relaxed);
                 int w = g_motorWeak.load(std::memory_order_relaxed);
+
+                // Adaptive triggers: base resistance + a shared kick + (R2) a buzz
+                // oscillated here at ~120 Hz so the rough-ground tremble is crisp
+                // (the game thread only publishes the slowly-changing amplitudes).
+                int r2 = 0, l2 = 0;
+                if (g_triggers) {
+                    int r2base = g_r2Force.load(std::memory_order_relaxed);
+                    int l2base = g_l2Force.load(std::memory_order_relaxed);
+                    int kick   = g_trigKick.load(std::memory_order_relaxed);
+                    int buzzA  = g_trigBuzz.load(std::memory_order_relaxed);
+                    phase += 0.008f;
+                    float osc  = 0.5f + 0.5f * std::sin(6.2831853f * kBuzzHz * phase);
+                    int buzz   = static_cast<int>(buzzA * osc);
+                    r2 = r2base + buzz + kick;
+                    l2 = l2base + kick;
+                    if (r2 > 255) r2 = 255;
+                    if (l2 > 255) l2 = 255;
+                }
+
                 // Resend on change, plus a periodic heartbeat so a dropped BT
-                // packet doesn't leave a stale force latched.
-                if (s != lastS || w != lastW || ++heartbeat >= 20) {
-                    SendReport(static_cast<uint8_t>(s), static_cast<uint8_t>(w));
+                // packet doesn't leave a stale force latched. (The buzz makes r2
+                // change every iteration while on rough ground -> a steady stream.)
+                if (s != lastS || w != lastW || r2 != lastR2 || l2 != lastL2 || ++heartbeat >= 20) {
+                    SendReport(static_cast<uint8_t>(s), static_cast<uint8_t>(w),
+                               static_cast<uint8_t>(r2), static_cast<uint8_t>(l2));
                     lastS = s;
                     lastW = w;
+                    lastR2 = r2;
+                    lastL2 = l2;
                     heartbeat = 0;
                 }
                 Sleep(8); // ~120 Hz
             }
-            SendReport(0, 0); // release on shutdown
+            SendReport(0, 0, 0, 0); // release on shutdown
             return 0;
         }
 
@@ -468,16 +531,18 @@ namespace kraken::fix::dualsense {
         float accel = std::sqrt(dv.x * dv.x + dv.y * dv.y + dv.z * dv.z) / dt;
         float speed = std::sqrt(vel.x * vel.x + vel.y * vel.y + vel.z * vel.z);
 
-        // Strong motor: sharp envelope on large acceleration spikes (impacts).
-        float impact = (accel - 60.0f) / 240.0f * g_impactGain;
+        // Impact envelope: sharp rise on large acceleration spikes (collisions).
+        // Kept gain-free here so the motor and the trigger kick can scale it
+        // independently (the user may want trigger feedback without motor rumble).
+        float impact = (accel - 60.0f) / 240.0f;
         if (impact < 0.0f) impact = 0.0f;
         if (impact > 1.0f) impact = 1.0f;
         g_impactEnv *= std::exp(-dt / 0.12f); // ~120 ms decay
         if (impact > g_impactEnv)
             g_impactEnv = impact;
 
-        // Weak motor: sustained moderate jitter scaled by speed (rough ground).
-        float buzz = (accel - 12.0f) / 50.0f * g_offroadGain;
+        // Rough-ground envelope: sustained moderate jitter scaled by speed.
+        float buzz = (accel - 12.0f) / 50.0f;
         if (buzz < 0.0f) buzz = 0.0f;
         if (buzz > 1.0f) buzz = 1.0f;
         float speedFactor = speed / 20.0f;
@@ -502,17 +567,20 @@ namespace kraken::fix::dualsense {
         if (drop > 0.0001f) {
             float maxH = vehicle->GetMaxHealth();
             if (maxH > 0.0f && g_damageFull > 0.0f) {
-                // Full pulse when the frame's health loss reaches damage_full of max HP.
-                float dmg = (drop / maxH) / g_damageFull * g_damageGain;
+                // Full pulse when the frame's health loss reaches damage_full of max
+                // HP. Gain-free here (applied per-consumer below).
+                float dmg = (drop / maxH) / g_damageFull;
                 if (dmg > 1.0f) dmg = 1.0f;
                 if (dmg > g_damageEnv) g_damageEnv = dmg;
             }
         }
 
-        float strong = g_impactEnv;
-        if (g_damageEnv > strong) strong = g_damageEnv;          // hits drive the strong motor
-        float weakOut = g_weakSmooth;
-        if (g_damageEnv * 0.6f > weakOut) weakOut = g_damageEnv * 0.6f; // + a sharp high-freq bite
+        // Rumble: apply the per-source motor gains, then the master strength.
+        float dmgMotor = g_damageEnv * g_damageGain;
+        float strong = g_impactEnv * g_impactGain;
+        if (dmgMotor > strong) strong = dmgMotor;                 // hits drive the strong motor
+        float weakOut = g_weakSmooth * g_offroadGain;
+        if (dmgMotor * 0.6f > weakOut) weakOut = dmgMotor * 0.6f; // + a sharp high-freq bite
         strong  *= g_strength;
         weakOut *= g_strength;
         if (strong  > 1.0f) strong  = 1.0f;
@@ -520,6 +588,42 @@ namespace kraken::fix::dualsense {
 
         g_motorStrong.store(static_cast<int>(strong  * 255.0f), std::memory_order_relaxed);
         g_motorWeak.store  (static_cast<int>(weakOut * 255.0f), std::memory_order_relaxed);
+
+        // ---- adaptive triggers ----
+        // Reuse the envelopes above. Resistance is a static force profile the
+        // controller applies as the finger presses, so it's driven by speed (not
+        // the live pedal value): faster -> stiffer gas/brake. The kick/buzz ride on
+        // top and are oscillated/decayed by the worker thread.
+        if (g_triggers) {
+            float speedFactor = speed / 20.0f;
+            if (speedFactor > 1.0f) speedFactor = 1.0f;
+
+            // R2 throttle: light engine load that grows with speed.
+            float r2 = (0.22f + 0.55f * speedFactor) * g_trigThrottle;
+            // L2 brake: firm pedal, a touch firmer at speed.
+            float l2 = (0.45f + 0.40f * speedFactor) * g_trigBrake;
+
+            // Shared kick on both triggers, from two independent sources:
+            // collisions (impact envelope, fires on hard accel/bumps too) and
+            // taking damage (health drop). Separate gains so the user can have a
+            // damage-only kick without driving bumps triggering it.
+            float kickImpact = g_impactEnv * g_trigKickGain;
+            float kickDamage = g_damageEnv * g_trigDamageGain;
+            float kick = (kickImpact > kickDamage) ? kickImpact : kickDamage;
+            // Rough-ground buzz rides the R2 (held while accelerating).
+            float buzz = g_weakSmooth * g_trigBuzzGain;
+
+            auto clamp255 = [](float v) -> int {
+                int i = static_cast<int>(v * 255.0f);
+                if (i < 0)   i = 0;
+                if (i > 255) i = 255;
+                return i;
+            };
+            g_r2Force.store(clamp255(r2),   std::memory_order_relaxed);
+            g_l2Force.store(clamp255(l2),   std::memory_order_relaxed);
+            g_trigKick.store(clamp255(kick), std::memory_order_relaxed);
+            g_trigBuzz.store(clamp255(buzz), std::memory_order_relaxed);
+        }
 
         if (g_log && (strong > 0.001f || weakOut > 0.001f))
             LOG_DEBUG("accel=%.1f speed=%.1f dmgEnv=%.2f strong=%.2f weak=%.2f",
@@ -536,6 +640,11 @@ namespace kraken::fix::dualsense {
         g_haveHealth = false; // re-baseline health next time, so respawn/heal doesn't pulse
         g_motorStrong.store(0, std::memory_order_relaxed);
         g_motorWeak.store(0, std::memory_order_relaxed);
+        // Release the triggers too (menus/death): free, no resistance.
+        g_r2Force.store(0, std::memory_order_relaxed);
+        g_l2Force.store(0, std::memory_order_relaxed);
+        g_trigKick.store(0, std::memory_order_relaxed);
+        g_trigBuzz.store(0, std::memory_order_relaxed);
     }
 
     void Apply() {
@@ -553,6 +662,13 @@ namespace kraken::fix::dualsense {
         g_hidInput    = config.dualsense_hid_input.value != 0;
         g_injDevice   = config.wheel_device.value;
 
+        g_triggers     = config.dualsense_triggers.value != 0;
+        g_trigBrake    = config.dualsense_trigger_brake.value;
+        g_trigThrottle = config.dualsense_trigger_throttle.value;
+        g_trigKickGain   = config.dualsense_trigger_kick.value;
+        g_trigDamageGain = config.dualsense_trigger_damage.value;
+        g_trigBuzzGain   = config.dualsense_trigger_buzz.value;
+
         if (!g_lockInit) {
             InitializeCriticalSection(&g_lock);
             g_lockInit = true;
@@ -560,7 +676,7 @@ namespace kraken::fix::dualsense {
 
         // Device is opened lazily on the first Update (the pad may connect after
         // launch), so just announce intent here.
-        LOG_INFO("DualSense feedback enabled (strength=%.2f impact=%.2f offroad=%.2f hid_input=%d)",
-                 g_strength, g_impactGain, g_offroadGain, g_hidInput ? 1 : 0);
+        LOG_INFO("DualSense feedback enabled (strength=%.2f impact=%.2f offroad=%.2f hid_input=%d triggers=%d)",
+                 g_strength, g_impactGain, g_offroadGain, g_hidInput ? 1 : 0, g_triggers ? 1 : 0);
     }
 }

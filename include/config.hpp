@@ -148,6 +148,14 @@ namespace kraken {
         ConfigValue<float>                    dualsense_damage_full; // fraction of max HP lost (in one hit) that gives a full pulse
         ConfigValue<uint32_t>                 dualsense_hid_input;   // 1: read sticks/buttons from HID and inject (wireless; bypass winmm)
         ConfigValue<uint32_t>                 dualsense_log;         // 1: log accel/speed/rumble (needs log_debug=0)
+        // Adaptive triggers (L2/R2 resistance + buzz/kick), encoded in the same HID
+        // output report. See the trigger model in fix/dualsense.cpp.
+        ConfigValue<uint32_t>                 dualsense_triggers;        // master enable for adaptive triggers
+        ConfigValue<float>                    dualsense_trigger_brake;   // L2 brake-pedal resistance gain [0..2]
+        ConfigValue<float>                    dualsense_trigger_throttle;// R2 throttle (engine-load) resistance gain [0..2]
+        ConfigValue<float>                    dualsense_trigger_kick;    // collision/impact trigger kick gain [0..2]
+        ConfigValue<float>                    dualsense_trigger_damage;  // taking-damage trigger kick gain [0..2]
+        ConfigValue<float>                    dualsense_trigger_buzz;    // rough-ground trigger buzz gain [0..2]
 
         // Gun auto-return: ease the player's guns back to forward when idle.
         ConfigValue<uint32_t>                 gunreturn;             // master enable

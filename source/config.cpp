@@ -118,6 +118,12 @@ namespace kraken {
         this->dualsense_damage_full             = { "dualsense", "damage_full",                     0.20f, true,  0.01f, 1.0f        };
         this->dualsense_hid_input               = { "dualsense", "hid_input",                       0,     true,  0,     1           };
         this->dualsense_log                     = { "dualsense", "log",                             0,     true,  0,     1           };
+        this->dualsense_triggers                = { "dualsense", "triggers",                        0,     true,  0,     1           };
+        this->dualsense_trigger_brake           = { "dualsense", "trigger_brake",                   1.0f,  true,  0.0f,  2.0f        };
+        this->dualsense_trigger_throttle        = { "dualsense", "trigger_throttle",                1.0f,  true,  0.0f,  2.0f        };
+        this->dualsense_trigger_kick            = { "dualsense", "trigger_kick",                    1.0f,  true,  0.0f,  2.0f        };
+        this->dualsense_trigger_damage          = { "dualsense", "trigger_damage",                  1.0f,  true,  0.0f,  2.0f        };
+        this->dualsense_trigger_buzz            = { "dualsense", "trigger_buzz",                    1.0f,  true,  0.0f,  2.0f        };
         this->gunreturn                         = { "gunreturn", "enabled",                         0,     true,  0,     1           };
         this->gunreturn_timeout                 = { "gunreturn", "timeout",                         3.0f,  true,  0.0f,  60.0f       };
         this->gunreturn_log                     = { "gunreturn", "log",                             0,     true,  0,     1           };
@@ -245,6 +251,12 @@ namespace kraken {
         this->LoadValue(&this->dualsense_damage_full);
         this->LoadValue(&this->dualsense_hid_input);
         this->LoadValue(&this->dualsense_log);
+        this->LoadValue(&this->dualsense_triggers);
+        this->LoadValue(&this->dualsense_trigger_brake);
+        this->LoadValue(&this->dualsense_trigger_throttle);
+        this->LoadValue(&this->dualsense_trigger_kick);
+        this->LoadValue(&this->dualsense_trigger_damage);
+        this->LoadValue(&this->dualsense_trigger_buzz);
         this->LoadValue(&this->gunreturn);
         this->LoadValue(&this->gunreturn_timeout);
         this->LoadValue(&this->gunreturn_log);
@@ -348,6 +360,12 @@ namespace kraken {
         this->DumpValue(&this->dualsense_damage_full);
         this->DumpValue(&this->dualsense_hid_input);
         this->DumpValue(&this->dualsense_log);
+        this->DumpValue(&this->dualsense_triggers);
+        this->DumpValue(&this->dualsense_trigger_brake);
+        this->DumpValue(&this->dualsense_trigger_throttle);
+        this->DumpValue(&this->dualsense_trigger_kick);
+        this->DumpValue(&this->dualsense_trigger_damage);
+        this->DumpValue(&this->dualsense_trigger_buzz);
         this->DumpValue(&this->gunreturn);
         this->DumpValue(&this->gunreturn_timeout);
         this->DumpValue(&this->gunreturn_log);
