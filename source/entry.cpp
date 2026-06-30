@@ -29,6 +29,7 @@
 #include "fix/difficultywndescapefix.hpp"
 #include "fix/mortarvolleylauncherfix.hpp"
 #include "fix/gunlights.hpp"
+#include "fix/hbao.hpp"
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
@@ -86,5 +87,6 @@ namespace kraken {
         fix::difficultywndescapefix::Apply();
         fix::mortarvolleylauncherfix::Apply();
         fix::gunlights::Apply();
+        fix::hbao::Apply();
     };
 };

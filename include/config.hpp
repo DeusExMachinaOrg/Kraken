@@ -71,6 +71,12 @@ namespace kraken {
         ConfigValue<uint32_t>                 cctl_leak_fix;
         ConfigValue<uint32_t>                 mortarvolleylauncherfix;
         ConfigValue<uint32_t>                 gunlights;
+        ConfigValue<uint32_t>                 hbao;
+        ConfigValue<float>                    hbao_radius;
+        ConfigValue<float>                    hbao_intensity;
+        ConfigValue<float>                    hbao_bias;
+        ConfigValue<float>                    hbao_fade_start;
+        ConfigValue<float>                    hbao_fade_end;
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;

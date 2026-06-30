@@ -9,6 +9,8 @@
 #include "hta/m3d/rend/Vertices.hpp"
 #include "render/CDevice.hpp"
 
+#include "config.hpp"
+
 #include <algorithm>
 #include <exception>
 #include <set>
@@ -3176,6 +3178,8 @@ namespace kraken::render {
     }
 
     CDevice::~CDevice() {
+        ReleaseHbaoDepth();
+
         if (m_pSysFont) {
             m_pSysFont->Release();
             m_pSysFont = nullptr;
@@ -3479,6 +3483,8 @@ namespace kraken::render {
                 }
             }
             m_rtsZSurfaces.clear();
+
+            ReleaseHbaoDepth();  // D3DPOOL_DEFAULT: must drop before Reset; BeginScene recreates it lazily
 
             rstShadersPrepareFor();
             rstTexPrepareFor();
@@ -6274,11 +6280,290 @@ namespace kraken::render {
         return 1;
     };
 
+    bool CDevice::EnsureHbaoDepth() {
+        if (m_hbaoDepthTex)
+            return true;
+
+        // INTZ = a D24S8 depth-stencil that can ALSO be sampled as a texture (raw post-projection
+        // depth in .r when depth writes are off). This is what makes the camera depth available to
+        // the screen-space AO pass; a normal auto depth-stencil surface is not sampleable.
+        const D3DFORMAT INTZ = static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z'));
+        if (FAILED(m_pD3D->CheckDeviceFormat(
+                D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, m_d3dsdBackBuffer.Format, D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_TEXTURE, INTZ
+            ))) {
+            LOG_WARNING("HBAO: INTZ depth-texture not supported by device; AO depth path unavailable");
+            return false;
+        }
+
+        const UINT w = m_d3dsdBackBuffer.Width;
+        const UINT h = m_d3dsdBackBuffer.Height;
+        HRESULT hr   = m_pd3dDevice->CreateTexture(w, h, 1, D3DUSAGE_DEPTHSTENCIL, INTZ, D3DPOOL_DEFAULT, &m_hbaoDepthTex, nullptr);
+        if (FAILED(hr)) {
+            LOG_ERROR("HBAO: CreateTexture(INTZ %ux%u) failed: 0x%08X", w, h, hr);
+            m_hbaoDepthTex = nullptr;
+            return false;
+        }
+        if (FAILED(m_hbaoDepthTex->GetSurfaceLevel(0, &m_hbaoDepthSurf))) {
+            LOG_ERROR("HBAO: INTZ GetSurfaceLevel failed");
+            ReleaseHbaoDepth();
+            return false;
+        }
+
+        LOG_INFO("HBAO: INTZ depth texture ready (%ux%u)", w, h);
+        return true;
+    };
+
+    void CDevice::ReleaseHbaoDepth() {
+        if (m_hbaoDepthSurf) {
+            m_hbaoDepthSurf->Release();
+            m_hbaoDepthSurf = nullptr;
+        }
+        if (m_hbaoDepthTex) {
+            m_hbaoDepthTex->Release();
+            m_hbaoDepthTex = nullptr;
+        }
+        if (m_hbaoDebugPs) {
+            m_hbaoDebugPs->Release();
+            m_hbaoDebugPs = nullptr;
+        }
+    };
+
+    bool CDevice::EnsureHbaoDebugShader() {
+        if (m_hbaoDebugPs)
+            return true;
+
+        // HBAO from the INTZ depth: reconstruct view-space P + N, then for DIRS screen directions march
+        // STEPS samples and keep the MAX horizon elevation (sin of angle above the tangent plane), with
+        // distance falloff. Per-pixel rotation breaks up banding (cleaned by the bilateral blur later).
+        //   c0 = (zNear, zFar, proj._11, proj._22)   c1 = (radius[world], intensity, bias, _)
+        static const char* src =
+            "sampler2D DepthTex : register(s0);\n"
+            "float4 P0 : register(c0);\n"
+            "float4 P1 : register(c1);\n"
+            "float4 P2 : register(c2);\n"  // fadeStart, fadeEnd
+            "float3 vpos(float2 uv) {\n"
+            "  float d = tex2D(DepthTex, uv).r;\n"
+            "  float ze = (P0.x*P0.y)/(P0.y - d*(P0.y-P0.x));\n"
+            "  float2 ndc = float2(uv.x*2-1, 1-uv.y*2);\n"
+            "  return float3(ndc.x*ze/P0.z, ndc.y*ze/P0.w, ze);\n"
+            "}\n"
+            "float4 main(float2 uv : TEXCOORD0) : COLOR0 {\n"
+            "  float3 P = vpos(uv);\n"
+            "  float3 N = normalize(cross(ddy(P), ddx(P)));\n"
+            "  if (dot(N, P) > 0) N = -N;\n"
+            "  float radius = P1.x;\n"
+            "  float rUv = radius * P0.z / (2.0 * P.z);\n"   // world radius -> screen uv radius
+            "  const int DIRS = 6, STEPS = 4;\n"
+            "  float rot = frac(sin(dot(uv, float2(12.9898, 78.233))) * 43758.5453) * 6.2831853;\n"
+            "  float ao = 0;\n"
+            "  for (int d = 0; d < DIRS; d++) {\n"
+            "    float a = (d / (float) DIRS) * 6.2831853 + rot;\n"
+            "    float2 dir = float2(cos(a), sin(a));\n"
+            "    float horizon = P1.z;\n"            // tangent bias (sin)
+            "    for (int s = 1; s <= STEPS; s++) {\n"
+            "      float3 S = vpos(uv + dir * rUv * (s / (float) STEPS));\n"
+            "      float3 H = S - P;\n"
+            "      float dist = length(H);\n"
+            "      float falloff = saturate(1.0 - dist / radius);\n"
+            "      float sinElev = dot(H, N) / max(dist, 1e-4);\n"
+            "      horizon = max(horizon, sinElev * falloff);\n"
+            "    }\n"
+            "    ao += saturate(horizon - P1.z);\n"
+            "  }\n"
+            "  float fade = saturate((P2.y - P.z) / max(P2.y - P2.x, 1e-3));\n"  // attenuate AO with distance
+            "  ao = 1.0 - saturate(ao / (float) DIRS * P1.y * fade);\n"
+            "  return float4(ao, ao, ao, 1);\n"
+            "}\n";
+
+        LPD3DXBUFFER code = nullptr, err = nullptr;
+        HRESULT hr = D3DXCompileShader(src, (UINT) strlen(src), nullptr, nullptr, "main", "ps_3_0", 0, &code, &err, nullptr);
+        if (FAILED(hr)) {
+            if (err) {
+                LOG_ERROR("HBAO: debug PS compile failed: %s", (const char*) err->GetBufferPointer());
+                err->Release();
+            }
+            if (code)
+                code->Release();
+            return false;
+        }
+        if (err)
+            err->Release();
+
+        hr = m_pd3dDevice->CreatePixelShader((const DWORD*) code->GetBufferPointer(), &m_hbaoDebugPs);
+        code->Release();
+        if (FAILED(hr)) {
+            LOG_ERROR("HBAO: debug CreatePixelShader failed: 0x%08X", hr);
+            m_hbaoDebugPs = nullptr;
+            return false;
+        }
+        return true;
+    };
+
+    void CDevice::RenderHbaoDebug() {
+        // NOTE: the scene is rendered to an off-screen RT, so m_rtsPtr is *set* here -- that's the
+        // scene color target we want to draw the AO into. The DrawWaterLayer hook only fires inside
+        // the scene pass, so no extra pass guard is needed.
+        static bool s_logOff = false, s_logShader = false;
+        if (!Config::Instance().hbao.value) {
+            if (!s_logOff) {
+                s_logOff = true;
+                LOG_INFO("HBAO debug: skipped — hbao disabled");
+            }
+            return;
+        }
+        if (!EnsureHbaoDebugShader()) {
+            if (!s_logShader) {
+                s_logShader = true;
+                LOG_INFO("HBAO debug: skipped — debug shader unavailable");
+            }
+            return;
+        }
+        static bool s_logNoDepth = false;
+        if (!m_hbaoDepthTex) {
+            if (!s_logNoDepth) {
+                s_logNoDepth = true;
+                LOG_INFO("HBAO debug: skipped — no INTZ depth bound (MSAA enabled, or scene uses RTT depth)");
+            }
+            return;
+        }
+
+        IDirect3DDevice9* dev = m_pd3dDevice;
+
+        // Save exactly what we touch, restore at the end -> CDevice's own state cache stays valid
+        // (we hand the device back in the state it was in). State blocks can't be created mid-scene.
+        IDirect3DPixelShader9* svPs           = nullptr; dev->GetPixelShader(&svPs);
+        IDirect3DVertexShader9* svVs          = nullptr; dev->GetVertexShader(&svVs);
+        IDirect3DVertexDeclaration9* svDecl   = nullptr; dev->GetVertexDeclaration(&svDecl);
+        IDirect3DBaseTexture9* svTex          = nullptr; dev->GetTexture(0, &svTex);
+        float svC0[4];                                   dev->GetPixelShaderConstantF(0, svC0, 1);
+        DWORD svZ, svZW, svCull, svBlend, svAlpha, svFog, svStencil, svCW;
+        dev->GetRenderState(D3DRS_ZENABLE, &svZ);
+        dev->GetRenderState(D3DRS_ZWRITEENABLE, &svZW);
+        dev->GetRenderState(D3DRS_CULLMODE, &svCull);
+        dev->GetRenderState(D3DRS_ALPHABLENDENABLE, &svBlend);
+        dev->GetRenderState(D3DRS_ALPHATESTENABLE, &svAlpha);
+        dev->GetRenderState(D3DRS_FOGENABLE, &svFog);
+        dev->GetRenderState(D3DRS_STENCILENABLE, &svStencil);
+        dev->GetRenderState(D3DRS_COLORWRITEENABLE, &svCW);
+        DWORD svMin, svMag, svMip, svAu, svAv;
+        dev->GetSamplerState(0, D3DSAMP_MINFILTER, &svMin);
+        dev->GetSamplerState(0, D3DSAMP_MAGFILTER, &svMag);
+        dev->GetSamplerState(0, D3DSAMP_MIPFILTER, &svMip);
+        dev->GetSamplerState(0, D3DSAMP_ADDRESSU, &svAu);
+        dev->GetSamplerState(0, D3DSAMP_ADDRESSV, &svAv);
+        DWORD svSrc, svDest;
+        dev->GetRenderState(D3DRS_SRCBLEND, &svSrc);
+        dev->GetRenderState(D3DRS_DESTBLEND, &svDest);
+
+        // near/far + projection terms from the current LH perspective (row-major _11=[0] _22=[5] _33=[10] _43=[14]).
+        const float* pm  = (const float*) &m_matProjStack[m_matProjStackTop];
+        const float m33  = pm[10];
+        const float m43  = pm[14];
+        const float zn   = (m33 != 0.0f) ? (-m43 / m33) : 1.0f;
+        const float zf   = (m33 != 1.0f) ? (m33 * zn / (m33 - 1.0f)) : 1000.0f;
+        const Config& hcfg = Config::Instance();
+        const float c0[4] = {zn, zf, pm[0], pm[5]};  // zNear, zFar, proj._11, proj._22
+        const float c1[4] = {hcfg.hbao_radius.value, hcfg.hbao_intensity.value, hcfg.hbao_bias.value, 0.0f};
+        const float c2[4] = {hcfg.hbao_fade_start.value, hcfg.hbao_fade_end.value, 0.0f, 0.0f};  // distance fade
+
+        // Fullscreen quad covering the current viewport (pre-transformed, half-texel offset).
+        const float x0 = (float) m_curViewportD3D.X - 0.5f;
+        const float y0 = (float) m_curViewportD3D.Y - 0.5f;
+        const float x1 = x0 + (float) m_curViewportD3D.Width;
+        const float y1 = y0 + (float) m_curViewportD3D.Height;
+        struct V {
+            float x, y, z, rhw, u, v;
+        };
+        const V quad[4] = {
+            {x0, y0, 0.0f, 1.0f, 0.0f, 0.0f},
+            {x1, y0, 0.0f, 1.0f, 1.0f, 0.0f},
+            {x0, y1, 0.0f, 1.0f, 0.0f, 1.0f},
+            {x1, y1, 0.0f, 1.0f, 1.0f, 1.0f},
+        };
+
+        D3DPERF_BeginEvent(D3DCOLOR_ARGB(255, 255, 128, 0), L"HBAO_DebugDepth");
+
+        dev->SetVertexShader(nullptr);
+        dev->SetVertexDeclaration(nullptr);
+        dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+        dev->SetPixelShader(m_hbaoDebugPs);
+        dev->SetPixelShaderConstantF(0, c0, 1);
+        dev->SetPixelShaderConstantF(1, c1, 1);
+        dev->SetPixelShaderConstantF(2, c2, 1);
+        dev->SetTexture(0, m_hbaoDepthTex);
+        dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+        dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+        dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+        dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+        dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);  // INTZ is the bound DS: never write while sampling it
+        dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);  // multiply AO into the scene: result = dest * src
+        dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ZERO);
+        dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_SRCCOLOR);
+        dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+        dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+        dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0F);
+
+        dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(V));
+
+        D3DPERF_EndEvent();
+
+        static bool s_drew = false;
+        if (!s_drew) {
+            s_drew = true;
+            LOG_INFO("HBAO debug: pass DREW (viewport %ux%u, zn=%.3f zf=%.1f)", m_curViewportD3D.Width, m_curViewportD3D.Height, zn, zf);
+        }
+
+        dev->SetRenderState(D3DRS_ZENABLE, svZ);
+        dev->SetRenderState(D3DRS_ZWRITEENABLE, svZW);
+        dev->SetRenderState(D3DRS_CULLMODE, svCull);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, svBlend);
+        dev->SetRenderState(D3DRS_SRCBLEND, svSrc);
+        dev->SetRenderState(D3DRS_DESTBLEND, svDest);
+        dev->SetRenderState(D3DRS_ALPHATESTENABLE, svAlpha);
+        dev->SetRenderState(D3DRS_FOGENABLE, svFog);
+        dev->SetRenderState(D3DRS_STENCILENABLE, svStencil);
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, svCW);
+        dev->SetSamplerState(0, D3DSAMP_MINFILTER, svMin);
+        dev->SetSamplerState(0, D3DSAMP_MAGFILTER, svMag);
+        dev->SetSamplerState(0, D3DSAMP_MIPFILTER, svMip);
+        dev->SetSamplerState(0, D3DSAMP_ADDRESSU, svAu);
+        dev->SetSamplerState(0, D3DSAMP_ADDRESSV, svAv);
+        dev->SetTexture(0, svTex);
+        if (svTex)
+            svTex->Release();
+        dev->SetPixelShaderConstantF(0, svC0, 1);
+        dev->SetPixelShader(svPs);
+        if (svPs)
+            svPs->Release();
+        dev->SetVertexShader(svVs);
+        if (svVs)
+            svVs->Release();
+        dev->SetVertexDeclaration(svDecl);
+        if (svDecl)
+            svDecl->Release();
+
+        // DrawPrimitiveUP nulls stream source 0 -> force the engine to rebind its streams next draw.
+        this->mBindedStreams.fill(nullptr);
+    };
+
     int32_t CDevice::BeginScene() {
         this->mBindedStreams.fill(nullptr);
 
         _SetLastResult(m_pd3dDevice->BeginScene());
         m_inScene = SUCCEEDED(m_lastResult);
+
+        // Route the main scene's depth into a sampleable INTZ texture so the post-opaque AO pass can
+        // read camera depth. INTZ is a drop-in D24S8 (rendering is unchanged); it just can't be
+        // multisampled, so this requires a non-MSAA backbuffer.
+        if (m_inScene && Config::Instance().hbao.value && m_d3dpp.MultiSampleType == D3DMULTISAMPLE_NONE) {
+            if (EnsureHbaoDepth())
+                m_pd3dDevice->SetDepthStencilSurface(m_hbaoDepthSurf);
+        }
+
         return InScene();
     };
 

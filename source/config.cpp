@@ -44,6 +44,12 @@ namespace kraken {
         this->cctl_leak_fix                     = { "constants", "cctl_leak_fix",                   1,     true,  0,     1           };
         this->mortarvolleylauncherfix           = { "constants", "mortarvolleylauncherfix",         1,     true,  0,     1           };
         this->gunlights                         = { "constants", "gunlights",                       1,     true,  0,     1           };
+        this->hbao                              = { "render",    "hbao",                            0,     true,  0,     1           };
+        this->hbao_radius                       = { "render",    "hbao_radius",                     1.5,   true,  0.0,   100.0       };
+        this->hbao_intensity                    = { "render",    "hbao_intensity",                  2.0,   true,  0.0,   10.0        };
+        this->hbao_bias                         = { "render",    "hbao_bias",                       0.1,   true,  0.0,   1.0         };
+        this->hbao_fade_start                   = { "render",    "hbao_fade_start",                 50.0,  true,  0.0,   100000.0    };
+        this->hbao_fade_end                     = { "render",    "hbao_fade_end",                   300.0, true,  0.0,   100000.0    };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -110,6 +116,12 @@ namespace kraken {
         this->LoadValue(&this->cctl_leak_fix);
         this->LoadValue(&this->mortarvolleylauncherfix);
         this->LoadValue(&this->gunlights);
+        this->LoadValue(&this->hbao);
+        this->LoadValue(&this->hbao_radius);
+        this->LoadValue(&this->hbao_intensity);
+        this->LoadValue(&this->hbao_bias);
+        this->LoadValue(&this->hbao_fade_start);
+        this->LoadValue(&this->hbao_fade_end);
     };
 
     void Config::Dump() {
@@ -151,6 +163,12 @@ namespace kraken {
         this->DumpValue(&this->cctl_leak_fix);
         this->DumpValue(&this->mortarvolleylauncherfix);
         this->DumpValue(&this->gunlights);
+        this->DumpValue(&this->hbao);
+        this->DumpValue(&this->hbao_radius);
+        this->DumpValue(&this->hbao_intensity);
+        this->DumpValue(&this->hbao_bias);
+        this->DumpValue(&this->hbao_fade_start);
+        this->DumpValue(&this->hbao_fade_end);
     };
 
     template<typename T>

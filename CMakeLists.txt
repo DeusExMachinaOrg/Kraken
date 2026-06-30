@@ -70,6 +70,7 @@ add_library(kraken SHARED
     source/fix/difficultywndescapefix.cpp
     source/fix/mortarvolleylauncherfix.cpp
     source/fix/gunlights.cpp
+    source/fix/hbao.cpp
 
     source/render/native/Image.cpp
     source/render/native/Debug.cpp

@@ -681,6 +681,18 @@ namespace kraken::render {
         /* 0xf1e4 */ uint32_t m_renderThreadId{0};
         /* 0xf1e8 */ bool m_bThreadSafeGuardEnabled{true};
 
+        // HBAO: INTZ depth-as-texture for the camera, bound as the scene DS in BeginScene and
+        // sampled by the post-opaque AO pass. Lazily created; released before device reset / destroy.
+        IDirect3DTexture9* m_hbaoDepthTex{nullptr};
+        IDirect3DSurface9* m_hbaoDepthSurf{nullptr};
+        IDirect3DPixelShader9* m_hbaoDebugPs{nullptr};
+        IDirect3DTexture9* m_hbaoCurDepthTex{nullptr};                 // current RTT pass's sampleable INTZ depth (set in RenderToTexStart)
+        std::map<unsigned int, IDirect3DTexture9*> m_hbaoZTextures{};  // INTZ depth textures cached by height
+        bool EnsureHbaoDepth();
+        void ReleaseHbaoDepth();
+        bool EnsureHbaoDebugShader();
+        void RenderHbaoDebug();  // PoC gate: linearized-depth fullscreen viz, called from the post-opaque hook
+
         void _SetLastResult(HRESULT result);
         virtual int32_t DecRef();
         virtual int32_t IncRef();
