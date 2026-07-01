@@ -1115,13 +1115,14 @@ namespace kraken::render {
         const char* filename, const char* entry, IHlslShader::Profile profile, const std::vector<CompileParam>& params
     ) {
         CDevice* render = CDevice::Instance();
-        // Keep the as-requested profile: `profile` is mutated below by the ps_1_x->ps_2_0
-        // force-upgrade, and ReloadShaders() must replay the original to reproduce the same
-        // compile (otherwise a ps_2_0 shader drifts to ps_3_0 on every reload).
-        const IHlslShader::Profile originalProfile = profile;
+        const IHlslShader::Profile originalProfile = profile;  // ReloadShaders() replays this
         bool is_pixel   = PS_SHADERS.find(profile) != PS_SHADERS.end();
-        if (is_pixel && render->IsFeatureSupported(FEATURE_PS_2_0))
-            profile = profile >= PS_2_0 ? PS_3_0 : PS_2_0;
+        // Default grade: ps_1_x -> ps_2_0 (d3dx9 can't target ps_1_x); everything else keeps the engine's
+        // profile. A shader can override this with an in-source `#version SMxy` directive (parsed right
+        // after the file is read) -- that's how a vs/ps pair declares a matched target (e.g. both SM30)
+        // instead of relying on the engine's fixed index (blanket ps_2_0->ps_3_0 mismatched vs_2_0 texcoords).
+        if (is_pixel && profile < PS_2_0 && render->IsFeatureSupported(FEATURE_PS_2_0))
+            profile = PS_2_0;
 
         auto stream = hta::m3d::Kernel::Instance()->GetFileServer().CreateFileStream();
         if (!stream->Open(filename, hta::m3d::fs::IStream::OPEN_READ)) {
@@ -1140,6 +1141,31 @@ namespace kraken::render {
 
         stream->ReadBytes(buffer.data(), size);
         delete stream;
+
+        // In-source shader-model override: a `#version SM30` / `SM20` / `SM11` line near the top selects the
+        // exact target (SM30->3_0, SM20->2_0, SM11->1_1; ps vs vs by shader kind), overriding the graded
+        // profile so a vs/ps pair can both declare the same SM and stay matched. The line is blanked in
+        // place so the HLSL compiler never sees the '#version' token.
+        {
+            const size_t scan = size < 2048 ? size : 2048;
+            for (size_t i = 0; i + 12 <= scan; ++i) {
+                if (memcmp(&buffer[i], "#version", 8) != 0)
+                    continue;
+                for (size_t j = i + 8; j + 3 <= scan; ++j) {
+                    if (buffer[j] == 'S' && buffer[j + 1] == 'M' && buffer[j + 2] >= '1' && buffer[j + 2] <= '3') {
+                        const int maj = buffer[j + 2] - '0';
+                        profile = (maj == 3) ? (is_pixel ? PS_3_0 : VS_3_0)
+                                : (maj == 2) ? (is_pixel ? PS_2_0 : VS_2_0)
+                                             : (is_pixel ? PS_1_1 : VS_1_1);
+                        LOG_INFO("[shader] #version -> %s  %s", SM_ALIAS[profile], filename);
+                        break;
+                    }
+                }
+                for (size_t k = i; k < size && buffer[k] != '\n'; ++k)  // blank the directive line
+                    buffer[k] = ' ';
+                break;
+            }
+        }
 
         std::vector<D3DXMACRO> macro(this->m_compileParams.size());
         for (size_t idx = 0; idx < this->m_compileParams.size(); idx++) {
@@ -1169,14 +1195,17 @@ namespace kraken::render {
         );
 
         if (FAILED(error)) {
-            if (errors) {
-                LOG_ERROR("Shader %s compile error: %s", filename, (char*)errors->GetBufferPointer());
+            LOG_ERROR("[shader] HLSL FAILED  %-40s entry=%-14s profile=%s : %s", filename, entry, SM_ALIAS[profile],
+                      errors ? (const char*)errors->GetBufferPointer() : "(no message)");
+            if (errors)
                 errors->Release();
-            }
             if (object)
                 object->Release();
             return false;
         }
+        LOG_INFO("[shader] HLSL ok      %-40s entry=%-14s profile=%s", filename, entry, SM_ALIAS[profile]);
+        if (errors)
+            errors->Release();
 
         if (is_pixel)
             render->m_pd3dDevice->CreatePixelShader((const DWORD*)object->GetBufferPointer(), &this->m_ps);
@@ -1337,15 +1366,23 @@ namespace kraken::render {
         stream->ReadBytes(buffer.data(), size);
         delete stream;
 
-        LPD3DXBUFFER object;
-        HRESULT error = D3DXAssembleShader(buffer.data(), buffer.size(), NULL, &AUX_SHADER_INCLUDE, 0, &object, NULL);
+        LPD3DXBUFFER object    = nullptr;
+        LPD3DXBUFFER asmErrors = nullptr;
+        HRESULT error = D3DXAssembleShader(buffer.data(), buffer.size(), NULL, &AUX_SHADER_INCLUDE, 0, &object, &asmErrors);
 
+        const char* asmType = (type == IAsmShader::VERTEX_SHADER) ? "asm-vs" : "asm-ps";
         if (FAILED(error)) {
+            LOG_ERROR("[shader] ASM FAILED   %-40s type=%s : %s", filename, asmType,
+                      asmErrors ? (const char*)asmErrors->GetBufferPointer() : "(no message)");
+            if (asmErrors)
+                asmErrors->Release();
             if (object)
                 object->Release();
-            LOG_ERROR("Fail to compile AsmShaderImpl '%s' %d", filename, __LINE__);
             return false;
         }
+        if (asmErrors)
+            asmErrors->Release();
+        LOG_INFO("[shader] ASM ok       %-40s type=%s", filename, asmType);
 
         this->m_type    = type;
         this->mFileName = filename;
@@ -6146,7 +6183,11 @@ namespace kraken::render {
 
         m_rtsNewZs = nullptr;
         if (wantDepth) {
-            auto it = m_rtsZSurfaces.find(static_cast<unsigned int>(height));
+            // Key the cached RTT depth by BOTH width and height. Keying by height alone let a wider RT
+            // (e.g. the reflection RT) reuse a narrower RT's undersized depth surface -> the depth-tested
+            // reflected terrain rendered as garbage (map-specific, depends on RT sizes/creation order).
+            const unsigned int zsKey = (static_cast<unsigned int>(width) << 16) | static_cast<unsigned int>(height);
+            auto it = m_rtsZSurfaces.find(zsKey);
             if (it == m_rtsZSurfaces.end()) {
                 IDirect3DSurface9* newZSurface = nullptr;
                 _SetLastResult(m_pd3dDevice->CreateDepthStencilSurface(
@@ -6157,7 +6198,7 @@ namespace kraken::render {
                     LOG_ERROR("d3d: ERROR! RenderToTexStart:: Cannot create zsurface");
                 }
 
-                it = m_rtsZSurfaces.insert({static_cast<unsigned int>(height), newZSurface}).first;
+                it = m_rtsZSurfaces.insert({zsKey, newZSurface}).first;
             }
 
             m_rtsNewZs = it->second;
@@ -6411,6 +6452,8 @@ namespace kraken::render {
             }
             return;
         }
+        if (Config::Instance().hbao_intensity.value <= 0.0f)
+            return;  // AO draw disabled (intensity 0) — keeps the reimpl + INTZ but skips this pass entirely
         if (!EnsureHbaoDebugShader()) {
             if (!s_logShader) {
                 s_logShader = true;
@@ -6436,6 +6479,8 @@ namespace kraken::render {
         IDirect3DVertexDeclaration9* svDecl   = nullptr; dev->GetVertexDeclaration(&svDecl);
         IDirect3DBaseTexture9* svTex          = nullptr; dev->GetTexture(0, &svTex);
         float svC0[4];                                   dev->GetPixelShaderConstantF(0, svC0, 1);
+        float svC1[4];                                   dev->GetPixelShaderConstantF(1, svC1, 1);
+        float svC2[4];                                   dev->GetPixelShaderConstantF(2, svC2, 1);
         DWORD svZ, svZW, svCull, svBlend, svAlpha, svFog, svStencil, svCW;
         dev->GetRenderState(D3DRS_ZENABLE, &svZ);
         dev->GetRenderState(D3DRS_ZWRITEENABLE, &svZW);
@@ -6536,6 +6581,8 @@ namespace kraken::render {
         if (svTex)
             svTex->Release();
         dev->SetPixelShaderConstantF(0, svC0, 1);
+        dev->SetPixelShaderConstantF(1, svC1, 1);  // c1/c2 carried HBAO radius/fade — restore so the
+        dev->SetPixelShaderConstantF(2, svC2, 1);  // engine's water/effect shaders don't read our junk
         dev->SetPixelShader(svPs);
         if (svPs)
             svPs->Release();
@@ -6559,7 +6606,8 @@ namespace kraken::render {
         // Route the main scene's depth into a sampleable INTZ texture so the post-opaque AO pass can
         // read camera depth. INTZ is a drop-in D24S8 (rendering is unchanged); it just can't be
         // multisampled, so this requires a non-MSAA backbuffer.
-        if (m_inScene && Config::Instance().hbao.value && m_d3dpp.MultiSampleType == D3DMULTISAMPLE_NONE) {
+        if (m_inScene && Config::Instance().hbao.value && Config::Instance().hbao_intensity.value > 0.0f
+            && m_d3dpp.MultiSampleType == D3DMULTISAMPLE_NONE) {
             if (EnsureHbaoDepth())
                 m_pd3dDevice->SetDepthStencilSurface(m_hbaoDepthSurf);
         }

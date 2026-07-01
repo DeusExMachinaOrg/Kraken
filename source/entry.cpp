@@ -30,6 +30,7 @@
 #include "fix/mortarvolleylauncherfix.hpp"
 #include "fix/gunlights.hpp"
 #include "fix/hbao.hpp"
+#include "fix/grassclip.hpp"
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
@@ -88,5 +89,6 @@ namespace kraken {
         fix::mortarvolleylauncherfix::Apply();
         fix::gunlights::Apply();
         fix::hbao::Apply();
+        fix::grassclip::Apply();
     };
 };

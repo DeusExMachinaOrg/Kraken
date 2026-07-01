@@ -100,8 +100,8 @@ namespace kraken::fix::hbao {
 
                 r->MatPush(matReflect);
 
-                // reflected view matrix (multiply order may need flipping; verified in the A/B check)
-                CMatrix vv = saveView * matReflect;
+                // reflected view = reflect-then-view (row-vector D3D: reflect is applied first).
+                CMatrix vv = matReflect * saveView;
                 r->SetViewMatrix(vv);
 
                 const float fovY   = 2.0f * (float) atan2(tan(0.3926990926265717) * 1.1, 1.0);
@@ -252,14 +252,14 @@ namespace kraken::fix::hbao {
         w->m_sceneGraph.Render(SGRF_SHADOWS);
         r->SetFog(cb(cfg.m_r_enableFog), false);
 
+        // AO on the opaque scene (terrain + objects) BEFORE grass + the transparents, so it doesn't
+        // darken the alpha-clipped grass ("AO overdraw alpha"). Grass then draws on top, un-AO'd.
+        kraken::render::CDevice::Instance()->RenderHbaoDebug();
+
         if (!cb(cfg.m_dsShadows) || !w->m_weatherManager.GetShadowVisibilityFromWeather()) {
             ::vc3::deque<::vc3::pair<int, int>> empty;
             L->RenderGrass(empty);
         }
-
-        // opaque/transparent seam: all opaque geometry + depth are ready -> inject the AO pass here,
-        // before the transparent water/shores/particles. (Currently the depth-viz test; swap to real AO.)
-        kraken::render::CDevice::Instance()->RenderHbaoDebug();
 
         // ---- transparent: water, shores, transparent objects, weather ----
         if (L->m_numWaterCells && L->m_isWaterVisible) {

@@ -71,6 +71,7 @@ add_library(kraken SHARED
     source/fix/mortarvolleylauncherfix.cpp
     source/fix/gunlights.cpp
     source/fix/hbao.cpp
+    source/fix/grassclip.cpp
 
     source/render/native/Image.cpp
     source/render/native/Debug.cpp

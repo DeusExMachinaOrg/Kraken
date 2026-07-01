@@ -77,6 +77,7 @@ namespace kraken {
         ConfigValue<float>                    hbao_bias;
         ConfigValue<float>                    hbao_fade_start;
         ConfigValue<float>                    hbao_fade_end;
+        ConfigValue<uint32_t>                 grass_clip;
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;
