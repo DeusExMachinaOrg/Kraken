@@ -51,6 +51,14 @@ namespace kraken {
         this->hbao_fade_start                   = { "render",    "hbao_fade_start",                 50.0,  true,  0.0,   100000.0    };
         this->hbao_fade_end                     = { "render",    "hbao_fade_end",                   300.0, true,  0.0,   100000.0    };
         this->grass_clip                        = { "render",    "grass_clip",                      1,     true,  0,     1           };
+        this->shadow_csm                        = { "render",    "shadow_csm",                      1,     true,  0,     1           };
+        this->shadow_csm_resolution             = { "render",    "shadow_csm_resolution",           1536,  true,  512,   4096        };
+        this->shadow_csm_distance               = { "render",    "shadow_csm_distance",             500.0, true,  50.0,  100000.0    };
+        this->shadow_csm_split_lambda           = { "render",    "shadow_csm_split_lambda",         0.7,   true,  0.0,   1.0         };
+        this->shadow_csm_depth_range            = { "render",    "shadow_csm_depth_range",          2000.0, true, 50.0,  100000.0    };
+        this->shadow_contact                    = { "render",    "shadow_contact",                  1,     true,  0,     1           };
+        this->shadow_contact_steps              = { "render",    "shadow_contact_steps",            16,    true,  1,     64          };
+        this->shadow_contact_length             = { "render",    "shadow_contact_length",           2.0,   true,  0.0,   100.0       };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -124,6 +132,14 @@ namespace kraken {
         this->LoadValue(&this->hbao_fade_start);
         this->LoadValue(&this->hbao_fade_end);
         this->LoadValue(&this->grass_clip);
+        this->LoadValue(&this->shadow_csm);
+        this->LoadValue(&this->shadow_csm_resolution);
+        this->LoadValue(&this->shadow_csm_distance);
+        this->LoadValue(&this->shadow_csm_split_lambda);
+        this->LoadValue(&this->shadow_csm_depth_range);
+        this->LoadValue(&this->shadow_contact);
+        this->LoadValue(&this->shadow_contact_steps);
+        this->LoadValue(&this->shadow_contact_length);
     };
 
     void Config::Dump() {
@@ -172,6 +188,14 @@ namespace kraken {
         this->DumpValue(&this->hbao_fade_start);
         this->DumpValue(&this->hbao_fade_end);
         this->DumpValue(&this->grass_clip);
+        this->DumpValue(&this->shadow_csm);
+        this->DumpValue(&this->shadow_csm_resolution);
+        this->DumpValue(&this->shadow_csm_distance);
+        this->DumpValue(&this->shadow_csm_split_lambda);
+        this->DumpValue(&this->shadow_csm_depth_range);
+        this->DumpValue(&this->shadow_contact);
+        this->DumpValue(&this->shadow_contact_steps);
+        this->DumpValue(&this->shadow_contact_length);
     };
 
     template<typename T>

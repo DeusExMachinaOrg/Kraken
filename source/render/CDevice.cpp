@@ -3216,6 +3216,7 @@ namespace kraken::render {
 
     CDevice::~CDevice() {
         ReleaseHbaoDepth();
+        ReleaseCsm();
 
         if (m_pSysFont) {
             m_pSysFont->Release();
@@ -6369,6 +6370,104 @@ namespace kraken::render {
         }
     };
 
+    bool CDevice::EnsureCsm(int resolution) {
+        if (resolution < 512)
+            resolution = 512;
+        if (m_csmResolution == resolution && m_csmDepthTex[0] && m_csmColorTex[0])
+            return true;
+        ReleaseCsm();
+
+        const D3DFORMAT INTZ = static_cast<D3DFORMAT>(MAKEFOURCC('I', 'N', 'T', 'Z'));
+        if (FAILED(m_pD3D->CheckDeviceFormat(
+                D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, m_d3dsdBackBuffer.Format, D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_TEXTURE, INTZ
+            ))) {
+            LOG_WARNING("CSM: INTZ depth-texture not supported; cascaded shadows unavailable");
+            return false;
+        }
+        for (int i = 0; i < CSM_CASCADES; ++i) {
+            if (FAILED(m_pd3dDevice->CreateTexture(
+                    resolution, resolution, 1, D3DUSAGE_DEPTHSTENCIL, INTZ, D3DPOOL_DEFAULT, &m_csmDepthTex[i], nullptr
+                ))
+                || FAILED(m_csmDepthTex[i]->GetSurfaceLevel(0, &m_csmDepthSurf[i]))) {
+                LOG_ERROR("CSM: cascade %d INTZ %dx%d create failed", i, resolution, resolution);
+                ReleaseCsm();
+                return false;
+            }
+        }
+        // A depth-only pass still needs a bound color target; per-cascade so the debug thumbnails show
+        // each cascade rather than all sharing the last one's render.
+        for (int i = 0; i < CSM_CASCADES; ++i) {
+            if (FAILED(m_pd3dDevice->CreateTexture(
+                    resolution, resolution, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &m_csmColorTex[i], nullptr
+                ))
+                || FAILED(m_csmColorTex[i]->GetSurfaceLevel(0, &m_csmColorSurf[i]))) {
+                LOG_ERROR("CSM: cascade %d color RT %dx%d create failed", i, resolution, resolution);
+                ReleaseCsm();
+                return false;
+            }
+        }
+        m_csmResolution = resolution;
+        LOG_INFO("CSM: %d cascades @ %dx%d INTZ ready", CSM_CASCADES, resolution, resolution);
+        return true;
+    };
+
+    void CDevice::ReleaseCsm() {
+        for (int i = 0; i < CSM_CASCADES; ++i) {
+            if (m_csmDepthSurf[i]) { m_csmDepthSurf[i]->Release(); m_csmDepthSurf[i] = nullptr; }
+            if (m_csmDepthTex[i])  { m_csmDepthTex[i]->Release();  m_csmDepthTex[i]  = nullptr; }
+            if (m_csmColorSurf[i]) { m_csmColorSurf[i]->Release(); m_csmColorSurf[i] = nullptr; }
+            if (m_csmColorTex[i])  { m_csmColorTex[i]->Release();  m_csmColorTex[i]  = nullptr; }
+        }
+        if (m_csmDebugPs)   { m_csmDebugPs->Release();   m_csmDebugPs   = nullptr; }
+        m_csmResolution = 0;
+    };
+
+    void CDevice::CsmBeginCascade(int cascade) {
+        // Follow the native RenderToTexStart discipline instead of poking the device raw: save the
+        // viewport via CDevice::GetViewport (so m_curViewportD3D restores too) and rebind through
+        // CDevice::SetViewport below. A raw SetViewport would leave the renderer's cached viewport at
+        // the main-framebuffer size while the device runs at the cascade resolution.
+        m_pd3dDevice->GetRenderTarget(0, &m_csmSaveColor);
+        m_pd3dDevice->GetDepthStencilSurface(&m_csmSaveDepth);  // may be null
+        m_csmSaveViewport = GetViewport();
+        m_pd3dDevice->GetRenderState(D3DRS_COLORWRITEENABLE, &m_csmSaveColorWrite);
+
+        // Unbind the depth-stencil BEFORE swapping the color target. The cascade RT (e.g. 1536^2) is
+        // often larger than the backbuffer depth, and D3D9 requires the depth-stencil be >= the render
+        // target in BOTH dimensions, so SetRenderTarget would otherwise fail with D3DERR_INVALIDCALL and
+        // the cascade would never bind. With no DS bound there is no size constraint.
+        m_pd3dDevice->SetDepthStencilSurface(nullptr);
+        if (FAILED(m_pd3dDevice->SetRenderTarget(0, m_csmColorSurf[cascade])))
+            LOG_ERROR("CSM: cascade %d SetRenderTarget failed", cascade);
+        if (FAILED(m_pd3dDevice->SetDepthStencilSurface(m_csmDepthSurf[cascade])))
+            LOG_ERROR("CSM: cascade %d SetDepthStencilSurface failed", cascade);
+
+        Viewport vp;
+        vp.m_x0 = 0;
+        vp.m_y0 = 0;
+        vp.m_width  = m_csmResolution;
+        vp.m_height = m_csmResolution;
+        vp.m_zMin   = 0.0f;
+        vp.m_zMax   = 1.0f;
+        SetViewport(vp);
+
+        m_pd3dDevice->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0F);  // DEBUG: color on to see if terrain rasterizes
+        m_pd3dDevice->Clear(0, nullptr, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL,
+                            D3DCOLOR_ARGB(255, 128, 0, 128), 1.0f, 0);  // magenta clear
+    };
+
+    void CDevice::CsmEndCascade() {
+        m_pd3dDevice->SetRenderState(D3DRS_COLORWRITEENABLE, m_csmSaveColorWrite);
+        // Same DS >= RT constraint in reverse: unbind our (small) INTZ before restoring the larger
+        // backbuffer color, else SetRenderTarget on the backbuffer fails and the scene loses its target.
+        m_pd3dDevice->SetDepthStencilSurface(nullptr);
+        m_pd3dDevice->SetRenderTarget(0, m_csmSaveColor);
+        if (m_csmSaveColor) { m_csmSaveColor->Release(); m_csmSaveColor = nullptr; }
+        m_pd3dDevice->SetDepthStencilSurface(m_csmSaveDepth);  // may be null -> leaves no DS bound
+        if (m_csmSaveDepth) { m_csmSaveDepth->Release(); m_csmSaveDepth = nullptr; }
+        SetViewport(m_csmSaveViewport);
+    };
+
     bool CDevice::EnsureHbaoDebugShader() {
         if (m_hbaoDebugPs)
             return true;
@@ -6594,6 +6693,114 @@ namespace kraken::render {
             svDecl->Release();
 
         // DrawPrimitiveUP nulls stream source 0 -> force the engine to rebind its streams next draw.
+        this->mBindedStreams.fill(nullptr);
+    };
+
+    bool CDevice::EnsureCsmDebugShader() {
+        if (m_csmDebugPs)
+            return true;
+        // Ortho cascade depth is linear in .r (cleared = 1 -> white; casters nearer the sun -> darker).
+        static const char* src =
+            "sampler2D DepthTex : register(s0);\n"
+            "float4 main(float2 uv : TEXCOORD0) : COLOR0 {\n"
+            "  return float4(tex2D(DepthTex, uv).rgb, 1);\n"  // DEBUG: passthrough the cascade color RT
+            "}\n";
+        LPD3DXBUFFER code = nullptr, err = nullptr;
+        HRESULT hr = D3DXCompileShader(src, (UINT) strlen(src), nullptr, nullptr, "main", "ps_2_0", 0, &code, &err, nullptr);
+        if (FAILED(hr)) {
+            if (err) {
+                LOG_ERROR("CSM: debug PS compile failed: %s", (const char*) err->GetBufferPointer());
+                err->Release();
+            }
+            if (code)
+                code->Release();
+            return false;
+        }
+        if (err)
+            err->Release();
+        hr = m_pd3dDevice->CreatePixelShader((const DWORD*) code->GetBufferPointer(), &m_csmDebugPs);
+        code->Release();
+        if (FAILED(hr)) {
+            LOG_ERROR("CSM: debug CreatePixelShader failed: 0x%08X", hr);
+            m_csmDebugPs = nullptr;
+            return false;
+        }
+        return true;
+    };
+
+    void CDevice::RenderCsmDebug() {
+        if (m_csmResolution == 0 || !m_csmDepthTex[0] || !EnsureCsmDebugShader())
+            return;
+        IDirect3DDevice9* dev = m_pd3dDevice;
+
+        IDirect3DPixelShader9* svPs         = nullptr; dev->GetPixelShader(&svPs);
+        IDirect3DVertexShader9* svVs        = nullptr; dev->GetVertexShader(&svVs);
+        IDirect3DVertexDeclaration9* svDecl = nullptr; dev->GetVertexDeclaration(&svDecl);
+        IDirect3DBaseTexture9* svTex        = nullptr; dev->GetTexture(0, &svTex);
+        DWORD svZ, svZW, svCull, svBlend, svFog, svCW, svMin, svMag, svMip;
+        dev->GetRenderState(D3DRS_ZENABLE, &svZ);
+        dev->GetRenderState(D3DRS_ZWRITEENABLE, &svZW);
+        dev->GetRenderState(D3DRS_CULLMODE, &svCull);
+        dev->GetRenderState(D3DRS_ALPHABLENDENABLE, &svBlend);
+        dev->GetRenderState(D3DRS_FOGENABLE, &svFog);
+        dev->GetRenderState(D3DRS_COLORWRITEENABLE, &svCW);
+        dev->GetSamplerState(0, D3DSAMP_MINFILTER, &svMin);
+        dev->GetSamplerState(0, D3DSAMP_MAGFILTER, &svMag);
+        dev->GetSamplerState(0, D3DSAMP_MIPFILTER, &svMip);
+
+        dev->SetVertexShader(nullptr);
+        dev->SetVertexDeclaration(nullptr);
+        dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+        dev->SetPixelShader(m_csmDebugPs);
+        dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+        dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+        dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+        dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+        dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+        dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0F);
+
+        struct V {
+            float x, y, z, rhw, u, v;
+        };
+        const float pad = 8.0f, sz = 200.0f;
+        const float y0  = (float) m_curViewportD3D.Height - sz - pad;  // bottom-left strip, clear of the HUD
+        for (int i = 0; i < CSM_CASCADES; ++i) {
+            const float x0 = pad + i * (sz + pad);
+            const float x1 = x0 + sz, y1 = y0 + sz;
+            const V quad[4] = {
+                {x0 - 0.5f, y0 - 0.5f, 0.0f, 1.0f, 0.0f, 0.0f},
+                {x1 - 0.5f, y0 - 0.5f, 0.0f, 1.0f, 1.0f, 0.0f},
+                {x0 - 0.5f, y1 - 0.5f, 0.0f, 1.0f, 0.0f, 1.0f},
+                {x1 - 0.5f, y1 - 0.5f, 0.0f, 1.0f, 1.0f, 1.0f},
+            };
+            dev->SetTexture(0, m_csmColorTex[i]);  // DEBUG: each cascade's own color RT
+            dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(V));
+        }
+
+        dev->SetRenderState(D3DRS_ZENABLE, svZ);
+        dev->SetRenderState(D3DRS_ZWRITEENABLE, svZW);
+        dev->SetRenderState(D3DRS_CULLMODE, svCull);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, svBlend);
+        dev->SetRenderState(D3DRS_FOGENABLE, svFog);
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, svCW);
+        dev->SetSamplerState(0, D3DSAMP_MINFILTER, svMin);
+        dev->SetSamplerState(0, D3DSAMP_MAGFILTER, svMag);
+        dev->SetSamplerState(0, D3DSAMP_MIPFILTER, svMip);
+        dev->SetTexture(0, svTex);
+        if (svTex)
+            svTex->Release();
+        dev->SetPixelShader(svPs);
+        if (svPs)
+            svPs->Release();
+        dev->SetVertexShader(svVs);
+        if (svVs)
+            svVs->Release();
+        dev->SetVertexDeclaration(svDecl);
+        if (svDecl)
+            svDecl->Release();
         this->mBindedStreams.fill(nullptr);
     };
 

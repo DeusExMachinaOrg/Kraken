@@ -693,6 +693,26 @@ namespace kraken::render {
         bool EnsureHbaoDebugShader();
         void RenderHbaoDebug();  // PoC gate: linearized-depth fullscreen viz, called from the post-opaque hook
 
+        // CSM: per-cascade INTZ depth maps rendered from the sun POV (depth-only), lazily created and
+        // released on destroy. Runs alongside the native shadow gen until the sampling is swapped.
+        static constexpr int CSM_CASCADES = 3;
+        IDirect3DTexture9* m_csmDepthTex[CSM_CASCADES]{};   // sampleable INTZ depth per cascade
+        IDirect3DSurface9* m_csmDepthSurf[CSM_CASCADES]{};
+        IDirect3DTexture9* m_csmColorTex[CSM_CASCADES]{};   // per-cascade color RT (depth-only pass still needs one bound; per-cascade so debug thumbnails differ)
+        IDirect3DSurface9* m_csmColorSurf[CSM_CASCADES]{};
+        int                m_csmResolution{0};
+        IDirect3DSurface9* m_csmSaveColor{nullptr};         // bindings saved across a cascade gen pass
+        IDirect3DSurface9* m_csmSaveDepth{nullptr};
+        Viewport           m_csmSaveViewport{};             // saved via CDevice::GetViewport so m_curViewportD3D restores too
+        DWORD              m_csmSaveColorWrite{0};
+        bool EnsureCsm(int resolution);
+        void ReleaseCsm();
+        void CsmBeginCascade(int cascade);  // bind cascade i's INTZ as the DS, depth-only, cleared
+        void CsmEndCascade();               // restore the pre-cascade RT/DS/viewport/colorwrite
+        IDirect3DPixelShader9* m_csmDebugPs{nullptr};
+        bool EnsureCsmDebugShader();
+        void RenderCsmDebug();              // WIP: blit the cascade depth maps as corner thumbnails
+
         void _SetLastResult(HRESULT result);
         virtual int32_t DecRef();
         virtual int32_t IncRef();

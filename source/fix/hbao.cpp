@@ -45,6 +45,13 @@ namespace kraken::fix::hbao {
         reinterpret_cast<void(__thiscall*)(CMatrix*, const CPlane*)>(0x007A45A0);
     static void(__thiscall* CMatrix_perspectiveFovLH)(CMatrix*, float, float, float, float) =
         reinterpret_cast<void(__thiscall*)(CMatrix*, float, float, float, float)>(0x0041D7F0);
+    static void(__thiscall* CMatrix_orthoLH)(CMatrix*, float, float, float, float) =
+        reinterpret_cast<void(__thiscall*)(CMatrix*, float, float, float, float)>(0x008A1DA0);
+    static void(__thiscall* CMatrix_lookAtLH)(CMatrix*, const CVector*, const CVector*, const CVector*) =
+        reinterpret_cast<void(__thiscall*)(CMatrix*, const CVector*, const CVector*, const CVector*)>(0x00405B90);
+    // Terrain height at world (x, z); returns a large-negative sentinel where there's no terrain.
+    static float(__thiscall* Landscape_GetHeight)(Landscape*, float, float, int, bool) =
+        reinterpret_cast<float(__thiscall*)(Landscape*, float, float, int, bool)>(0x005AEA30);
 
     static inline bool  cb(const CVar& c) { return c.m_type == CVar::CVAR_BOOL ? c.m_b : c.m_i > 0; }
     static inline float cf(const CVar& c) { return c.m_type == CVar::CVAR_FLOAT ? c.m_f : (float) c.m_i; }
@@ -252,6 +259,96 @@ namespace kraken::fix::hbao {
         w->m_sceneGraph.Render(SGRF_SHADOWS);
         r->SetFog(cb(cfg.m_r_enableFog), false);
 
+        // --- Cascaded shadow maps (depth-based, WIP) -------------------------------------------
+        // Render caster depth from the sun POV into per-cascade INTZ maps, alongside the native
+        // shadow gen above (kept until the sampling is swapped). Terrain only to start; objects follow.
+        // Sun ortho per cascade is centered on the camera with growing half-extents; matrices are
+        // saved/restored around the loop, and CsmBegin/EndCascade save/restore the RT/DS/viewport.
+        if (Config::Instance().shadow_csm.value) {
+            kraken::render::CDevice* dev = kraken::render::CDevice::Instance();
+            if (dev->EnsureCsm((int) Config::Instance().shadow_csm_resolution.value)) {
+                const CVector camPos   = r->MatGetOrgInv();  // reads the Mat stack -> camera world pos
+                const CVector sunDir   = w->m_sunDir;
+
+                // Ground height under the camera. The engine's own SceneGraph::DrawShadowsToTexture calls
+                // Landscape::GetHeight (verified in the retail decompile), so this is the sanctioned way to
+                // find the terrain. A sun-OBLIQUE cascade must sit its box on the ground (not the airborne
+                // camera) or the vertical camera->ground gap shifts the terrain off the map.
+                float groundY = Landscape_GetHeight(L, camPos.x, camPos.z, -1, true);  // engine's args: (-1, 1)
+                if (groundY < -50000.0f)
+                    groundY = w->m_level->waterlevel;
+                const CMatrix saveView = r->GetViewMatrix();
+                const CMatrix saveProj = r->MatGetProj();
+                const CMatrix saveMat  = dev->MatGet();  // Mat-stack top = the view the LANDSCAPE reads
+                                                         // (mViewProj = MatGet*MatGetProj); SetViewMatrix
+                                                         // alone never reaches it.
+                const CVector up(0.0f, 0.0f, 1.0f);  // sun ~overhead; world-Z avoids a degenerate look-up
+
+                // Optimize on what the engine ALREADY clips, instead of rebuilding a camera frustum from
+                // scratch. SortedCellsPrepare/DrawSolidLandscape draw a camera-centered disc of radius
+                // m_drawRadius * VISCELL_EDGE_LENGTH_24 (verified in the retail decompile; the cell set is
+                // chosen by camera position, independent of the view/proj we set). Size + center the shadow
+                // ortho to that disc and every cell that can possibly be drawn is covered -- close chunk
+                // included -- with nothing wasted past the terrain edge (shadow_csm_distance no longer
+                // applies; the draw radius IS the extent). Cascades are nested squares from the camera out
+                // to the disc; the sampler later picks the smallest one containing a pixel.
+                const CVector groundCenter(camPos.x, groundY, camPos.z);
+                const float   drawDisc = (float) L->m_drawRadius * 24.0f;  // engine's verified terrain clip radius
+
+                auto vadd = [](const CVector& a, const CVector& b, float s) {
+                    return CVector(a.x + b.x * s, a.y + b.y * s, a.z + b.z * s);
+                };
+
+                D3DPERF_BeginEvent(D3DCOLOR_ARGB(255, 0, 255, 0), L"CSM gen");  // RenderDoc marker
+                r->PushBlend(BM_NONE);
+                r->PushZbState(ZB_ENABLE);
+                r->PushFog(false);
+                r->PushCull(M3DCULL_NONE);  // sun view flips winding; depth-only wants both faces
+                static const wchar_t* kCsmMk[] = { L"CSM cascade 0", L"CSM cascade 1", L"CSM cascade 2", L"CSM cascade 3+" };
+                for (int i = 0; i < kraken::render::CDevice::CSM_CASCADES; ++i) {
+                    D3DPERF_BeginEvent(D3DCOLOR_ARGB(255, 255, 210, 0), kCsmMk[i < 3 ? i : 3]);
+                    // Cascade i = nested camera-centered square out to the draw disc: half-extent
+                    // drawDisc*(i+1)/N, centered on the ground under the camera so the close chunk lands in
+                    // cascade 0 by construction. near=0 with depthRange headroom toward the sun for casters
+                    // above the ground.
+                    const float depthRange = Config::Instance().shadow_csm_depth_range.value;
+                    const float half = drawDisc * (float) (i + 1) / (float) kraken::render::CDevice::CSM_CASCADES;
+
+                    const CVector eye = vadd(groundCenter, sunDir, half + depthRange);
+                    CMatrix view, proj;
+                    CMatrix_lookAtLH(&view, &eye, &groundCenter, &up);
+                    CMatrix_orthoLH(&proj, 2.0f * half, 2.0f * half, 0.0f, 2.0f * half + 2.0f * depthRange);
+
+                    static int s_c = 0;
+                    if ((s_c++ & 63) == 0)
+                        LOG_INFO("CSM fit c%d: cam %.0f %.0f %.0f  groundY %.0f  half %.0f  drawDisc %.0f",
+                                 i, camPos.x, camPos.y, camPos.z, groundY, half, drawDisc);
+
+                    dev->CsmBeginCascade(i);
+                    dev->MatSet(view);        // the landscape's mViewProj = MatGet*MatGetProj reads THIS
+                    r->MatSetProj(proj);
+                    r->SetViewMatrix(view);
+                    L->DrawSolidLandscape(LRM::LRM_DIRECT, 0);
+                    dev->CsmEndCascade();
+                    D3DPERF_EndEvent();  // CSM cascade i
+                }
+                r->PopCull();
+                r->PopFog();
+                r->PopZbState();
+                r->PopBlend();
+                D3DPERF_EndEvent();  // CSM gen
+                dev->MatSet(saveMat);
+                r->MatSetProj(saveProj);
+                r->SetViewMatrix(saveView);
+
+                static int s_csmLog = 0;
+                if ((s_csmLog++ & 255) == 0)
+                    LOG_INFO("CSM gen: %d cascades  drawDisc %.0f (m_drawRadius %d)  sunDir %.2f %.2f %.2f",
+                             kraken::render::CDevice::CSM_CASCADES, drawDisc, L->m_drawRadius,
+                             sunDir.x, sunDir.y, sunDir.z);
+            }
+        }
+
         // AO on the opaque scene (terrain + objects) BEFORE grass + the transparents, so it doesn't
         // darken the alpha-clipped grass ("AO overdraw alpha"). Grass then draws on top, un-AO'd.
         kraken::render::CDevice::Instance()->RenderHbaoDebug();
@@ -306,6 +403,11 @@ namespace kraken::fix::hbao {
         r->PopBlend();
         r->PopCull();
         r->PopZbState();
+
+        // WIP: overlay the CSM cascade depth maps as bottom-left thumbnails so we can eyeball what the
+        // sun-POV pass actually captured (drawn last, over the finished scene).
+        if (Config::Instance().shadow_csm.value)
+            kraken::render::CDevice::Instance()->RenderCsmDebug();
 
         // debug: blit reflection/refraction RTs to screen -- gated off in normal play, body omitted.
         if (cb(cfg.m_g_showReflRefrMaps)) {
