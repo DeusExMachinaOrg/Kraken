@@ -444,11 +444,6 @@ namespace kraken::fix::hbao {
         // darken the alpha-clipped grass ("AO overdraw alpha"). Grass then draws on top, un-AO'd.
         kraken::render::CDevice::Instance()->RenderHbaoDebug();
 
-        // CSM sun shadows: sample the cascade depth maps and multiply shadow into the opaque scene, at the
-        // same seam as HBAO (terrain + objects shadowed as receivers, before grass/water). Self-gates on
-        // shadow_csm + generated cascades + scene depth.
-        kraken::render::CDevice::Instance()->RenderCsmApply();
-
         // Native DrawShadows renders grass internally; when native shadows are off/suppressed it's skipped,
         // so render grass here (unshadowed) or it vanishes.
         if (!Config::Instance().shadow_native.value || !cb(cfg.m_dsShadows)
@@ -456,6 +451,16 @@ namespace kraken::fix::hbao {
             ::vc3::deque<::vc3::pair<int, int>> empty;
             L->RenderGrass(empty);
         }
+
+        // CSM sun shadows: sample the cascade depth maps and multiply shadow into the opaque scene. Placed
+        // AFTER grass (unlike AO, which must stay before it) so grass is shadowed too. Grass renders with
+        // ZB_NOWRITE (depth test, no write -- Landscape::RenderGrass PushZbState(ZB_NOWRITE)), so the scene
+        // INTZ at grass pixels still holds the TERRAIN depth beneath each blade: the screen-space apply
+        // reconstructs that ground point, shadows it, and multiplies into the framebuffer showing grass ->
+        // grass inherits the ground's shadow (no grass self-shadow speckle). Terrain + objects are shadowed
+        // in this same single pass. Still before the transparents (water). Self-gates on shadow_csm +
+        // generated cascades + scene depth.
+        kraken::render::CDevice::Instance()->RenderCsmApply();
 
         // ---- transparent: water, shores, transparent objects, weather ----
         if (L->m_numWaterCells && L->m_isWaterVisible) {
