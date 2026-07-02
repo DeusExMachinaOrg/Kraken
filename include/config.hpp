@@ -81,9 +81,12 @@ namespace kraken {
         // Cascaded shadow maps (depth-based) + screen-space contact shadows
         ConfigValue<uint32_t>                 shadow_csm;            // master enable for the reimplemented CSM path
         ConfigValue<uint32_t>                 shadow_csm_resolution; // per-cascade depth map resolution (square)
-        ConfigValue<float>                    shadow_csm_distance;   // max world distance covered by the cascades
-        ConfigValue<float>                    shadow_csm_split_lambda; // PSSM log/uniform blend, 0=uniform .. 1=log
+        ConfigValue<float>                    shadow_csm_dist0;      // cascade 0 far distance (crisp near), world units
+        ConfigValue<float>                    shadow_csm_dist1;      // cascade 1 far distance
+        ConfigValue<float>                    shadow_csm_dist2;      // cascade 2 far distance (outer reach); each capped at the drawn-terrain edge, kept monotonic
         ConfigValue<float>                    shadow_csm_depth_range;  // light-space +/- depth caught around the camera (caster height above / terrain below)
+        ConfigValue<float>                    shadow_csm_bias;         // depth-compare bias in normalized [0,1] cascade depth (peter-panning vs acne)
+        ConfigValue<float>                    shadow_csm_strength;     // how dark a fully-shadowed pixel gets (0=no shadow .. 1=black)
         ConfigValue<uint32_t>                 shadow_contact;        // enable screen-space contact shadows (INTZ ray-march)
         ConfigValue<uint32_t>                 shadow_contact_steps;  // ray-march steps
         ConfigValue<float>                    shadow_contact_length; // contact ray length, world units

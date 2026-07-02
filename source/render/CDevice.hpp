@@ -713,6 +713,16 @@ namespace kraken::render {
         bool EnsureCsmDebugShader();
         void RenderCsmDebug();              // WIP: blit the cascade depth maps as corner thumbnails
 
+        // CSM apply (screen-space deferred): the gen loop captures these each frame; the fullscreen sample
+        // pass consumes them. Row-major (CMatrix.array), matching how the terrain shader reads mViewProj.
+        hta::CMatrix           m_csmViewProj[CSM_CASCADES];  // per-cascade sun view*proj (world -> cascade clip)
+        hta::CMatrix           m_csmInvViewProj;             // inverse of the scene camera view*proj (scene depth -> world)
+        IDirect3DPixelShader9* m_csmApplyPs{nullptr};
+        void SetCsmScene(const hta::CMatrix& sceneViewProj) { m_csmInvViewProj = ~sceneViewProj; }
+        void SetCsmCascadeVP(int i, const hta::CMatrix& vp) { m_csmViewProj[i] = vp; }
+        bool EnsureCsmApplyShader();
+        void RenderCsmApply();              // screen-space sun-shadow sample + multiply into scene color
+
         void _SetLastResult(HRESULT result);
         virtual int32_t DecRef();
         virtual int32_t IncRef();

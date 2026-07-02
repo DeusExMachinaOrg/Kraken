@@ -161,13 +161,22 @@ The `pwsh.exe` post-build **deploy step fails**, so `.build/Release/kraken.dll` 
 work" is that the game is still running the OLD DLL.** This must be ruled out first:
 manually copy the DLL, then re-check.
 
-### B. Open question — disc vs wedge
-Today's `SortedCellsFetch` decompile says `DrawSolidLandscape` emits a **camera-centered
-disc** (no frustum test). But an earlier RenderDoc capture suggested terrain only
-appeared in a forward **FOV wedge** (implying a per-cell visibility cull from
-`UpdateVis`). If it's a disc, the camera-centered box is exactly right; if it's a
-wedge, the box still *covers* everything but wastes ~half its resolution behind the
-camera. Unconfirmed → we don't know if the fit is optimal or merely safe.
+### B. RESOLVED — the per-cell visibility gate (this was the "won't draw" root cause)
+`DrawSolidLandscape` skips every cell that fails a camera-visibility gate: at
+**`0x7A86D4`** `je` (`if (vis == 0) skip draw`), where
+`vis = m_enableMap[cellY*256+cellX] & m_enableVisSpaceMask`. `m_enableMap`
+(`SceneGraph+0x3104b0`, 65536 bytes) is written by
+`SceneGraph::EnableVisibleCells(frustum, space)` from `Landscape::UpdateVis`
+(`0x3a60b0`) — space 1 = direct **camera frustum**, space 2 = reflection.
+`SortedCellsPrepare` builds the full camera-centered disc, but this gate trims the
+*draw* to the camera-frustum **wedge** — so the sun cascades only ever got the wedge
+(or nothing, when it fell outside our box), and the under-camera close chunk (below
+the frustum) was skipped in every pass.
+**Fix applied (hbao.cpp):** save the 6 bytes at `0x7A86D4`, `routines::Nop` them for
+the duration of the cascade `DrawSolidLandscape` calls, restore right after — "guarantee
+the fetch, ignore the flag." Main/reflection passes ran earlier so they keep their
+culling. The full prepared disc now rasterizes into every cascade. **Pending in-game
+verification.**
 
 ### C. Structural — no consumer
 `m_csmDepthTex` is generated but **never sampled**. There is no pass that projects the

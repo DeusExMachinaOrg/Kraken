@@ -282,18 +282,31 @@ namespace kraken::fix::hbao {
                 const CMatrix saveMat  = dev->MatGet();  // Mat-stack top = the view the LANDSCAPE reads
                                                          // (mViewProj = MatGet*MatGetProj); SetViewMatrix
                                                          // alone never reaches it.
+                // Capture the SCENE camera view*proj for the apply pass; its inverse reconstructs world pos
+                // from the scene INTZ depth. saveMat*saveProj == the mViewProj the main opaque pass used.
+                dev->SetCsmScene(saveMat * saveProj);
                 const CVector up(0.0f, 0.0f, 1.0f);  // sun ~overhead; world-Z avoids a degenerate look-up
 
-                // Optimize on what the engine ALREADY clips, instead of rebuilding a camera frustum from
-                // scratch. SortedCellsPrepare/DrawSolidLandscape draw a camera-centered disc of radius
-                // m_drawRadius * VISCELL_EDGE_LENGTH_24 (verified in the retail decompile; the cell set is
-                // chosen by camera position, independent of the view/proj we set). Size + center the shadow
-                // ortho to that disc and every cell that can possibly be drawn is covered -- close chunk
-                // included -- with nothing wasted past the terrain edge (shadow_csm_distance no longer
-                // applies; the draw radius IS the extent). Cascades are nested squares from the camera out
-                // to the disc; the sampler later picks the smallest one containing a pixel.
+                // Cascades are camera-centered squares (per-cascade half-extents below), all rendered from
+                // the full camera-prepared cell disc. The apply pass later picks, per pixel, the smallest
+                // cascade that contains it.
                 const CVector groundCenter(camPos.x, groundY, camPos.z);
-                const float   drawDisc = (float) L->m_drawRadius * 24.0f;  // engine's verified terrain clip radius
+                // Per-cascade far distances (world units): each cascade i is a camera-centered square of
+                // half-extent csmDist[i], so shadow_csm_dist0/1/2 directly place the LOD transitions.
+                // Each is capped at the drawn-terrain edge (no terrain drawn past it to shadow) and kept
+                // monotonic (lod0 <= lod1 <= lod2). terrainDisc = (m_drawRadius+1)*128: draw-cell world size
+                // is 128 (landscapeSolid_ps11.vs: pos = cellX*128 + land_scale*idx), m_drawRadius counts
+                // those 128u cells. Smaller csmDist[i] = fewer world units per texel = crisper that cascade.
+                const float terrainDisc = ((float) L->m_drawRadius + 1.0f) * 128.0f;
+                float       csmDist[kraken::render::CDevice::CSM_CASCADES] = {
+                    Config::Instance().shadow_csm_dist0.value,
+                    Config::Instance().shadow_csm_dist1.value,
+                    Config::Instance().shadow_csm_dist2.value,
+                };
+                for (int c = 1; c < kraken::render::CDevice::CSM_CASCADES; ++c)
+                    if (csmDist[c] < csmDist[c - 1]) csmDist[c] = csmDist[c - 1];   // enforce monotonic
+                for (int c = 0; c < kraken::render::CDevice::CSM_CASCADES; ++c)
+                    if (csmDist[c] > terrainDisc) csmDist[c] = terrainDisc;         // cap at terrain edge
 
                 auto vadd = [](const CVector& a, const CVector& b, float s) {
                     return CVector(a.x + b.x * s, a.y + b.y * s, a.z + b.z * s);
@@ -305,33 +318,49 @@ namespace kraken::fix::hbao {
                 r->PushFog(false);
                 r->PushCull(M3DCULL_NONE);  // sun view flips winding; depth-only wants both faces
                 static const wchar_t* kCsmMk[] = { L"CSM cascade 0", L"CSM cascade 1", L"CSM cascade 2", L"CSM cascade 3+" };
+
+                // Draw the FULL prepared disc into every cascade, not just the camera-frustum wedge.
+                // DrawSolidLandscape's per-cell `if (vis)` reads m_enableMap[cell] & m_enableVisSpaceMask,
+                // which EnableVisibleCells filled from the CAMERA frustum -- so it would draw only the wedge.
+                // We control the DATA feeding that test instead of the code: flag every cell enabled for the
+                // duration of the cascade draws, then restore. The map is writable game memory (no code
+                // patching), and the main/reflection passes already ran this frame with real culling.
+                SceneGraph&          sg = w->m_sceneGraph;
+                static unsigned char s_savedEnableMap[sizeof(sg.m_enableMap)];
+                memcpy(s_savedEnableMap, sg.m_enableMap, sizeof(s_savedEnableMap));
+                memset(sg.m_enableMap, 0xFF, sizeof(sg.m_enableMap));  // every fetched (disc) cell now passes `if (vis)`
+
                 for (int i = 0; i < kraken::render::CDevice::CSM_CASCADES; ++i) {
                     D3DPERF_BeginEvent(D3DCOLOR_ARGB(255, 255, 210, 0), kCsmMk[i < 3 ? i : 3]);
-                    // Cascade i = nested camera-centered square out to the draw disc: half-extent
-                    // drawDisc*(i+1)/N, centered on the ground under the camera so the close chunk lands in
-                    // cascade 0 by construction. near=0 with depthRange headroom toward the sun for casters
-                    // above the ground.
+                    // Cascade i = camera-centered square of half-extent csmDist[i] (shadow_csm_dist<i>),
+                    // centered on the ground under the camera so the close chunk lands in cascade 0. near=0
+                    // with depthRange headroom toward the sun for casters above the ground.
                     const float depthRange = Config::Instance().shadow_csm_depth_range.value;
-                    const float half = drawDisc * (float) (i + 1) / (float) kraken::render::CDevice::CSM_CASCADES;
+                    const float half = csmDist[i];
 
                     const CVector eye = vadd(groundCenter, sunDir, half + depthRange);
                     CMatrix view, proj;
                     CMatrix_lookAtLH(&view, &eye, &groundCenter, &up);
                     CMatrix_orthoLH(&proj, 2.0f * half, 2.0f * half, 0.0f, 2.0f * half + 2.0f * depthRange);
+                    dev->SetCsmCascadeVP(i, view * proj);  // world -> cascade i clip, for the screen-space apply pass
 
                     static int s_c = 0;
                     if ((s_c++ & 63) == 0)
-                        LOG_INFO("CSM fit c%d: cam %.0f %.0f %.0f  groundY %.0f  half %.0f  drawDisc %.0f",
-                                 i, camPos.x, camPos.y, camPos.z, groundY, half, drawDisc);
+                        LOG_INFO("CSM fit c%d: cam %.0f %.0f %.0f  groundY %.0f  half %.0f  terrainDisc %.0f",
+                                 i, camPos.x, camPos.y, camPos.z, groundY, half, terrainDisc);
 
                     dev->CsmBeginCascade(i);
                     dev->MatSet(view);        // the landscape's mViewProj = MatGet*MatGetProj reads THIS
                     r->MatSetProj(proj);
                     r->SetViewMatrix(view);
-                    L->DrawSolidLandscape(LRM::LRM_DIRECT, 0);
+                    // LRM_REFLECTION draws the FULL cell disc (case 1: sortedCells [0..drawRadius+1]); LRM_DIRECT
+                    // (case 0) only emits the outer LOD ring [drawRadius*lsTransitionDevider+1 .. drawRadius+1].
+                    // For a shadow map we want every cell, so use the full-disc mode. Same solid VS/PS + lightmap.
+                    L->DrawSolidLandscape(LRM::LRM_REFLECTION, 0);
                     dev->CsmEndCascade();
                     D3DPERF_EndEvent();  // CSM cascade i
                 }
+                memcpy(sg.m_enableMap, s_savedEnableMap, sizeof(s_savedEnableMap));  // restore camera-frustum culling
                 r->PopCull();
                 r->PopFog();
                 r->PopZbState();
@@ -343,8 +372,8 @@ namespace kraken::fix::hbao {
 
                 static int s_csmLog = 0;
                 if ((s_csmLog++ & 255) == 0)
-                    LOG_INFO("CSM gen: %d cascades  drawDisc %.0f (m_drawRadius %d)  sunDir %.2f %.2f %.2f",
-                             kraken::render::CDevice::CSM_CASCADES, drawDisc, L->m_drawRadius,
+                    LOG_INFO("CSM gen: %d cascades  dists %.0f/%.0f/%.0f (terrainDisc %.0f cap)  sunDir %.2f %.2f %.2f",
+                             kraken::render::CDevice::CSM_CASCADES, csmDist[0], csmDist[1], csmDist[2], terrainDisc,
                              sunDir.x, sunDir.y, sunDir.z);
             }
         }
@@ -352,6 +381,11 @@ namespace kraken::fix::hbao {
         // AO on the opaque scene (terrain + objects) BEFORE grass + the transparents, so it doesn't
         // darken the alpha-clipped grass ("AO overdraw alpha"). Grass then draws on top, un-AO'd.
         kraken::render::CDevice::Instance()->RenderHbaoDebug();
+
+        // CSM sun shadows: sample the cascade depth maps and multiply shadow into the opaque scene, at the
+        // same seam as HBAO (terrain + objects shadowed as receivers, before grass/water). Self-gates on
+        // shadow_csm + generated cascades + scene depth.
+        kraken::render::CDevice::Instance()->RenderCsmApply();
 
         if (!cb(cfg.m_dsShadows) || !w->m_weatherManager.GetShadowVisibilityFromWeather()) {
             ::vc3::deque<::vc3::pair<int, int>> empty;
@@ -419,7 +453,7 @@ namespace kraken::fix::hbao {
         if (!Config::Instance().hbao.value) {
             return;
         }
-        LOG_INFO("Landscape::Render reimpl active (A/B vs native; no AO yet)");
+        LOG_INFO("Landscape::Render reimpl active + CSM apply pass wired (screen-space sun shadows)");
         routines::ChangeCall((void*) kLandscapeRenderCall, (void*) &Landscape_Render);
     }
 }

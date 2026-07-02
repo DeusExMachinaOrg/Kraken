@@ -3523,6 +3523,7 @@ namespace kraken::render {
             m_rtsZSurfaces.clear();
 
             ReleaseHbaoDepth();  // D3DPOOL_DEFAULT: must drop before Reset; BeginScene recreates it lazily
+            ReleaseCsm();        // ditto for the CSM INTZ + color RTs; the gen loop recreates them via EnsureCsm
 
             rstShadersPrepareFor();
             rstTexPrepareFor();
@@ -6419,6 +6420,7 @@ namespace kraken::render {
             if (m_csmColorTex[i])  { m_csmColorTex[i]->Release();  m_csmColorTex[i]  = nullptr; }
         }
         if (m_csmDebugPs)   { m_csmDebugPs->Release();   m_csmDebugPs   = nullptr; }
+        if (m_csmApplyPs)   { m_csmApplyPs->Release();   m_csmApplyPs   = nullptr; }
         m_csmResolution = 0;
     };
 
@@ -6804,6 +6806,217 @@ namespace kraken::render {
         this->mBindedStreams.fill(nullptr);
     };
 
+    bool CDevice::EnsureCsmApplyShader() {
+        if (m_csmApplyPs)
+            return true;
+        // Screen-space (deferred) sun shadows: reconstruct world pos from the scene INTZ depth, project it
+        // into each cascade's ortho map, take the first cascade that contains it, 3x3 PCF depth-compare, and
+        // output a grey `shade` that the ZERO/SRCCOLOR blend multiplies into the scene (shadowed -> darker).
+        // Matrices are row_major + mul(vector, matrix) to match the engine's mViewProj = MatGet()*MatGetProj().
+        //   c0..c3 InvViewProj(scene)   c4..c15 CsmViewProj[3]   c16 (bias, strength, texel, _)
+        static const char* src =
+            "sampler2D SceneDepth : register(s0);\n"
+            "sampler2D Csm0 : register(s1);\n"
+            "sampler2D Csm1 : register(s2);\n"
+            "sampler2D Csm2 : register(s3);\n"
+            "row_major float4x4 InvViewProj    : register(c0);\n"
+            "row_major float4x4 CsmViewProj[3] : register(c4);\n"
+            "float4 P : register(c16);\n"  // x=bias y=strength z=texel
+            "float4 main(float2 uv : TEXCOORD0) : COLOR0 {\n"
+            "  float d = tex2D(SceneDepth, uv).r;\n"
+            "  if (d >= 0.9999) return float4(1,1,1,1);\n"           // sky / far plane -> lit
+            "  float2 ndc = float2(uv.x*2-1, 1-uv.y*2);\n"
+            "  float4 wp4 = mul(float4(ndc, d, 1), InvViewProj);\n"  // scene depth -> world pos
+            "  float3 wp  = wp4.xyz / wp4.w;\n"
+            "  float bias = P.x, strength = P.y, texel = P.z;\n"
+            "  float lit  = 1.0;\n"
+            "  [unroll] for (int i = 0; i < 3; i++) {\n"
+            "    float4 sp = mul(float4(wp, 1), CsmViewProj[i]);\n"  // world -> cascade i clip (ortho, w==1)
+            "    float2 suv = float2(sp.x*0.5+0.5, -sp.y*0.5+0.5);\n"
+            "    if (all(suv > 0.0) && all(suv < 1.0) && sp.z > 0.0 && sp.z < 1.0) {\n"
+            "      float s = 0;\n"
+            "      [unroll] for (int y = -1; y <= 1; y++)\n"
+            "      [unroll] for (int x = -1; x <= 1; x++) {\n"
+            "        float2 o = float2(x, y) * texel;\n"
+            "        float z;\n"
+            "        if (i == 0) z = tex2D(Csm0, suv + o).r;\n"
+            "        else if (i == 1) z = tex2D(Csm1, suv + o).r;\n"
+            "        else z = tex2D(Csm2, suv + o).r;\n"
+            "        s += ((sp.z - bias) <= z) ? 1.0 : 0.0;\n"       // lit where the caster is no nearer the sun
+            "      }\n"
+            "      lit = s / 9.0;\n"
+            "      break;\n"                                          // first (tightest) containing cascade wins
+            "    }\n"
+            "  }\n"
+            "  float shade = lerp(1.0 - strength, 1.0, lit);\n"      // shadowed -> darker
+            "  return float4(shade, shade, shade, 1);\n"
+            "}\n";
+
+        LPD3DXBUFFER code = nullptr, err = nullptr;
+        HRESULT hr = D3DXCompileShader(src, (UINT) strlen(src), nullptr, nullptr, "main", "ps_3_0", 0, &code, &err, nullptr);
+        if (FAILED(hr)) {
+            if (err) {
+                LOG_ERROR("CSM: apply PS compile failed: %s", (const char*) err->GetBufferPointer());
+                err->Release();
+            }
+            if (code)
+                code->Release();
+            return false;
+        }
+        if (err)
+            err->Release();
+
+        hr = m_pd3dDevice->CreatePixelShader((const DWORD*) code->GetBufferPointer(), &m_csmApplyPs);
+        code->Release();
+        if (FAILED(hr)) {
+            LOG_ERROR("CSM: apply CreatePixelShader failed: 0x%08X", hr);
+            m_csmApplyPs = nullptr;
+            return false;
+        }
+        return true;
+    };
+
+    void CDevice::RenderCsmApply() {
+        if (!Config::Instance().shadow_csm.value)
+            return;
+        if (m_csmResolution == 0 || !m_csmDepthTex[0])   // no cascades generated this frame
+            return;
+        if (!m_hbaoDepthTex)                             // no scene INTZ depth to reconstruct world from
+            return;
+        if (!EnsureCsmApplyShader())
+            return;
+
+        IDirect3DDevice9* dev = m_pd3dDevice;
+
+        // Save exactly what we touch, restore at the end (mirrors RenderHbaoDebug).
+        IDirect3DPixelShader9* svPs         = nullptr; dev->GetPixelShader(&svPs);
+        IDirect3DVertexShader9* svVs        = nullptr; dev->GetVertexShader(&svVs);
+        IDirect3DVertexDeclaration9* svDecl = nullptr; dev->GetVertexDeclaration(&svDecl);
+        IDirect3DBaseTexture9* svTex[4]     = {};
+        for (int i = 0; i < 4; ++i)
+            dev->GetTexture(i, &svTex[i]);
+        float svC[17][4];
+        dev->GetPixelShaderConstantF(0, &svC[0][0], 17);  // c0..c16
+        DWORD svZ, svZW, svCull, svBlend, svSrc, svDest, svAlpha, svFog, svStencil, svCW;
+        dev->GetRenderState(D3DRS_ZENABLE, &svZ);
+        dev->GetRenderState(D3DRS_ZWRITEENABLE, &svZW);
+        dev->GetRenderState(D3DRS_CULLMODE, &svCull);
+        dev->GetRenderState(D3DRS_ALPHABLENDENABLE, &svBlend);
+        dev->GetRenderState(D3DRS_SRCBLEND, &svSrc);
+        dev->GetRenderState(D3DRS_DESTBLEND, &svDest);
+        dev->GetRenderState(D3DRS_ALPHATESTENABLE, &svAlpha);
+        dev->GetRenderState(D3DRS_FOGENABLE, &svFog);
+        dev->GetRenderState(D3DRS_STENCILENABLE, &svStencil);
+        dev->GetRenderState(D3DRS_COLORWRITEENABLE, &svCW);
+        DWORD svSamp[4][5];
+        for (int i = 0; i < 4; ++i) {
+            dev->GetSamplerState(i, D3DSAMP_MINFILTER, &svSamp[i][0]);
+            dev->GetSamplerState(i, D3DSAMP_MAGFILTER, &svSamp[i][1]);
+            dev->GetSamplerState(i, D3DSAMP_MIPFILTER, &svSamp[i][2]);
+            dev->GetSamplerState(i, D3DSAMP_ADDRESSU, &svSamp[i][3]);
+            dev->GetSamplerState(i, D3DSAMP_ADDRESSV, &svSamp[i][4]);
+        }
+
+        // Upload matrices (row-major, uploaded verbatim; HLSL declares them row_major) + params.
+        dev->SetPixelShaderConstantF(0, m_csmInvViewProj.array, 4);
+        for (int i = 0; i < CSM_CASCADES; ++i)
+            dev->SetPixelShaderConstantF(4 + i * 4, m_csmViewProj[i].array, 4);
+        const Config& cfg   = Config::Instance();
+        const float   texel = 1.0f / (float) m_csmResolution;
+        const float   p16[4] = {cfg.shadow_csm_bias.value, cfg.shadow_csm_strength.value, texel, 0.0f};
+        dev->SetPixelShaderConstantF(16, p16, 1);
+
+        // Fullscreen quad over the current viewport (pre-transformed, half-texel offset) -- same as HBAO.
+        const float x0 = (float) m_curViewportD3D.X - 0.5f;
+        const float y0 = (float) m_curViewportD3D.Y - 0.5f;
+        const float x1 = x0 + (float) m_curViewportD3D.Width;
+        const float y1 = y0 + (float) m_curViewportD3D.Height;
+        struct V {
+            float x, y, z, rhw, u, v;
+        };
+        const V quad[4] = {
+            {x0, y0, 0.0f, 1.0f, 0.0f, 0.0f},
+            {x1, y0, 0.0f, 1.0f, 1.0f, 0.0f},
+            {x0, y1, 0.0f, 1.0f, 0.0f, 1.0f},
+            {x1, y1, 0.0f, 1.0f, 1.0f, 1.0f},
+        };
+
+        D3DPERF_BeginEvent(D3DCOLOR_ARGB(255, 80, 80, 255), L"CSM apply");
+
+        dev->SetVertexShader(nullptr);
+        dev->SetVertexDeclaration(nullptr);
+        dev->SetFVF(D3DFVF_XYZRHW | D3DFVF_TEX1);
+        dev->SetPixelShader(m_csmApplyPs);
+        dev->SetTexture(0, m_hbaoDepthTex);
+        dev->SetTexture(1, m_csmDepthTex[0]);
+        dev->SetTexture(2, m_csmDepthTex[1]);
+        dev->SetTexture(3, m_csmDepthTex[2]);
+        for (int i = 0; i < 4; ++i) {
+            dev->SetSamplerState(i, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+            dev->SetSamplerState(i, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+            dev->SetSamplerState(i, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+            dev->SetSamplerState(i, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+            dev->SetSamplerState(i, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        }
+        dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+        dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);  // scene INTZ is the bound DS: never write while sampling it
+        dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);  // multiply shade into the scene: result = dest * src
+        dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ZERO);
+        dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_SRCCOLOR);
+        dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+        dev->SetRenderState(D3DRS_FOGENABLE, FALSE);
+        dev->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0x0F);
+
+        dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(V));
+
+        D3DPERF_EndEvent();
+
+        static bool s_drew = false;
+        if (!s_drew) {
+            s_drew = true;
+            LOG_INFO("CSM apply: pass DREW (res %d, strength %.2f, bias %.4f)", m_csmResolution,
+                     cfg.shadow_csm_strength.value, cfg.shadow_csm_bias.value);
+        }
+
+        dev->SetRenderState(D3DRS_ZENABLE, svZ);
+        dev->SetRenderState(D3DRS_ZWRITEENABLE, svZW);
+        dev->SetRenderState(D3DRS_CULLMODE, svCull);
+        dev->SetRenderState(D3DRS_ALPHABLENDENABLE, svBlend);
+        dev->SetRenderState(D3DRS_SRCBLEND, svSrc);
+        dev->SetRenderState(D3DRS_DESTBLEND, svDest);
+        dev->SetRenderState(D3DRS_ALPHATESTENABLE, svAlpha);
+        dev->SetRenderState(D3DRS_FOGENABLE, svFog);
+        dev->SetRenderState(D3DRS_STENCILENABLE, svStencil);
+        dev->SetRenderState(D3DRS_COLORWRITEENABLE, svCW);
+        for (int i = 0; i < 4; ++i) {
+            dev->SetSamplerState(i, D3DSAMP_MINFILTER, svSamp[i][0]);
+            dev->SetSamplerState(i, D3DSAMP_MAGFILTER, svSamp[i][1]);
+            dev->SetSamplerState(i, D3DSAMP_MIPFILTER, svSamp[i][2]);
+            dev->SetSamplerState(i, D3DSAMP_ADDRESSU, svSamp[i][3]);
+            dev->SetSamplerState(i, D3DSAMP_ADDRESSV, svSamp[i][4]);
+        }
+        for (int i = 0; i < 4; ++i) {
+            dev->SetTexture(i, svTex[i]);
+            if (svTex[i])
+                svTex[i]->Release();
+        }
+        dev->SetPixelShaderConstantF(0, &svC[0][0], 17);
+        dev->SetPixelShader(svPs);
+        if (svPs)
+            svPs->Release();
+        dev->SetVertexShader(svVs);
+        if (svVs)
+            svVs->Release();
+        dev->SetVertexDeclaration(svDecl);
+        if (svDecl)
+            svDecl->Release();
+
+        // DrawPrimitiveUP nulls stream source 0 -> force the engine to rebind its streams next draw.
+        this->mBindedStreams.fill(nullptr);
+    };
+
     int32_t CDevice::BeginScene() {
         this->mBindedStreams.fill(nullptr);
 
@@ -6812,9 +7025,11 @@ namespace kraken::render {
 
         // Route the main scene's depth into a sampleable INTZ texture so the post-opaque AO pass can
         // read camera depth. INTZ is a drop-in D24S8 (rendering is unchanged); it just can't be
-        // multisampled, so this requires a non-MSAA backbuffer.
-        if (m_inScene && Config::Instance().hbao.value && Config::Instance().hbao_intensity.value > 0.0f
-            && m_d3dpp.MultiSampleType == D3DMULTISAMPLE_NONE) {
+        // multisampled, so this requires a non-MSAA backbuffer. CSM's screen-space apply pass needs the
+        // same scene depth to reconstruct world position, so bind it when either feature wants it.
+        if (m_inScene && m_d3dpp.MultiSampleType == D3DMULTISAMPLE_NONE
+            && ((Config::Instance().hbao.value && Config::Instance().hbao_intensity.value > 0.0f)
+                || Config::Instance().shadow_csm.value)) {
             if (EnsureHbaoDepth())
                 m_pd3dDevice->SetDepthStencilSurface(m_hbaoDepthSurf);
         }
