@@ -63,6 +63,8 @@ namespace kraken {
         this->shadow_csm_pcf                    = { "render",    "shadow_csm_pcf",                  1.5,   true,  0.0,   16.0        };
         this->shadow_csm_blend                  = { "render",    "shadow_csm_blend",                0.1,   true,  0.0,   0.5         };
         this->shadow_csm_objects                = { "render",    "shadow_csm_objects",              1,     true,  0,     1           };
+        this->shadow_csm_caster_fov             = { "render",    "shadow_csm_caster_fov",           3.0,   true,  0.5,   16.0        };
+        this->shadow_csm_debug                  = { "render",    "shadow_csm_debug",                0,     true,  0,     1           };
         this->shadow_native                     = { "render",    "shadow_native",                   1,     true,  0,     1           };
         this->shadow_contact                    = { "render",    "shadow_contact",                  1,     true,  0,     1           };
         this->shadow_contact_steps              = { "render",    "shadow_contact_steps",            16,    true,  1,     64          };
@@ -151,6 +153,8 @@ namespace kraken {
         this->LoadValue(&this->shadow_csm_pcf);
         this->LoadValue(&this->shadow_csm_blend);
         this->LoadValue(&this->shadow_csm_objects);
+        this->LoadValue(&this->shadow_csm_caster_fov);
+        this->LoadValue(&this->shadow_csm_debug);
         this->LoadValue(&this->shadow_native);
         this->LoadValue(&this->shadow_csm_strength);
         this->LoadValue(&this->shadow_contact);
@@ -216,6 +220,8 @@ namespace kraken {
         this->DumpValue(&this->shadow_csm_pcf);
         this->DumpValue(&this->shadow_csm_blend);
         this->DumpValue(&this->shadow_csm_objects);
+        this->DumpValue(&this->shadow_csm_caster_fov);
+        this->DumpValue(&this->shadow_csm_debug);
         this->DumpValue(&this->shadow_native);
         this->DumpValue(&this->shadow_contact);
         this->DumpValue(&this->shadow_contact_steps);

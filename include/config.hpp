@@ -91,6 +91,8 @@ namespace kraken {
         ConfigValue<float>                    shadow_csm_pcf;          // PCF filter radius in shadow texels (softness); rotated 12-tap Poisson
         ConfigValue<float>                    shadow_csm_blend;        // cross-cascade blend band at boundaries, fraction 0..1 (hides cascade seams)
         ConfigValue<uint32_t>                 shadow_csm_objects;      // render scene-graph casters (models + vehicles) into the cascades so objects cast shadows
+        ConfigValue<float>                    shadow_csm_caster_fov;   // sun-POV vis cone width (slope) for off-camera casters; wider = more casters, projection-clipped per cascade
+        ConfigValue<uint32_t>                 shadow_csm_debug;        // overlay the per-cascade depth maps as bottom-left thumbnails (dev only; off in normal play)
         ConfigValue<uint32_t>                 shadow_native;           // keep the game's native top-down projected shadows; 0 = suppress, show only CSM
         ConfigValue<uint32_t>                 shadow_contact;        // enable screen-space contact shadows (INTZ ray-march)
         ConfigValue<uint32_t>                 shadow_contact_steps;  // ray-march steps

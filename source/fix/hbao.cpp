@@ -7,6 +7,7 @@
 
 #include "render/CDevice.hpp"
 
+#include "hta/CClipper.hpp"
 #include "hta/CMatrix.hpp"
 #include "hta/CPlane.hpp"
 #include "hta/m3d/Application.hpp"
@@ -374,6 +375,27 @@ namespace kraken::fix::hbao {
                         // duration of the object draws (depth-only: the sun-facing face still wins the z test).
                         r->SetCull(M3DCULL_NONE, false);
                         dev->SetCsmCullOverride(true);
+                        // #1 off-camera casters: the main opaque UpdateVis (above) flagged only nodes inside the
+                        // CAMERA frustum, so casters behind/beside the camera -- still inside this cascade's sun
+                        // box -- were culled from m_visSlots and their shadows popped in only when the camera
+                        // turned to face them. Rebuild the visible-node set from the SUN's POV. The sun view is
+                        // already set on the renderer (MatSet/MatSetProj/SetViewMatrix above), so the engine's own
+                        // CreateScreenFrustums reads it (MatGetOrgInv = sun eye, MatGet = sun view, square CSM
+                        // viewport => fovx==fovy) and builds a perspective cone from the sun eye. Real casters sit
+                        // near the ground, far from the high sun eye, so a wide cone (shadow_csm_caster_fov, a
+                        // full slope halved internally: half-slope 1.5 covers the +-half box CORNERS at camCenter
+                        // depth for any half/depthRange since sqrt(2)*half/(half+depthRange) < sqrt(2)) covers the
+                        // ortho box's caster region with margin; casters outside a cascade's box get projection-
+                        // clipped per cascade. UpdateVis rewrites only m_visSlots/m_transparentNodes -- NOT
+                        // m_enableMap (still 0xFF for the terrain disc) -- so the terrain draw above is untouched.
+                        // The candidate cell set is the same omnidirectional radius-12 disc the camera pass uses
+                        // (SortedCells), so nearby off-camera cells are already candidates; only the clipper's
+                        // per-node testSphere direction test changes. Restored to the camera set after the loop.
+                        static CClipper s_csmCasterFrusta;
+                        const float farz = 2.0f * half + 2.0f * depthRange + 1.0f;  // reach past the box far (ground) face
+                        s_csmCasterFrusta.CreateScreenFrustums(farz, 1.0f, 1.0f,
+                                                               Config::Instance().shadow_csm_caster_fov.value);
+                        w->m_sceneGraph.UpdateVis(false, s_csmCasterFrusta, false);
                         // Distance-based LOD across cascades: the near cascade renders the full opaque set
                         // (each node at its camera-distance LOD -> crisp near-object shadows); farther cascades
                         // use the cheaper low-detail caster set. Cull override keeps both winding-correct.
@@ -392,6 +414,15 @@ namespace kraken::fix::hbao {
                 dev->MatSet(saveMat);
                 r->MatSetProj(saveProj);
                 r->SetViewMatrix(saveView);
+
+                // Restore the CAMERA-visible node set: the per-cascade sun-POV UpdateVis above replaced
+                // m_visSlots/m_transparentNodes with the sun-visible set, but the transparent + overlay passes
+                // below (SGRF_DEFAULT_TRANS / SGRF_OVERLAYS) render from m_visSlots and must see the camera's set
+                // again. L->m_frustumCull is the camera clipper the main opaque pass used; the camera view is
+                // already restored above (UpdateVis reads MatGetOrgInv for its distance cull). Only needed when
+                // the sun UpdateVis ran (shadow_csm_objects).
+                if (Config::Instance().shadow_csm_objects.value)
+                    w->m_sceneGraph.UpdateVis(false, L->m_frustumCull, true);
 
                 static int s_csmLog = 0;
                 if ((s_csmLog++ & 255) == 0)
@@ -464,9 +495,10 @@ namespace kraken::fix::hbao {
         r->PopCull();
         r->PopZbState();
 
-        // WIP: overlay the CSM cascade depth maps as bottom-left thumbnails so we can eyeball what the
-        // sun-POV pass actually captured (drawn last, over the finished scene).
-        if (Config::Instance().shadow_csm.value)
+        // Dev overlay: the CSM cascade depth maps as bottom-left thumbnails, to eyeball what the sun-POV
+        // pass captured (drawn last, over the finished scene). Behind shadow_csm_debug (default 0) so it
+        // stays off in normal CSM play; RenderCsmDebug self-guards on the cascades existing.
+        if (Config::Instance().shadow_csm.value && Config::Instance().shadow_csm_debug.value)
             kraken::render::CDevice::Instance()->RenderCsmDebug();
 
         // debug: blit reflection/refraction RTs to screen -- gated off in normal play, body omitted.
