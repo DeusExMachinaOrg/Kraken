@@ -256,8 +256,9 @@ namespace kraken::fix::hbao {
         }
 
         r->SetFog(false, false);
-        w->m_sceneGraph.Render(SGRF_SHADOWS);
-        r->SetFog(cb(cfg.m_r_enableFog), false);
+        if (Config::Instance().shadow_native.value)   // shadow_native=0 suppresses the native (top-down projected)
+            w->m_sceneGraph.Render(SGRF_SHADOWS);      // shadows so only CSM shows -- and avoids the game's m_dsShadows
+        r->SetFog(cb(cfg.m_r_enableFog), false);       // menu path (that path crashes in CopyRenderTargetToTexture)
 
         // --- Cascaded shadow maps (depth-based, WIP) -------------------------------------------
         // Render caster depth from the sun POV into per-cascade INTZ maps, alongside the native
@@ -290,7 +291,10 @@ namespace kraken::fix::hbao {
                 // Cascades are camera-centered squares (per-cascade half-extents below), all rendered from
                 // the full camera-prepared cell disc. The apply pass later picks, per pixel, the smallest
                 // cascade that contains it.
-                const CVector groundCenter(camPos.x, groundY, camPos.z);
+                // #4: bind the shadow center to the camera ORIGIN + HEIGHT (camPos), not the ground under it,
+                // so the shadow volume tracks the camera in all three axes. depthRange gives the vertical
+                // headroom down to the terrain/casters below (raise shadow_csm_depth_range for a high camera).
+                const CVector camCenter(camPos.x, camPos.y, camPos.z);
                 // Per-cascade far distances (world units): each cascade i is a camera-centered square of
                 // half-extent csmDist[i], so shadow_csm_dist0/1/2 directly place the LOD transitions.
                 // Each is capped at the drawn-terrain edge (no terrain drawn past it to shadow) and kept
@@ -338,9 +342,9 @@ namespace kraken::fix::hbao {
                     const float depthRange = Config::Instance().shadow_csm_depth_range.value;
                     const float half = csmDist[i];
 
-                    const CVector eye = vadd(groundCenter, sunDir, half + depthRange);
+                    const CVector eye = vadd(camCenter, sunDir, half + depthRange);
                     CMatrix view, proj;
-                    CMatrix_lookAtLH(&view, &eye, &groundCenter, &up);
+                    CMatrix_lookAtLH(&view, &eye, &camCenter, &up);
                     CMatrix_orthoLH(&proj, 2.0f * half, 2.0f * half, 0.0f, 2.0f * half + 2.0f * depthRange);
                     dev->SetCsmCascadeVP(i, view * proj);  // world -> cascade i clip, for the screen-space apply pass
 
@@ -357,6 +361,25 @@ namespace kraken::fix::hbao {
                     // (case 0) only emits the outer LOD ring [drawRadius*lsTransitionDevider+1 .. drawRadius+1].
                     // For a shadow map we want every cell, so use the full-disc mode. Same solid VS/PS + lightmap.
                     L->DrawSolidLandscape(LRM::LRM_REFLECTION, 0);
+                    // Object casters: SGRF_LOW_DETAIL renders exactly the solid casters at low poly
+                    // (SgStaticModelNode + SgAnimatedModelNode + SgGameUnitNode -- verified in SceneGraph::Render
+                    // @0x23a850), the same flag the water-reflection pass uses for offscreen object draws. Runs
+                    // with the sun view/proj already set, so objects rasterize depth into this cascade. Uses the
+                    // camera-visible node set (from the main pass UpdateVis) -- fine for a first pass.
+                    if (Config::Instance().shadow_csm_objects.value) {
+                        r->SetZbState(ZB_ENABLE, false);
+                        // The object .fx materials re-set D3DRS_CULLMODE per draw (overriding SetCull), and the
+                        // sun-POV winding makes their back-face cull drop the sun-facing faces -> wrong/peter-
+                        // panned object shadows. Force both faces via the device-level cull override for the
+                        // duration of the object draws (depth-only: the sun-facing face still wins the z test).
+                        r->SetCull(M3DCULL_NONE, false);
+                        dev->SetCsmCullOverride(true);
+                        // Distance-based LOD across cascades: the near cascade renders the full opaque set
+                        // (each node at its camera-distance LOD -> crisp near-object shadows); farther cascades
+                        // use the cheaper low-detail caster set. Cull override keeps both winding-correct.
+                        w->m_sceneGraph.Render(i == 0 ? SGRF_DEFAULT_OPAQUE : SGRF_LOW_DETAIL);
+                        dev->SetCsmCullOverride(false);
+                    }
                     dev->CsmEndCascade();
                     D3DPERF_EndEvent();  // CSM cascade i
                 }
@@ -387,7 +410,10 @@ namespace kraken::fix::hbao {
         // shadow_csm + generated cascades + scene depth.
         kraken::render::CDevice::Instance()->RenderCsmApply();
 
-        if (!cb(cfg.m_dsShadows) || !w->m_weatherManager.GetShadowVisibilityFromWeather()) {
+        // Native DrawShadows renders grass internally; when native shadows are off/suppressed it's skipped,
+        // so render grass here (unshadowed) or it vanishes.
+        if (!Config::Instance().shadow_native.value || !cb(cfg.m_dsShadows)
+            || !w->m_weatherManager.GetShadowVisibilityFromWeather()) {
             ::vc3::deque<::vc3::pair<int, int>> empty;
             L->RenderGrass(empty);
         }

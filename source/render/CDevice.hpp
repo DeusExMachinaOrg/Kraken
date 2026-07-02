@@ -720,6 +720,8 @@ namespace kraken::render {
         IDirect3DPixelShader9* m_csmApplyPs{nullptr};
         void SetCsmScene(const hta::CMatrix& sceneViewProj) { m_csmInvViewProj = ~sceneViewProj; }
         void SetCsmCascadeVP(int i, const hta::CMatrix& vp) { m_csmViewProj[i] = vp; }
+        bool m_csmCullOverride{false};  // while true, effect-driven D3DRS_CULLMODE is forced to NONE (CSM object depth pass)
+        void SetCsmCullOverride(bool on) { m_csmCullOverride = on; }
         bool EnsureCsmApplyShader();
         void RenderCsmApply();              // screen-space sun-shadow sample + multiply into scene color
 

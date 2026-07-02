@@ -59,6 +59,11 @@ namespace kraken {
         this->shadow_csm_depth_range            = { "render",    "shadow_csm_depth_range",          600.0, true,  50.0,  100000.0    };
         this->shadow_csm_bias                   = { "render",    "shadow_csm_bias",                 0.0015, true, 0.0,   1.0         };
         this->shadow_csm_strength               = { "render",    "shadow_csm_strength",             0.5,   true,  0.0,   1.0         };
+        this->shadow_csm_fade                   = { "render",    "shadow_csm_fade",                 0.15,  true,  0.0,   1.0         };
+        this->shadow_csm_pcf                    = { "render",    "shadow_csm_pcf",                  1.5,   true,  0.0,   16.0        };
+        this->shadow_csm_blend                  = { "render",    "shadow_csm_blend",                0.1,   true,  0.0,   0.5         };
+        this->shadow_csm_objects                = { "render",    "shadow_csm_objects",              1,     true,  0,     1           };
+        this->shadow_native                     = { "render",    "shadow_native",                   1,     true,  0,     1           };
         this->shadow_contact                    = { "render",    "shadow_contact",                  1,     true,  0,     1           };
         this->shadow_contact_steps              = { "render",    "shadow_contact_steps",            16,    true,  1,     64          };
         this->shadow_contact_length             = { "render",    "shadow_contact_length",           2.0,   true,  0.0,   100.0       };
@@ -142,6 +147,11 @@ namespace kraken {
         this->LoadValue(&this->shadow_csm_dist2);
         this->LoadValue(&this->shadow_csm_depth_range);
         this->LoadValue(&this->shadow_csm_bias);
+        this->LoadValue(&this->shadow_csm_fade);
+        this->LoadValue(&this->shadow_csm_pcf);
+        this->LoadValue(&this->shadow_csm_blend);
+        this->LoadValue(&this->shadow_csm_objects);
+        this->LoadValue(&this->shadow_native);
         this->LoadValue(&this->shadow_csm_strength);
         this->LoadValue(&this->shadow_contact);
         this->LoadValue(&this->shadow_contact_steps);
@@ -202,6 +212,11 @@ namespace kraken {
         this->DumpValue(&this->shadow_csm_depth_range);
         this->DumpValue(&this->shadow_csm_bias);
         this->DumpValue(&this->shadow_csm_strength);
+        this->DumpValue(&this->shadow_csm_fade);
+        this->DumpValue(&this->shadow_csm_pcf);
+        this->DumpValue(&this->shadow_csm_blend);
+        this->DumpValue(&this->shadow_csm_objects);
+        this->DumpValue(&this->shadow_native);
         this->DumpValue(&this->shadow_contact);
         this->DumpValue(&this->shadow_contact_steps);
         this->DumpValue(&this->shadow_contact_length);

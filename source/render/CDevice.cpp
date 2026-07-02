@@ -3095,6 +3095,12 @@ namespace kraken::render {
     };
 
     HRESULT CDevice::setRenderState(D3DRENDERSTATETYPE state, uint32_t val) {
+        // CSM object-caster depth pass: object .fx effects re-set D3DRS_CULLMODE per draw (routed here via
+        // the effect StateManager), overriding our SetCull. The sun-POV winding makes their back-face cull
+        // drop the sun-facing faces -> wrong/peter-panned shadows. Force both faces here for the duration.
+        // (SetCull writes the device directly, so terrain is unaffected -- only effect-driven cull passes here.)
+        if (m_csmCullOverride && state == D3DRS_CULLMODE)
+            val = D3DCULL_NONE;
         if (this->m_curRenderState[state] == val)
             return 0;
         this->m_stats.swRenderStates++;
@@ -4478,7 +4484,9 @@ namespace kraken::render {
     void CDevice::SetCull(Cull mode, bool force) {
         m_stackCull[m_stackTopCull] = mode;
 
-        D3DCULL cullMode = m3dCullToD3dCull[mode];
+        // CSM object depth pass: force both faces regardless of what the per-draw object render requests.
+        // Covers the direct-SetCull path (the effect-StateManager path is forced in setRenderState).
+        D3DCULL cullMode = m_csmCullOverride ? D3DCULL_NONE : m3dCullToD3dCull[mode];
         if (m_curRenderState[D3DRS_CULLMODE] != cullMode) {
             ++m_stats.swRenderStates;
             m_curRenderState[D3DRS_CULLMODE] = cullMode;
@@ -6810,10 +6818,11 @@ namespace kraken::render {
         if (m_csmApplyPs)
             return true;
         // Screen-space (deferred) sun shadows: reconstruct world pos from the scene INTZ depth, project it
-        // into each cascade's ortho map, take the first cascade that contains it, 3x3 PCF depth-compare, and
-        // output a grey `shade` that the ZERO/SRCCOLOR blend multiplies into the scene (shadowed -> darker).
-        // Matrices are row_major + mul(vector, matrix) to match the engine's mViewProj = MatGet()*MatGetProj().
-        //   c0..c3 InvViewProj(scene)   c4..c15 CsmViewProj[3]   c16 (bias, strength, texel, _)
+        // into each cascade's ortho map, PCF depth-compare with a per-pixel-rotated 12-tap Poisson kernel
+        // (soft, dithered -> no banding), cross-fade between adjacent cascades at their boundaries (no seam)
+        // and out at the outer edge, then output a grey `shade` the ZERO/SRCCOLOR blend multiplies into the
+        // scene. Matrices are row_major + mul(vector, matrix) to match mViewProj = MatGet()*MatGetProj().
+        //   c0..c3 InvViewProj(scene)  c4..c15 CsmViewProj[3]  c16 (bias,strength,texel,fade)  c17 (pcfRadius,blend,_,_)
         static const char* src =
             "sampler2D SceneDepth : register(s0);\n"
             "sampler2D Csm0 : register(s1);\n"
@@ -6821,32 +6830,57 @@ namespace kraken::render {
             "sampler2D Csm2 : register(s3);\n"
             "row_major float4x4 InvViewProj    : register(c0);\n"
             "row_major float4x4 CsmViewProj[3] : register(c4);\n"
-            "float4 P : register(c16);\n"  // x=bias y=strength z=texel
+            "float4 P  : register(c16);\n"  // x=bias y=strength z=texel w=fadeBand
+            "float4 P2 : register(c17);\n"  // x=pcfRadius(texels) y=blendBand
+            "static const float2 POISSON[12] = {\n"
+            "  float2(-0.1560,-0.9159), float2( 0.4977,-0.7484), float2( 0.9014,-0.2634),\n"
+            "  float2( 0.7561, 0.5039), float2( 0.0983, 0.8341), float2(-0.4934, 0.6572),\n"
+            "  float2(-0.8909, 0.0616), float2(-0.6559,-0.5622), float2(-0.0398,-0.4189),\n"
+            "  float2( 0.4234,-0.1274), float2( 0.1938, 0.3968), float2(-0.3617, 0.1913) };\n"
+            "float pcf(sampler2D tex, float2 suv, float refZ, float rad, float2 rc) {\n"
+            "  float s = 0;\n"
+            "  [unroll] for (int k = 0; k < 12; k++) {\n"
+            "    float2 o = POISSON[k];\n"
+            "    float2 ro = float2(o.x*rc.x - o.y*rc.y, o.x*rc.y + o.y*rc.x) * rad;\n"  // rotate + scale
+            "    s += (refZ <= tex2D(tex, suv + ro).r) ? 1.0 : 0.0;\n"                  // lit where caster no nearer sun
+            "  }\n"
+            "  return s / 12.0;\n"
+            "}\n"
             "float4 main(float2 uv : TEXCOORD0) : COLOR0 {\n"
             "  float d = tex2D(SceneDepth, uv).r;\n"
-            "  if (d >= 0.9999) return float4(1,1,1,1);\n"           // sky / far plane -> lit
+            "  if (d >= 0.9999) return float4(1,1,1,1);\n"           // sky / far -> lit
             "  float2 ndc = float2(uv.x*2-1, 1-uv.y*2);\n"
             "  float4 wp4 = mul(float4(ndc, d, 1), InvViewProj);\n"  // scene depth -> world pos
             "  float3 wp  = wp4.xyz / wp4.w;\n"
-            "  float bias = P.x, strength = P.y, texel = P.z;\n"
-            "  float lit  = 1.0;\n"
-            "  [unroll] for (int i = 0; i < 3; i++) {\n"
-            "    float4 sp = mul(float4(wp, 1), CsmViewProj[i]);\n"  // world -> cascade i clip (ortho, w==1)
-            "    float2 suv = float2(sp.x*0.5+0.5, -sp.y*0.5+0.5);\n"
-            "    if (all(suv > 0.0) && all(suv < 1.0) && sp.z > 0.0 && sp.z < 1.0) {\n"
-            "      float s = 0;\n"
-            "      [unroll] for (int y = -1; y <= 1; y++)\n"
-            "      [unroll] for (int x = -1; x <= 1; x++) {\n"
-            "        float2 o = float2(x, y) * texel;\n"
-            "        float z;\n"
-            "        if (i == 0) z = tex2D(Csm0, suv + o).r;\n"
-            "        else if (i == 1) z = tex2D(Csm1, suv + o).r;\n"
-            "        else z = tex2D(Csm2, suv + o).r;\n"
-            "        s += ((sp.z - bias) <= z) ? 1.0 : 0.0;\n"       // lit where the caster is no nearer the sun
-            "      }\n"
-            "      lit = s / 9.0;\n"
-            "      break;\n"                                          // first (tightest) containing cascade wins
-            "    }\n"
+            "  float bias = P.x, strength = P.y, texel = P.z, fadeBand = P.w;\n"
+            "  float rad = P2.x * texel;\n"
+            "  float blendBand = max(P2.y, 1e-4);\n"
+            "  float4 sp0 = mul(float4(wp,1), CsmViewProj[0]);\n"
+            "  float4 sp1 = mul(float4(wp,1), CsmViewProj[1]);\n"
+            "  float4 sp2 = mul(float4(wp,1), CsmViewProj[2]);\n"
+            "  float2 u0 = float2(sp0.x*0.5+0.5, -sp0.y*0.5+0.5);\n"
+            "  float2 u1 = float2(sp1.x*0.5+0.5, -sp1.y*0.5+0.5);\n"
+            "  float2 u2 = float2(sp2.x*0.5+0.5, -sp2.y*0.5+0.5);\n"
+            "  bool in0 = all(u0>0.0)&&all(u0<1.0)&&sp0.z>0.0&&sp0.z<1.0;\n"
+            "  bool in1 = all(u1>0.0)&&all(u1<1.0)&&sp1.z>0.0&&sp1.z<1.0;\n"
+            "  bool in2 = all(u2>0.0)&&all(u2<1.0)&&sp2.z>0.0&&sp2.z<1.0;\n"
+            "  float ang = frac(sin(dot(uv, float2(12.9898,78.233)))*43758.5453) * 6.2831853;\n"  // per-pixel rotation
+            "  float2 rc = float2(cos(ang), sin(ang));\n"
+            "  float lit = 1.0;\n"
+            "  if (in0) {\n"                                          // tightest cascade wins; blend to next at its edge
+            "    lit = pcf(Csm0, u0, sp0.z - bias, rad, rc);\n"
+            "    float e = max(abs(u0.x-0.5), abs(u0.y-0.5)) * 2.0;\n"
+            "    float t = saturate((e - (1.0-blendBand)) / blendBand);\n"
+            "    lit = lerp(lit, pcf(Csm1, u1, sp1.z - bias, rad, rc), t);\n"
+            "  } else if (in1) {\n"
+            "    lit = pcf(Csm1, u1, sp1.z - bias, rad, rc);\n"
+            "    float e = max(abs(u1.x-0.5), abs(u1.y-0.5)) * 2.0;\n"
+            "    float t = saturate((e - (1.0-blendBand)) / blendBand);\n"
+            "    lit = lerp(lit, pcf(Csm2, u2, sp2.z - bias, rad, rc), t);\n"
+            "  } else if (in2) {\n"
+            "    lit = pcf(Csm2, u2, sp2.z - bias, rad, rc);\n"
+            "    float e = max(abs(u2.x-0.5), abs(u2.y-0.5)) * 2.0;\n"
+            "    lit = lerp(1.0, lit, saturate((1.0 - e) / max(fadeBand, 1e-4)));\n"   // outer edge fadeout
             "  }\n"
             "  float shade = lerp(1.0 - strength, 1.0, lit);\n"      // shadowed -> darker
             "  return float4(shade, shade, shade, 1);\n"
@@ -6895,8 +6929,8 @@ namespace kraken::render {
         IDirect3DBaseTexture9* svTex[4]     = {};
         for (int i = 0; i < 4; ++i)
             dev->GetTexture(i, &svTex[i]);
-        float svC[17][4];
-        dev->GetPixelShaderConstantF(0, &svC[0][0], 17);  // c0..c16
+        float svC[18][4];
+        dev->GetPixelShaderConstantF(0, &svC[0][0], 18);  // c0..c17
         DWORD svZ, svZW, svCull, svBlend, svSrc, svDest, svAlpha, svFog, svStencil, svCW;
         dev->GetRenderState(D3DRS_ZENABLE, &svZ);
         dev->GetRenderState(D3DRS_ZWRITEENABLE, &svZW);
@@ -6923,8 +6957,10 @@ namespace kraken::render {
             dev->SetPixelShaderConstantF(4 + i * 4, m_csmViewProj[i].array, 4);
         const Config& cfg   = Config::Instance();
         const float   texel = 1.0f / (float) m_csmResolution;
-        const float   p16[4] = {cfg.shadow_csm_bias.value, cfg.shadow_csm_strength.value, texel, 0.0f};
+        const float   p16[4] = {cfg.shadow_csm_bias.value, cfg.shadow_csm_strength.value, texel, cfg.shadow_csm_fade.value};
         dev->SetPixelShaderConstantF(16, p16, 1);
+        const float   p17[4] = {cfg.shadow_csm_pcf.value, cfg.shadow_csm_blend.value, 0.0f, 0.0f};
+        dev->SetPixelShaderConstantF(17, p17, 1);
 
         // Fullscreen quad over the current viewport (pre-transformed, half-texel offset) -- same as HBAO.
         const float x0 = (float) m_curViewportD3D.X - 0.5f;
@@ -7002,7 +7038,7 @@ namespace kraken::render {
             if (svTex[i])
                 svTex[i]->Release();
         }
-        dev->SetPixelShaderConstantF(0, &svC[0][0], 17);
+        dev->SetPixelShaderConstantF(0, &svC[0][0], 18);
         dev->SetPixelShader(svPs);
         if (svPs)
             svPs->Release();
