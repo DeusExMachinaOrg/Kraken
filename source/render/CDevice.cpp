@@ -5714,6 +5714,24 @@ namespace kraken::render {
     };
 
     const hta::CVector& CDevice::GetViewOrigin() const {
+        // CSM caster pass forces the CAMERA eye (the view stack is the SUN there) so the native tree
+        // LOD/impostor picker sizes casters by camera distance -> near trees cast the alpha mesh, not a
+        // billboard impostor. See SetForcedViewOrigin.
+        if (m_viewOriginOverride) {
+            m_viewOrigin = m_viewOriginForced;
+            return m_viewOrigin;
+        }
+        // Derive the eye from the VIEW stack (the camera), not the separately-maintained m_viewMatrix.
+        // The game drives the per-frame camera through the Mat stack (MatSet) and does not reliably call
+        // SetViewMatrix, so m_viewOrigin -- written only there -- can be stale/zero. A wrong eye makes
+        // AnimatedModelsServer::RenderNodeSet compute a huge camera->tree distance for EVERY tree, so they
+        // all snap to the crudest LOD / billboard impostor instead of the alpha-clipped mesh (distSq is
+        // compared against 150^2 / 300^2 / g_impostorThreshold^2). The per-object WORLD transform lives on
+        // a SEPARATE stack (m_matWorldStack) -- terrain/objects render via world*view*proj off m_matViewStack
+        // -- so the view stack holds the camera throughout rendering: (~view).origin is the true eye for every
+        // caller (tree LOD, specular ViewPos). If SetViewMatrix *was* called with the matching camera view,
+        // this yields the identical value, so it is safe either way.
+        m_viewOrigin = (~m_matViewStack[m_matViewStackTop]).GetOrigin();
         return m_viewOrigin;
     };
 

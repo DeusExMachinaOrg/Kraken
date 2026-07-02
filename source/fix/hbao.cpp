@@ -375,6 +375,13 @@ namespace kraken::fix::hbao {
                         // duration of the object draws (depth-only: the sun-facing face still wins the z test).
                         r->SetCull(M3DCULL_NONE, false);
                         dev->SetCsmCullOverride(true);
+                        // Shadow-caster LOD by CAMERA distance, not the sun eye. The native tree picker
+                        // (AnimatedModelsServer::RenderNodeSet) sizes each caster by distSq from GetViewOrigin()
+                        // vs g_impostorThreshold(500u); the view is the SUN here, so every tree measures as
+                        // "far" -> billboard impostor -> a camera-facing card casts a wrong/flat shadow instead
+                        // of the alpha-clipped canopy. Force the camera eye so near trees fall under the LOD/
+                        // impostor thresholds and cast the real mesh. Cleared right after the draw.
+                        dev->SetForcedViewOrigin(camPos);
                         // #1 off-camera casters: the main opaque UpdateVis (above) flagged only nodes inside the
                         // CAMERA frustum, so casters behind/beside the camera -- still inside this cascade's sun
                         // box -- were culled from m_visSlots and their shadows popped in only when the camera
@@ -400,6 +407,7 @@ namespace kraken::fix::hbao {
                         // (each node at its camera-distance LOD -> crisp near-object shadows); farther cascades
                         // use the cheaper low-detail caster set. Cull override keeps both winding-correct.
                         w->m_sceneGraph.Render(i == 0 ? SGRF_DEFAULT_OPAQUE : SGRF_LOW_DETAIL);
+                        dev->ClearForcedViewOrigin();
                         dev->SetCsmCullOverride(false);
                     }
                     dev->CsmEndCascade();

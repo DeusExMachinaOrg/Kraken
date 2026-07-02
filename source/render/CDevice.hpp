@@ -671,7 +671,7 @@ namespace kraken::render {
         /* 0xf12c */ bool m_isNV30;
         /* 0xf130 */ hta::CMatrix m_viewMatrix;
         /* 0xf170 */ hta::CMatrix m_viewMatrixInv;
-        /* 0xf1b0 */ hta::CVector m_viewOrigin;
+        /* 0xf1b0 */ mutable hta::CVector m_viewOrigin;  // mutable: GetViewOrigin() (const) derives it from the view stack on read
         /* 0xf1bc */ bool m_viewMatrixWasSetThisFrame;
         /* 0xf1c0 */ ID3DXFont* m_pSysFont{nullptr};
         /* 0xf1c4 */ DXCursorInfo m_currentDXCursorInfo;
@@ -722,6 +722,15 @@ namespace kraken::render {
         void SetCsmCascadeVP(int i, const hta::CMatrix& vp) { m_csmViewProj[i] = vp; }
         bool m_csmCullOverride{false};  // while true, effect-driven D3DRS_CULLMODE is forced to NONE (CSM object depth pass)
         void SetCsmCullOverride(bool on) { m_csmCullOverride = on; }
+        // While set, GetViewOrigin() returns this forced eye instead of the view-stack (sun) origin. The CSM
+        // gen sets the view to the SUN, so the native tree LOD/impostor picker (RenderNodeSet, distSq vs
+        // g_impostorThreshold) would measure every tree against the far sun eye -> all billboard impostors in
+        // the shadow (a camera-facing card casts a wrong shadow). Force the CAMERA eye during the caster draw
+        // so shadow LOD follows camera distance -> near trees cast the full alpha-clipped mesh.
+        bool         m_viewOriginOverride{false};
+        hta::CVector m_viewOriginForced;
+        void SetForcedViewOrigin(const hta::CVector& o) { m_viewOriginForced = o; m_viewOriginOverride = true; }
+        void ClearForcedViewOrigin() { m_viewOriginOverride = false; }
         bool EnsureCsmApplyShader();
         void RenderCsmApply();              // screen-space sun-shadow sample + multiply into scene color
 
