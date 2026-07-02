@@ -31,6 +31,7 @@
 #include "fix/gunlights.hpp"
 #include "fix/hbao.hpp"
 #include "fix/grassclip.hpp"
+#include "fix/timeofday.hpp"
 
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
@@ -90,5 +91,6 @@ namespace kraken {
         fix::gunlights::Apply();
         fix::hbao::Apply();
         fix::grassclip::Apply();
+        fix::timeofday::Apply();
     };
 };

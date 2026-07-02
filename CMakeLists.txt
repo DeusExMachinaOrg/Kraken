@@ -72,6 +72,7 @@ add_library(kraken SHARED
     source/fix/gunlights.cpp
     source/fix/hbao.cpp
     source/fix/grassclip.cpp
+    source/fix/timeofday.cpp
 
     source/render/native/Image.cpp
     source/render/native/Debug.cpp
