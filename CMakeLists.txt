@@ -10,7 +10,38 @@ if(NOT WIN32)
     message(FATAL_ERROR "This project is Windows-only (Win32)")
 endif()
 
-add_subdirectory(extern/lim)
+# Find DirectX SDK
+if(DEFINED ENV{DXSDK_DIR})
+    set(DXSDK_DIR $ENV{DXSDK_DIR})
+    message(STATUS "Found DirectX SDK: ${DXSDK_DIR}")
+else()
+    message(WARNING "DXSDK_DIR environment variable not set. Trying default paths...")
+    # Try common installation paths
+    if(EXISTS "C:/Program Files (x86)/Microsoft DirectX SDK (June 2010)")
+        set(DXSDK_DIR "C:/Program Files (x86)/Microsoft DirectX SDK (June 2010)")
+    elseif(EXISTS "C:/DXSDK")
+        set(DXSDK_DIR "C:/DXSDK")
+    else()
+        message(FATAL_ERROR "Could not find DirectX SDK. Please set DXSDK_DIR environment variable.")
+    endif()
+endif()
+
+# Set DirectX paths
+set(DXSDK_INCLUDE_DIR "${DXSDK_DIR}/Include")
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(DXSDK_LIB_DIR "${DXSDK_DIR}/Lib/x64")
+else()
+    set(DXSDK_LIB_DIR "${DXSDK_DIR}/Lib/x86")
+endif()
+
+# Verify DirectX paths exist
+if(NOT EXISTS "${DXSDK_INCLUDE_DIR}")
+    message(FATAL_ERROR "DirectX SDK include directory not found: ${DXSDK_INCLUDE_DIR}")
+endif()
+if(NOT EXISTS "${DXSDK_LIB_DIR}")
+    message(FATAL_ERROR "DirectX SDK library directory not found: ${DXSDK_LIB_DIR}")
+endif()
+
 add_subdirectory(extern/hta)
 
 # Create the DLL
@@ -33,19 +64,32 @@ add_library(kraken SHARED
     source/fix/tactics.cpp
     source/fix/complexschwarz.cpp
     source/fix/skinfix.cpp
+    source/fix/render.cpp
     source/fix/cctlleakfix.cpp
     source/fix/locationdebug.cpp
     source/fix/difficultywndescapefix.cpp
     source/fix/mortarvolleylauncherfix.cpp
     source/fix/gunlights.cpp
+    source/fix/hbao.cpp
+    source/fix/grassclip.cpp
+
+    source/render/native/Image.cpp
+    source/render/native/Debug.cpp
+    source/render/native/Uniform.cpp
+    source/render/CDevice.cpp
 
     source/ext/logger.cpp
     source/ext/impulse.cpp
     source/ext/runtime.cpp
+    source/stdafx.cpp
 )
 
 # Include directories
-target_include_directories(kraken PRIVATE include)
+target_include_directories(kraken PRIVATE
+    include
+    source
+    ${DXSDK_INCLUDE_DIR}
+)
 
 # Windows-specific settings
 if(MSVC)
@@ -67,11 +111,15 @@ endif()
 # Define WIN32 for compatibility
 target_compile_definitions(kraken PRIVATE WIN32_LEAN_AND_MEAN)
 
-# Link Windows libraries
+# Link DirectX libraries
+target_link_directories(kraken PRIVATE ${DXSDK_LIB_DIR})
+
+# Link Windows and DirectX libraries
 target_link_libraries(kraken PRIVATE
     kernel32
     user32
-    lim
+    d3d9
+    d3dx9
     hta
 )
 

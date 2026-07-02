@@ -23,11 +23,15 @@
 #include "fix/tactics.hpp"
 #include "fix/complexschwarz.hpp"
 #include "fix/skinfix.hpp"
+#include "fix/render.hpp"
 #include "fix/cctlleakfix.hpp"
 #include "fix/locationdebug.hpp"
 #include "fix/difficultywndescapefix.hpp"
 #include "fix/mortarvolleylauncherfix.hpp"
 #include "fix/gunlights.hpp"
+#include "fix/hbao.hpp"
+#include "fix/grassclip.hpp"
+
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
     Config* G_CONFIG = new Config();
@@ -78,10 +82,13 @@ namespace kraken {
         fix::tactics::Apply();
         fix::complexschwarz::Apply();
         fix::skinfix::Apply();
+        fix::render::Apply();
         fix::cctlleakfix::Apply();
         fix::locationdebug::Apply();
         fix::difficultywndescapefix::Apply();
         fix::mortarvolleylauncherfix::Apply();
         fix::gunlights::Apply();
+        fix::hbao::Apply();
+        fix::grassclip::Apply();
     };
 };

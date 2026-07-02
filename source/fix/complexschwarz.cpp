@@ -331,19 +331,19 @@ namespace kraken::fix::complexschwarz {
         uint32_t total_wares_schwarz{};
         if (gun_gadgets_price) {
             uint32_t max_gun_gadget_schwarz = (uint32_t)(guns_schwarz * gun_gadgets_max_schwarz_part);
-            total_gadgets_schwarz += min(gun_gadgets_price, max_gun_gadget_schwarz);
-            LOG_DEBUG("[WeaponGadgets final: %d, Base: %d] WeaponGadgetMaxSchwarzPart (from base vehicle): %.2f", min(gun_gadgets_price, max_gun_gadget_schwarz), gun_gadgets_price, gun_gadgets_max_schwarz_part);
+            total_gadgets_schwarz += std::min(gun_gadgets_price, max_gun_gadget_schwarz);
+            LOG_DEBUG("[WeaponGadgets final: %d, Base: %d] WeaponGadgetMaxSchwarzPart (from base vehicle): %.2f", std::min(gun_gadgets_price, max_gun_gadget_schwarz), gun_gadgets_price, gun_gadgets_max_schwarz_part);
         }
         if (common_gadgets_price) {
             uint32_t max_common_gadget_schwarz = (uint32_t)(intermediate_schwarz * common_gadgets_max_schwarz_part);
-            total_gadgets_schwarz += min(common_gadgets_price, max_common_gadget_schwarz);
-            LOG_DEBUG("[CommonGadgets final: %d, Base: %d] CommonGadgetMaxSchwarzPart (from base vehicle): %.2f", min(common_gadgets_price, max_common_gadget_schwarz), // remove all debug duplication of calculations
+            total_gadgets_schwarz += std::min(common_gadgets_price, max_common_gadget_schwarz);
+            LOG_DEBUG("[CommonGadgets final: %d, Base: %d] CommonGadgetMaxSchwarzPart (from base vehicle): %.2f", std::min(common_gadgets_price, max_common_gadget_schwarz), // remove all debug duplication of calculations
                       common_gadgets_price, max_common_gadget_schwarz);
         }
 
         if (wares_price) {
             uint32_t maximum_wares_part_of_schwarz = (uint32_t)(intermediate_schwarz * wares_max_schwarz_part);
-            total_wares_schwarz = min(wares_price, maximum_wares_part_of_schwarz);
+            total_wares_schwarz = std::min(wares_price, maximum_wares_part_of_schwarz);
             LOG_DEBUG("[Wares final: %d, Base: %d] WaresMaxSchwarzPart: %.2f", total_wares_schwarz, wares_price, wares_max_schwarz_part);
             intermediate_schwarz += total_wares_schwarz;
         }
@@ -374,7 +374,7 @@ namespace kraken::fix::complexschwarz {
         else
             calculated_from_player = (int32_t)(player->GetMoney() * protInfo->m_playerMoneyPart);
 
-        return -min(calculated_from_player, protInfo->m_minReward);
+        return -std::min(calculated_from_player, protInfo->m_minReward);
     }
 
     uint32_t __fastcall GetPlayerSchwarz(hta::ai::Player* player, void* _) {

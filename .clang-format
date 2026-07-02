@@ -2,8 +2,14 @@ BasedOnStyle: LLVM
 BreakBeforeBraces: Attach
 AllowShortFunctionsOnASingleLine: Empty
 CompactNamespaces: false
-ColumnLimit: 240 # Temp width
+ColumnLimit: 140
 NamespaceIndentation: All
 IndentWidth: 4
 FixNamespaceComments: false
 PointerAlignment: Left
+BinPackArguments: false
+BinPackParameters: false
+AllowAllArgumentsOnNextLine: true
+AlignConsecutiveAssignments: Consecutive
+Cpp11BracedListStyle: true
+AlignAfterOpenBracket: BlockIndent

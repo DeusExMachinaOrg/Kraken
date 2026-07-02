@@ -1,0 +1,36 @@
+#version SM30
+//////////////////////////////////////////////////////////////////////////////
+//
+// Workfile: landscapeSolid_ps11.ps
+// Created by: Goryh
+//
+// $Id: landscapeDeep_ps20.ps,v 1.2 2005/07/06 05:36:55 goryh Exp $
+//
+//////////////////////////////////////////////////////////////////////////////
+
+#include "lib.fx"
+
+sampler RefractionSampler : register(s0);
+
+
+// vertex shader output structure
+struct VS_OUTPUT
+{
+	float4 Pos	: POSITION;
+	float4 Tex	: TEXCOORD0;
+	float4 col      : COLOR0;
+};
+
+
+// ps_3_0: sample the full-frame at the pixel's real screen position (VPOS) instead of the interpolated
+// projective texcoord v.Tex/v.Tex.w -- the projective coords lose precision at the far plane and
+// interpolate to garbage (the refraction flickered). Here VPOS arrives as NDC (-1..1), so map it to
+// the [0,1] screen coord that indexes the screen-res full-frame. If the result is vertically flipped,
+// change to  vpos * float2(0.5, -0.5) + 0.5 .
+REAL4 LandscapePS( VS_OUTPUT v, float2 vpos : VPOS ) : COLOR
+{
+	float2 texcoord = (vpos * 0.5) / 256.0;
+	float4 col = tex2D( RefractionSampler, texcoord ) * v.col;
+	col.a = v.col.a;
+	return col;
+}

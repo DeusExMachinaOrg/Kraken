@@ -71,6 +71,32 @@ namespace kraken {
         ConfigValue<uint32_t>                 cctl_leak_fix;
         ConfigValue<uint32_t>                 mortarvolleylauncherfix;
         ConfigValue<uint32_t>                 gunlights;
+        ConfigValue<uint32_t>                 hbao;
+        ConfigValue<float>                    hbao_radius;
+        ConfigValue<float>                    hbao_intensity;
+        ConfigValue<float>                    hbao_bias;
+        ConfigValue<float>                    hbao_fade_start;
+        ConfigValue<float>                    hbao_fade_end;
+        ConfigValue<uint32_t>                 grass_clip;
+        // Cascaded shadow maps (depth-based) + screen-space contact shadows
+        ConfigValue<uint32_t>                 shadow_csm;            // master enable for the reimplemented CSM path
+        ConfigValue<uint32_t>                 shadow_csm_resolution; // per-cascade depth map resolution (square)
+        ConfigValue<float>                    shadow_csm_dist0;      // cascade 0 far distance (crisp near), world units
+        ConfigValue<float>                    shadow_csm_dist1;      // cascade 1 far distance
+        ConfigValue<float>                    shadow_csm_dist2;      // cascade 2 far distance (outer reach); each capped at the drawn-terrain edge, kept monotonic
+        ConfigValue<float>                    shadow_csm_depth_range;  // light-space +/- depth caught around the camera (caster height above / terrain below)
+        ConfigValue<float>                    shadow_csm_bias;         // depth-compare bias in normalized [0,1] cascade depth (peter-panning vs acne)
+        ConfigValue<float>                    shadow_csm_strength;     // how dark a fully-shadowed pixel gets (0=no shadow .. 1=black)
+        ConfigValue<float>                    shadow_csm_fade;         // shadow fade band at the outer cascade edge, fraction 0..1 (0 = hard cutoff)
+        ConfigValue<float>                    shadow_csm_pcf;          // PCF filter radius in shadow texels (softness); rotated 12-tap Poisson
+        ConfigValue<float>                    shadow_csm_blend;        // cross-cascade blend band at boundaries, fraction 0..1 (hides cascade seams)
+        ConfigValue<uint32_t>                 shadow_csm_objects;      // render scene-graph casters (models + vehicles) into the cascades so objects cast shadows
+        ConfigValue<float>                    shadow_csm_caster_fov;   // sun-POV vis cone width (slope) for off-camera casters; wider = more casters, projection-clipped per cascade
+        ConfigValue<uint32_t>                 shadow_csm_debug;        // overlay the per-cascade depth maps as bottom-left thumbnails (dev only; off in normal play)
+        ConfigValue<uint32_t>                 shadow_native;           // keep the game's native top-down projected shadows; 0 = suppress, show only CSM
+        ConfigValue<uint32_t>                 shadow_contact;        // enable screen-space contact shadows (INTZ ray-march)
+        ConfigValue<uint32_t>                 shadow_contact_steps;  // ray-march steps
+        ConfigValue<float>                    shadow_contact_length; // contact ray length, world units
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;
@@ -80,6 +106,9 @@ namespace kraken {
         ConfigValue<bool>                     peace_price_from_schwarz;
         ConfigValue<bool>                     no_money_in_player_schwarz;
         ConfigValue<std::unordered_map<std::string, uint32_t, std::hash<std::string_view>, std::equal_to<>>> schwarz_overrides;
+
+        ConfigValue<int32_t>                  gui_resolution_x;
+        ConfigValue<int32_t>                  gui_resolution_y;
 
     public:
          Config();

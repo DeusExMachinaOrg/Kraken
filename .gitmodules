@@ -1,6 +1,3 @@
-[submodule "extern/lim"]
-	path = extern/lim
-	url = https://github.com/ThePlain/lim
 [submodule "extern/hta"]
 	path = extern/hta
 	url = https://github.com/DeusExMachinaOrg/Headers

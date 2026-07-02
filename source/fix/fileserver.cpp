@@ -26,6 +26,6 @@ namespace kraken::fix::fileserver {
 
     void Apply(void) {
         LOG_INFO("Feature enabled");
-        routines::Redirect(0x01E4, (void*) 0x00664440, (void*) &Fixed_AddFile);
+        // routines::Redirect(0x01E4, (void*) 0x00664440, (void*) &Fixed_AddFile);
     };
 };
