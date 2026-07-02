@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <functional>
+#include <vector>
 
 namespace kraken::impulse {
     enum eImpulse: uint32_t {
@@ -303,6 +304,21 @@ namespace kraken::impulse {
     };
 
     using Listener = void(*)(const Impulse&);
+
+    // A controller currently visible to the winmm joystick API (wheels, XInput
+    // pads, DualSense, ...). Used by the control-profile menu to let the player
+    // pick a device from a list, and maps directly onto the [wheel] device id.
+    struct DeviceInfo {
+        uint32_t id;          // winmm joystick index (== [wheel] device)
+        char     name[64];    // product name (JOYCAPS.szPname)
+        uint32_t buttons;     // button count
+        uint32_t axes;        // axis count
+    };
+
+    // Snapshot of the controllers seen present by the last joystick poll. Safe to
+    // call from the message-pump thread (where the poll runs); the menu reads it
+    // on the same thread.
+    std::vector<DeviceInfo> GetDevices(void);
 
     void Init(void);
     void Clear(void);

@@ -8,6 +8,10 @@ namespace kraken::fix::dualsense {
     // the output worker. No-op unless [dualsense] enabled.
     void Apply();
 
+    // Re-read the [dualsense] config after a control-profile switch (gains +
+    // enable/disable). The HID device is still opened lazily in Update.
+    void Reapply();
+
     // Called once per frame from the controls hook while a live player vehicle
     // exists: derives rumble and adaptive-trigger force (L2/R2 resistance, plus a
     // kick on impacts/damage and a buzz on rough ground) from the vehicle's motion

@@ -39,6 +39,8 @@
 #include "fix/gamepad.hpp"
 #include "fix/dualsense.hpp"
 #include "fix/xinputrumble.hpp"
+#include "fix/inputprofiles.hpp"
+#include "fix/controlprofilesui.hpp"
 #include "fix/gunreturn.hpp"
 
 namespace kraken {
@@ -104,6 +106,11 @@ namespace kraken {
         fix::gamepad::Apply();
         fix::dualsense::Apply();
         fix::xinputrumble::Apply();
+        // Control profiles: owns the engine bindings-load detour and activates the
+        // active profile (migrating kraken.ini input sections on first run). Must
+        // come after the input modules' Apply so their Reapply hooks are ready.
+        fix::inputprofiles::Apply();
+        fix::controlprofilesui::Apply();
         fix::gunreturn::Apply();
         // Appendix (thorn melee weapons) + the Meridian ram-collision formulas.
         // Gated by [constants] appendix so it can be fully disabled (vanilla HTA ram

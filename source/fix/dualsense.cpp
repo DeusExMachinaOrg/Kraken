@@ -647,12 +647,11 @@ namespace kraken::fix::dualsense {
         g_trigBuzz.store(0, std::memory_order_relaxed);
     }
 
-    void Apply() {
+    // Re-read the [dualsense] config snapshot. Shared by Apply()/Reapply() so a
+    // control-profile switch can pick up new gains (or enable/disable) live.
+    static void LoadConfig() {
         const Config& config = Config::Instance();
-        if (config.dualsense.value == 0)
-            return;
-
-        g_enabled     = true;
+        g_enabled     = config.dualsense.value != 0;
         g_strength    = config.dualsense_strength.value;
         g_impactGain  = config.dualsense_impact.value;
         g_offroadGain = config.dualsense_offroad.value;
@@ -668,15 +667,29 @@ namespace kraken::fix::dualsense {
         g_trigKickGain   = config.dualsense_trigger_kick.value;
         g_trigDamageGain = config.dualsense_trigger_damage.value;
         g_trigBuzzGain   = config.dualsense_trigger_buzz.value;
+    }
 
+    static void EnsureLockInit() {
         if (!g_lockInit) {
             InitializeCriticalSection(&g_lock);
             g_lockInit = true;
         }
+    }
 
+    void Apply() {
+        LoadConfig();
+        if (!g_enabled)
+            return;
+        EnsureLockInit();
         // Device is opened lazily on the first Update (the pad may connect after
         // launch), so just announce intent here.
         LOG_INFO("DualSense feedback enabled (strength=%.2f impact=%.2f offroad=%.2f hid_input=%d triggers=%d)",
                  g_strength, g_impactGain, g_offroadGain, g_hidInput ? 1 : 0, g_triggers ? 1 : 0);
+    }
+
+    void Reapply() {
+        LoadConfig();
+        if (g_enabled)
+            EnsureLockInit(); // device opens lazily in Update; just be ready
     }
 }

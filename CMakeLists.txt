@@ -47,6 +47,8 @@ add_library(kraken SHARED
     source/fix/gamepad.cpp
     source/fix/dualsense.cpp
     source/fix/xinputrumble.cpp
+    source/fix/inputprofiles.cpp
+    source/fix/controlprofilesui.cpp
     source/fix/gunreturn.cpp
 
     source/ext/memory.cpp

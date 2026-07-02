@@ -53,6 +53,11 @@ namespace kraken::fix::controls {
         constexpr uintptr_t G_PAPP_VA   = 0x00A0A55C;
         void* g_trampoline = nullptr; // relocated prologue + jmp back to Controls+5
 
+        // Live enable + one-time install state (so a control-profile switch can turn
+        // the wheel path on without a restart; the detour, once installed, stays).
+        bool  g_enabled    = false;
+        bool  g_installed  = false;
+
         // --- cached wheel state (all updated on the message-pump thread) ---
         bool  g_present    = false;
         float g_steer      = 0.0f; // [-1..1], 0 = centered
@@ -580,6 +585,8 @@ namespace kraken::fix::controls {
         // we leave m_flyCamTurn alone so the mouse keeps working; on release we clear
         // it once so any residual delta doesn't keep the camera drifting.
         void ApplyCameraPre() {
+            if (!g_enabled)
+                return;
             if (g_camYawAxis < 0 && g_camPitchAxis < 0)
                 return;
             char* app = static_cast<char*>(*reinterpret_cast<void**>(G_PAPP_VA));
@@ -703,37 +710,42 @@ namespace kraken::fix::controls {
                 return;
             }
 
-            // Steering: deadzone around center, then rescale to keep full range.
-            float s = g_steer;
-            if (s > -g_deadzone && s < g_deadzone) {
-                s = 0.0f;
-            } else {
-                float sign = (s < 0.0f) ? -1.0f : 1.0f;
-                s = (s - sign * g_deadzone) / (1.0f - g_deadzone);
-                if (s >  1.0f) s =  1.0f;
-                if (s < -1.0f) s = -1.0f;
-                // Response curve: ease the center so a short-throw spring stick
-                // gives proportional control instead of feeling all-or-nothing.
-                if (g_steerExpo != 1.0f)
-                    s = sign * std::pow(s < 0.0f ? -s : s, g_steerExpo);
+            // Drive override is gated so a profile that turns the wheel off (e.g.
+            // switching to a keyboard profile) hands steering/throttle back to the
+            // original Controls. Rumble/FFB below keep their own enable flags.
+            if (g_enabled) {
+                // Steering: deadzone around center, then rescale to keep full range.
+                float s = g_steer;
+                if (s > -g_deadzone && s < g_deadzone) {
+                    s = 0.0f;
+                } else {
+                    float sign = (s < 0.0f) ? -1.0f : 1.0f;
+                    s = (s - sign * g_deadzone) / (1.0f - g_deadzone);
+                    if (s >  1.0f) s =  1.0f;
+                    if (s < -1.0f) s = -1.0f;
+                    // Response curve: ease the center so a short-throw spring stick
+                    // gives proportional control instead of feeling all-or-nothing.
+                    if (g_steerExpo != 1.0f)
+                        s = sign * std::pow(s < 0.0f ? -s : s, g_steerExpo);
+                }
+                if (g_invSteer)
+                    s = -s;
+                vehicle->SetSteer(s * g_steerRange * (*STEER_MAGNITUDE));
+
+                // Throttle and brake share the engine's single throttle axis:
+                // gas pushes forward, brake pulls back (vanilla reverse/brake).
+                float thr = g_throttle01 - g_brake01;
+                if (thr >  1.0f) thr =  1.0f;
+                if (thr < -1.0f) thr = -1.0f;
+                // autoBrake=false -> releasing the throttle coasts instead of braking
+                // (the engine's auto-brake-on-zero). Explicit braking still works via
+                // a negative throttle from the brake pedal / L2.
+                vehicle->SetThrottle(thr, g_autoBrake);
+
+                if (g_log && (s != 0.0f || thr != 0.0f || g_camX != 0.0f || g_camY != 0.0f))
+                    LOG_DEBUG("steer=%.3f throttle=%.3f (gas=%.2f brake=%.2f) cam=(%.2f,%.2f)",
+                              s, thr, g_throttle01, g_brake01, g_camX, g_camY);
             }
-            if (g_invSteer)
-                s = -s;
-            vehicle->SetSteer(s * g_steerRange * (*STEER_MAGNITUDE));
-
-            // Throttle and brake share the engine's single throttle axis:
-            // gas pushes forward, brake pulls back (vanilla reverse/brake).
-            float thr = g_throttle01 - g_brake01;
-            if (thr >  1.0f) thr =  1.0f;
-            if (thr < -1.0f) thr = -1.0f;
-            // autoBrake=false -> releasing the throttle coasts instead of braking
-            // (the engine's auto-brake-on-zero). Explicit braking still works via
-            // a negative throttle from the brake pedal / L2.
-            vehicle->SetThrottle(thr, g_autoBrake);
-
-            if (g_log && (s != 0.0f || thr != 0.0f || g_camX != 0.0f || g_camY != 0.0f))
-                LOG_DEBUG("steer=%.3f throttle=%.3f (gas=%.2f brake=%.2f) cam=(%.2f,%.2f)",
-                          s, thr, g_throttle01, g_brake01, g_camX, g_camY);
 
             if (g_ffbEnabled) {
                 if (!g_ffbReady && !g_ffbInitTried) {
@@ -804,11 +816,11 @@ namespace kraken::fix::controls {
         }
     }
 
-    void Apply() {
+    // Re-read the [wheel] config snapshot into the live globals. Shared by Apply()
+    // and Reapply() (control-profile switch). Pure data refresh — no hooks here.
+    static void LoadConfig() {
         const Config& config = Config::Instance();
-        if (config.wheel.value == 0)
-            return;
-
+        g_enabled      = config.wheel.value != 0;
         g_device       = config.wheel_device.value;
         g_steerAxis    = static_cast<int>(config.wheel_steer_axis.value);
         g_throttleAxis = static_cast<int>(config.wheel_throttle_axis.value);
@@ -852,10 +864,17 @@ namespace kraken::fix::controls {
             if (hz < 1.0f) hz = 1.0f;
             g_ffbVibePeriod = static_cast<DWORD>(1000000.0f / hz); // Hz -> microseconds
         }
+    }
 
+    // Install the impulse listener + Controls detour exactly once. ApplyWheel /
+    // ApplyCameraPre gate on g_enabled, so once installed the hook can be toggled
+    // live by a profile switch without uninstalling.
+    static void Install() {
+        if (g_installed)
+            return;
         impulse::Attach(impulse::eImpulseAny, OnImpulse);
-
         if (InstallControlsHook()) {
+            g_installed = true;
             if (g_triggerAxis >= 0)
                 LOG_INFO("Analog wheel control enabled (device=%u steer=%d trigger_axis=%d [combined L2/R2])",
                          g_device, g_steerAxis, g_triggerAxis);
@@ -863,5 +882,19 @@ namespace kraken::fix::controls {
                 LOG_INFO("Analog wheel control enabled (device=%u steer=%d throttle=%d brake=%d)",
                          g_device, g_steerAxis, g_throttleAxis, g_brakeAxis);
         }
+    }
+
+    void Apply() {
+        LoadConfig();
+        if (g_enabled)
+            Install();
+    }
+
+    // Control-profile switch: refresh the snapshot and, if the new profile turns
+    // the wheel on for the first time, install the hook now.
+    void Reapply() {
+        LoadConfig();
+        if (g_enabled && !g_installed)
+            Install();
     }
 }

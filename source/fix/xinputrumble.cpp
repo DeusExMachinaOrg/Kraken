@@ -246,12 +246,11 @@ namespace kraken::fix::xinputrumble {
         g_motorWeak.store(0, std::memory_order_relaxed);
     }
 
-    void Apply() {
+    // Re-read the [xinput] config snapshot. Shared by Apply()/Reapply() so a
+    // control-profile switch picks up new gains (or enable/disable) live.
+    static void LoadConfig() {
         const Config& config = Config::Instance();
-        if (config.xinput.value == 0)
-            return;
-
-        g_enabled     = true;
+        g_enabled     = config.xinput.value != 0;
         g_strength    = config.xinput_strength.value;
         g_impactGain  = config.xinput_impact.value;
         g_offroadGain = config.xinput_offroad.value;
@@ -259,10 +258,19 @@ namespace kraken::fix::xinputrumble {
         g_damageFull  = config.xinput_damage_full.value;
         g_cfgIndex    = static_cast<int>(config.xinput_index.value);
         g_log         = config.xinput_log.value != 0;
+    }
 
+    void Apply() {
+        LoadConfig();
+        if (!g_enabled)
+            return;
         // Device/worker are brought up lazily on the first Update (the pad may
         // connect after launch).
         LOG_INFO("XInput rumble enabled (strength=%.2f impact=%.2f offroad=%.2f damage=%.2f index=%d)",
                  g_strength, g_impactGain, g_offroadGain, g_damageGain, g_cfgIndex);
+    }
+
+    void Reapply() {
+        LoadConfig(); // device/worker stay lazy; Update respects g_enabled
     }
 }

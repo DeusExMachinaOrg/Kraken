@@ -12,6 +12,7 @@
 #include "ext/impulse.hpp"
 
 #include "hta/CStr.hpp"
+#include "hta/CMiracle3d.hpp"
 #include "hta/m3d/GameImpulse.hpp"
 
 // Gamepad (DualSense / any winmm joystick) button bridge.
@@ -161,14 +162,12 @@ namespace kraken::fix::gamepad {
         // the [gamepad] config.
         //
         // Bindings live in GameImpulse and are wiped by the UnbindAll the game
-        // runs whenever it (re)loads its key bindings, so we re-apply right after
-        // each load by detouring LoadFromDefaults / LoadFromProfile. Once present
-        // the binding also shows up in the control-settings menu (the engine can
-        // render JOY_BUTTON_* names), it just can't be captured there.
-
-        using LoadFn = int(__thiscall*)(void* self);
-        LoadFn g_origLoadDefaults = nullptr;
-        LoadFn g_origLoadProfile  = nullptr;
+        // runs whenever it (re)loads its key bindings, so they are re-applied right
+        // after each load — fix::inputprofiles owns the LoadFromDefaults /
+        // LoadFromProfile detour and calls gamepad::Reapply (below) so the binds
+        // reflect the active control profile. Once present the binding also shows up
+        // in the control-settings menu (the engine can render JOY_BUTTON_* names),
+        // it just can't be captured there.
 
         void ApplyBindings(void* impulsesRaw) {
             auto* impulses = reinterpret_cast<hta::m3d::GameImpulse*>(impulsesRaw);
@@ -197,46 +196,6 @@ namespace kraken::fix::gamepad {
             if (bound)
                 LOG_INFO("applied %d gamepad button binding(s) [%s]",
                          bound, config.gamepad_mode.value.c_str());
-        }
-
-        int __fastcall LoadDefaults_Hook(void* self, void*) {
-            int r = g_origLoadDefaults(self);
-            ApplyBindings(self);
-            return r;
-        }
-
-        int __fastcall LoadProfile_Hook(void* self, void*) {
-            int r = g_origLoadProfile(self);
-            ApplyBindings(self);
-            return r;
-        }
-
-        // Entry detour with a runtime trampoline (mirrors fix/controls.cpp). The
-        // trampoline holds the relocated prologue + a jmp back so the hook can run
-        // the original; prologueLen must end on an instruction boundary.
-        LoadFn InstallLoadDetour(uintptr_t addr, int prologueLen, void* hook) {
-            uint8_t* fn = reinterpret_cast<uint8_t*>(addr);
-            uint8_t* tramp = static_cast<uint8_t*>(
-                VirtualAlloc(nullptr, prologueLen + 5, MEM_COMMIT | MEM_RESERVE,
-                             PAGE_EXECUTE_READWRITE));
-            if (!tramp) {
-                LOG_ERROR("Failed to allocate load-detour trampoline @ 0x%p", (void*)addr);
-                return nullptr;
-            }
-            std::memcpy(tramp, fn, prologueLen);
-            tramp[prologueLen] = 0xE9;
-            *reinterpret_cast<int32_t*>(tramp + prologueLen + 1) =
-                static_cast<int32_t>((fn + prologueLen) - (tramp + prologueLen + 5));
-
-            DWORD prot;
-            VirtualProtect(fn, prologueLen, PAGE_EXECUTE_READWRITE, &prot);
-            fn[0] = 0xE9; // jmp hook
-            *reinterpret_cast<int32_t*>(fn + 1) =
-                static_cast<int32_t>(reinterpret_cast<uint8_t*>(hook) - (fn + 5));
-            for (int i = 5; i < prologueLen; ++i)
-                fn[i] = 0x90; // tidy any tail byte of the last relocated instruction
-            VirtualProtect(fn, prologueLen, prot, &prot);
-            return reinterpret_cast<LoadFn>(tramp);
         }
 
         void OnImpulse(const impulse::Impulse& e) {
@@ -270,14 +229,21 @@ namespace kraken::fix::gamepad {
         // feeding GameImpulse from here is no less safe than the keyboard path.
         impulse::Attach(impulse::eImpulseJoyButton, OnImpulse);
 
-        // Re-apply our JOY_BUTTON_* -> impulse bindings after the engine (re)loads
-        // its key bindings. LoadFromProfile prologue is 5 bytes
-        // (sub esp,0x48 / push ebx / push esi); LoadFromDefaults is 6
-        // (sub esp,0x18 / push esi / mov esi,ecx).
-        g_origLoadDefaults = InstallLoadDetour(0x00597990, 6, (void*)&LoadDefaults_Hook);
-        g_origLoadProfile  = InstallLoadDetour(0x00597AB0, 5, (void*)&LoadProfile_Hook);
+        // The JOY_BUTTON_* -> impulse bindings are (re)applied by fix::inputprofiles
+        // after the engine loads its key bindings (it owns the LoadFromProfile /
+        // LoadFromDefaults detour and calls gamepad::Reapply, so the binds reflect
+        // the active control profile and survive the engine's UnbindAll).
 
         LOG_INFO("Gamepad bridge enabled (buttons 0..%d -> engine JOY_BUTTON_*)",
                  JOY_BUTTON_COUNT - 1);
+    }
+
+    void Reapply() {
+        const Config& config = Config::Instance();
+        if (config.gamepad.value == 0)
+            return; // bridge disabled in the active profile
+        auto* impulses = reinterpret_cast<hta::m3d::GameImpulse*>(
+            hta::CMiracle3d::Instance()->m_pImpulses);
+        ApplyBindings(impulses); // re-bind JOY_BUTTON_* from the switched profile
     }
 }

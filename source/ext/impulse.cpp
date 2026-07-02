@@ -7,6 +7,9 @@
 
 #include <list>
 #include <array>
+#include <vector>
+#include <cstdio>
+#include <cstring>
 
 #include <windows.h>
 #include <mmsystem.h>   // winmm joystick API (joyGetPosEx / joyGetDevCaps)
@@ -53,6 +56,9 @@ namespace kraken::impulse {
             bool  axisInit = false;
             DWORD buttons  = 0;
             DWORD axes[JOY_AXES] = { 0 };
+            DWORD numButtons = 0;
+            DWORD numAxes    = 0;
+            char  name[64]   = { 0 };
         };
 
         JoyDevState g_joy[JOY_MAX_DEV] = {};
@@ -113,12 +119,18 @@ namespace kraken::impulse {
 
                 JOYCAPSA caps = {};
                 if (joyGetDevCapsA(id, &caps, sizeof(caps)) == JOYERR_NOERROR) {
+                    st.numButtons = caps.wNumButtons;
+                    st.numAxes    = caps.wNumAxes;
+                    strncpy_s(st.name, caps.szPname, _TRUNCATE);
                     LOG_INFO("Joystick %u connected: '%s' buttons=%u axes=%u "
                              "X[%lu..%lu] Y[%lu..%lu] Z[%lu..%lu]",
                              id, caps.szPname, caps.wNumButtons, caps.wNumAxes,
                              caps.wXmin, caps.wXmax, caps.wYmin, caps.wYmax,
                              caps.wZmin, caps.wZmax);
                 } else {
+                    st.numButtons = 0;
+                    st.numAxes    = 0;
+                    std::snprintf(st.name, sizeof(st.name), "Joystick %u", id);
                     LOG_INFO("Joystick %u connected (caps unavailable)", id);
                 }
 
@@ -182,6 +194,22 @@ namespace kraken::impulse {
             }
         }
     }
+
+    std::vector<DeviceInfo> GetDevices(void) {
+        std::vector<DeviceInfo> out;
+        for (int id = 0; id < JOY_MAX_DEV; ++id) {
+            const JoyDevState& st = g_joy[id];
+            if (!st.present)
+                continue;
+            DeviceInfo info = {};
+            info.id      = static_cast<uint32_t>(id);
+            info.buttons = st.numButtons;
+            info.axes    = st.numAxes;
+            strncpy_s(info.name, st.name, _TRUNCATE);
+            out.push_back(info);
+        }
+        return out;
+    };
 
     eKey _MapKeyCode(uint32_t wparam, uint32_t lparam) {
         bool extended = (lparam >> 24) & 0x1;

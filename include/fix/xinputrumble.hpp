@@ -9,6 +9,9 @@ namespace kraken::fix::xinputrumble {
     // No-op unless [xinput] enabled. XInput is loaded dynamically at runtime.
     void Apply();
 
+    // Re-read the [xinput] config after a control-profile switch (gains + enable).
+    void Reapply();
+
     // Called once per frame from the controls hook while a live player vehicle
     // exists: derives rumble force from the vehicle's motion (impacts, rough
     // ground, taking damage) and drives the pad's two motors.

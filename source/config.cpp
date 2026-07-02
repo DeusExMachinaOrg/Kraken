@@ -2,6 +2,7 @@
 #include "ext/logger.hpp"
 #include <assert.h>
 #include <string>
+#include <cstring>
 
 #define LOGGER "config"
 
@@ -10,6 +11,29 @@ using kraken::logger::eLogPanic;
 
 namespace kraken {
     const char* CONFIG_PATH = "./data/kraken.ini";
+
+    // Full path to the active control profile's input.ini. Empty => fall back to
+    // kraken.ini (back-compat, and before the engine player profile is known).
+    static std::string s_inputProfilePath;
+
+    // The ini sections that belong to a control profile (sourced from the profile's
+    // input.ini rather than the global kraken.ini).
+    static bool IsInputSection(const char* section) {
+        if (section == nullptr)
+            return false;
+        return std::strcmp(section, "wheel")     == 0
+            || std::strcmp(section, "gamepad")   == 0
+            || std::strcmp(section, "dualsense") == 0
+            || std::strcmp(section, "xinput")    == 0;
+    }
+
+    // Pick the ini file a value reads from / writes to: the active profile's
+    // input.ini for the input sections, otherwise the global kraken.ini.
+    static const char* PathForSection(const char* section) {
+        if (!s_inputProfilePath.empty() && IsInputSection(section))
+            return s_inputProfilePath.c_str();
+        return CONFIG_PATH;
+    }
 
     template <typename T>
     inline T clamp(T v, T min, T max) {
@@ -87,6 +111,7 @@ namespace kraken {
         this->ffb_offroad                       = { "wheel",     "ffb_offroad",                     1.0f,  true,  0.0f,  2.0f        };
         this->ffb_engine                        = { "wheel",     "ffb_engine",                      0.3f,  true,  0.0f,  2.0f        };
         this->ffb_vibe_hz                       = { "wheel",     "ffb_vibe_hz",                     55.0f, true,  5.0f,  100.0f      };
+        this->active_input_profile              = { "input",     "active_profile",                  std::string(), false             };
         this->gamepad                           = { "gamepad",   "enabled",                         0,     true,  0,     1           };
         this->gamepad_log                       = { "gamepad",   "log",                             0,     true,  0,     1           };
         this->gamepad_mode                      = { "gamepad",   "game_mode",                       std::string("GS_GAME"), false      };
@@ -255,6 +280,7 @@ namespace kraken {
         this->LoadValue(&this->ffb_offroad);
         this->LoadValue(&this->ffb_engine);
         this->LoadValue(&this->ffb_vibe_hz);
+        this->LoadValue(&this->active_input_profile);
         this->LoadValue(&this->gamepad);
         this->LoadValue(&this->gamepad_log);
         this->LoadValue(&this->gamepad_mode);
@@ -377,6 +403,7 @@ namespace kraken {
         this->DumpValue(&this->ffb_offroad);
         this->DumpValue(&this->ffb_engine);
         this->DumpValue(&this->ffb_vibe_hz);
+        this->DumpValue(&this->active_input_profile);
         this->DumpValue(&this->gamepad);
         this->DumpValue(&this->gamepad_log);
         this->DumpValue(&this->gamepad_mode);
@@ -424,9 +451,10 @@ namespace kraken {
     template<typename T>
     void Config::LoadValue(ConfigValue<T>* value) {
         char buffer[1024] = {0};
+        const char* path = PathForSection(value->section);
 
         if constexpr (std::is_same_v<int32_t, T>) {
-            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
+            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), path);
             if (strnlen_s(buffer, sizeof(buffer)) > 0) {
                 value->value = std::strtol(buffer, nullptr, 10);
                 if (value->limited)
@@ -434,7 +462,7 @@ namespace kraken {
             }
         }
         else if constexpr (std::is_same_v<uint32_t, T>) {
-            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
+            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), path);
             if (strnlen_s(buffer, sizeof(buffer)) > 0) {
                 value->value = std::strtoul(buffer, nullptr, 10);
                 if (value->limited)
@@ -442,7 +470,7 @@ namespace kraken {
             }
         }
         else if constexpr (std::is_same_v<float, T>) {
-            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
+            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), path);
             if (strnlen_s(buffer, sizeof(buffer)) > 0) {
                 value->value = std::strtof(buffer, nullptr);
                 if (value->limited)
@@ -450,7 +478,7 @@ namespace kraken {
             }
         }
         else if constexpr (std::is_same_v<double, T>) {
-            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
+            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), path);
             if (strnlen_s(buffer, sizeof(buffer)) > 0) {
                 value->value = std::strtod(buffer, nullptr);
                 if (value->limited)
@@ -458,7 +486,7 @@ namespace kraken {
             }
         }
         else if constexpr (std::is_same_v<bool, T>) {
-            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
+            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), path);
             if (strnlen_s(buffer, sizeof(buffer)) > 0)
                 if (strcmp(buffer, "true") || strcmp(buffer, "1")) {
                     value->value = true;
@@ -468,7 +496,7 @@ namespace kraken {
                 }
         }
         else if constexpr (std::is_same_v<std::string, T>) {
-            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
+            GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), path);
             if (strnlen_s(buffer, sizeof(buffer)) > 0)
                 value->value = buffer;
         }
@@ -478,7 +506,7 @@ namespace kraken {
                 char key[128];
                 std::snprintf(key, sizeof(key), "%s%d", value->keyPrefix, i);
 
-                GetPrivateProfileStringA(value->section, key, "", buffer, sizeof(buffer), CONFIG_PATH);
+                GetPrivateProfileStringA(value->section, key, "", buffer, sizeof(buffer), path);
                 if (strnlen_s(buffer, sizeof(buffer)) == 0)
                     break;
                 value->value.emplace_back(buffer);
@@ -487,13 +515,13 @@ namespace kraken {
         else if constexpr (std::is_same_v<std::unordered_map<std::string, uint32_t, std::hash<std::string_view>, std::equal_to<>>, T>) {
             value->value.clear();
             char keysBuffer[32768];
-            DWORD keysLength = GetPrivateProfileStringA(value->section, NULL, "", keysBuffer, sizeof(keysBuffer), CONFIG_PATH);
+            DWORD keysLength = GetPrivateProfileStringA(value->section, NULL, "", keysBuffer, sizeof(keysBuffer), path);
 
             if (keysLength > 0) {
                 // Parse the null-separated list of keys
                 const char* key = keysBuffer;
                 while (*key != '\0') {
-                    GetPrivateProfileStringA(value->section, key, "", buffer, sizeof(buffer), CONFIG_PATH);
+                    GetPrivateProfileStringA(value->section, key, "", buffer, sizeof(buffer), path);
 
                     if (strnlen_s(buffer, sizeof(buffer)) > 0) {
                         try {
@@ -515,30 +543,30 @@ namespace kraken {
                 for (const auto& prefix : { configstructs::REPAIR, configstructs::REFUEL }) {
                     std::snprintf(key, sizeof(key), "%s%d", prefix, i);
 
-                    GetPrivateProfileStringA(key, "Units", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    GetPrivateProfileStringA(key, "Units", "", buffer, sizeof(buffer), path);
                     if (strnlen_s(buffer, sizeof(buffer)) == 0)
                         continue;
                     float units = std::strtof(buffer, nullptr);
 
                     float armor = 0.0f;
-                    GetPrivateProfileStringA(key, "Armor", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    GetPrivateProfileStringA(key, "Armor", "", buffer, sizeof(buffer), path);
                     if (strnlen_s(buffer, sizeof(buffer)) != 0)
                         armor = std::strtof(buffer, nullptr);
 
-                    GetPrivateProfileStringA(key, "Ware", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    GetPrivateProfileStringA(key, "Ware", "", buffer, sizeof(buffer), path);
                     if (strnlen_s(buffer, sizeof(buffer)) == 0)
                         continue;
                     std::string ware = buffer;
 
-                    GetPrivateProfileStringA(key, "Sound", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    GetPrivateProfileStringA(key, "Sound", "", buffer, sizeof(buffer), path);
                     std::string sound = buffer;
 
-                    GetPrivateProfileStringA(key, "Script", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    GetPrivateProfileStringA(key, "Script", "", buffer, sizeof(buffer), path);
                     std::string script = buffer;
 
                     // Consume defaults to true (legacy behaviour: a used ware is always spent).
                     bool consume = true;
-                    GetPrivateProfileStringA(key, "Consume", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    GetPrivateProfileStringA(key, "Consume", "", buffer, sizeof(buffer), path);
                     if (strnlen_s(buffer, sizeof(buffer)) != 0)
                         consume = (buffer[0] == '1' || buffer[0] == 't' || buffer[0] == 'T' || buffer[0] == 'y' || buffer[0] == 'Y');
 
@@ -558,42 +586,43 @@ namespace kraken {
     template<typename T>
     void Config::DumpValue(ConfigValue<T>* value) {
         char buffer[1024] = {0};
+        const char* path = PathForSection(value->section);
 
         if constexpr (std::is_same_v<int32_t, T>) {
             std::snprintf(buffer, sizeof(buffer), "%d", value->value);
-            WritePrivateProfileStringA(value->section, value->key, buffer, CONFIG_PATH);
+            WritePrivateProfileStringA(value->section, value->key, buffer, path);
         }
         else if constexpr (std::is_same_v<uint32_t, T>) {
             std::snprintf(buffer, sizeof(buffer), "%u", value->value);
-            WritePrivateProfileStringA(value->section, value->key, buffer, CONFIG_PATH);
+            WritePrivateProfileStringA(value->section, value->key, buffer, path);
         }
         else if constexpr (std::is_same_v<float, T>) {
             std::snprintf(buffer, sizeof(buffer), "%.06f", value->value);
-            WritePrivateProfileStringA(value->section, value->key, buffer, CONFIG_PATH);
+            WritePrivateProfileStringA(value->section, value->key, buffer, path);
         }
         else if constexpr (std::is_same_v<double, T>) {
             std::snprintf(buffer, sizeof(buffer), "%.06f", value->value);
-            WritePrivateProfileStringA(value->section, value->key, buffer, CONFIG_PATH);
+            WritePrivateProfileStringA(value->section, value->key, buffer, path);
         }
         else if constexpr (std::is_same_v<bool, T>) {
             std::snprintf(buffer, sizeof(buffer), "%s", value->value ? "true" : "false");
-            WritePrivateProfileStringA(value->section, value->key, buffer, CONFIG_PATH);
+            WritePrivateProfileStringA(value->section, value->key, buffer, path);
         }
         else if constexpr (std::is_same_v<std::string, T>) {
-            WritePrivateProfileStringA(value->section, value->key, value->value.c_str(), CONFIG_PATH);
+            WritePrivateProfileStringA(value->section, value->key, value->value.c_str(), path);
         }
         else if constexpr (std::is_same_v<std::vector<std::string>, T>) {
             for (size_t i = 0; i < value->value.size(); ++i) {
                 char key[128];
                 std::snprintf(key, sizeof(key), "%s%zu", value->keyPrefix, i + 1);
-                WritePrivateProfileStringA(value->section, key, value->value[i].c_str(), CONFIG_PATH);
+                WritePrivateProfileStringA(value->section, key, value->value[i].c_str(), path);
             }
         }
         else if constexpr (std::is_same_v<std::unordered_map<std::string, uint32_t, std::hash<std::string_view>, std::equal_to<>>, T>) {
             char val[128];
             for(const auto& [k, v] : value->value) {
                 std::sprintf(val, "%ld", v);
-                WritePrivateProfileStringA(value->section, k.c_str(), val, CONFIG_PATH);
+                WritePrivateProfileStringA(value->section, k.c_str(), val, path);
             }
         }
         else if constexpr (std::is_same_v<std::vector<configstructs::WareUnits>, T>) {
@@ -610,29 +639,177 @@ namespace kraken {
 
                 // Units
                 std::snprintf(buffer, sizeof(buffer), "%.03f", wareUnit.Units);
-                WritePrivateProfileStringA(key, "Units", buffer, CONFIG_PATH);
+                WritePrivateProfileStringA(key, "Units", buffer, path);
 
                 // Armor
                 if (wareUnit.Type == configstructs::WareType::REPAIR) {
                     std::snprintf(buffer, sizeof(buffer), "%.03f", wareUnit.Armor);
-                    WritePrivateProfileStringA(key, "Armor", buffer, CONFIG_PATH);
+                    WritePrivateProfileStringA(key, "Armor", buffer, path);
                 }
 
                 // Ware
-                WritePrivateProfileStringA(key, "Ware", wareUnit.Ware.c_str(), CONFIG_PATH);
+                WritePrivateProfileStringA(key, "Ware", wareUnit.Ware.c_str(), path);
 
                 // Sound
-                WritePrivateProfileStringA(key, "Sound", wareUnit.Sound.c_str(), CONFIG_PATH);
+                WritePrivateProfileStringA(key, "Sound", wareUnit.Sound.c_str(), path);
 
                 // Script
-                WritePrivateProfileStringA(key, "Script", wareUnit.Script.c_str(), CONFIG_PATH);
+                WritePrivateProfileStringA(key, "Script", wareUnit.Script.c_str(), path);
 
                 // Consume
-                WritePrivateProfileStringA(key, "Consume", wareUnit.Consume ? "1" : "0", CONFIG_PATH);
+                WritePrivateProfileStringA(key, "Consume", wareUnit.Consume ? "1" : "0", path);
             }
         }
         else {
             throw "Unsupported type";
         }
+    };
+
+    // --- control-profile input sourcing ---------------------------------------
+
+    void Config::SetInputSource(const std::string& iniPath) {
+        s_inputProfilePath = iniPath;
+    }
+
+    // The input device values, in one place, so Reload/Dump stay in sync. Anything
+    // whose section is one of the IsInputSection() names belongs here.
+    void Config::ReloadInput() {
+        this->LoadValue(&this->wheel);
+        this->LoadValue(&this->wheel_device);
+        this->LoadValue(&this->wheel_steer_axis);
+        this->LoadValue(&this->wheel_throttle_axis);
+        this->LoadValue(&this->wheel_brake_axis);
+        this->LoadValue(&this->wheel_deadzone);
+        this->LoadValue(&this->wheel_pedal_deadzone);
+        this->LoadValue(&this->wheel_steer_range);
+        this->LoadValue(&this->wheel_invert_steer);
+        this->LoadValue(&this->wheel_invert_throttle);
+        this->LoadValue(&this->wheel_invert_brake);
+        this->LoadValue(&this->wheel_auto_brake);
+        this->LoadValue(&this->wheel_trigger_axis);
+        this->LoadValue(&this->wheel_trigger_deadzone);
+        this->LoadValue(&this->wheel_invert_trigger);
+        this->LoadValue(&this->wheel_steer_expo);
+        this->LoadValue(&this->wheel_cam_yaw_axis);
+        this->LoadValue(&this->wheel_cam_pitch_axis);
+        this->LoadValue(&this->wheel_cam_deadzone);
+        this->LoadValue(&this->wheel_cam_yaw_speed);
+        this->LoadValue(&this->wheel_cam_pitch_speed);
+        this->LoadValue(&this->wheel_cam_invert_yaw);
+        this->LoadValue(&this->wheel_cam_invert_pitch);
+        this->LoadValue(&this->wheel_cam_return);
+        this->LoadValue(&this->wheel_cam_return_delay);
+        this->LoadValue(&this->wheel_cam_return_speed);
+        this->LoadValue(&this->wheel_cam_follow_offset);
+        this->LoadValue(&this->wheel_log);
+        this->LoadValue(&this->ffb);
+        this->LoadValue(&this->ffb_strength);
+        this->LoadValue(&this->ffb_center);
+        this->LoadValue(&this->ffb_speed_gain);
+        this->LoadValue(&this->ffb_invert);
+        this->LoadValue(&this->ffb_log);
+        this->LoadValue(&this->ffb_damage);
+        this->LoadValue(&this->ffb_collision);
+        this->LoadValue(&this->ffb_offroad);
+        this->LoadValue(&this->ffb_engine);
+        this->LoadValue(&this->ffb_vibe_hz);
+        this->LoadValue(&this->gamepad);
+        this->LoadValue(&this->gamepad_log);
+        this->LoadValue(&this->gamepad_mode);
+        for (int i = 0; i < 10; ++i)
+            this->LoadValue(&this->gamepad_button[i]);
+        this->LoadValue(&this->gamepad_autobind);
+        this->LoadValue(&this->dualsense);
+        this->LoadValue(&this->dualsense_strength);
+        this->LoadValue(&this->dualsense_impact);
+        this->LoadValue(&this->dualsense_offroad);
+        this->LoadValue(&this->dualsense_damage);
+        this->LoadValue(&this->dualsense_damage_full);
+        this->LoadValue(&this->dualsense_hid_input);
+        this->LoadValue(&this->dualsense_log);
+        this->LoadValue(&this->dualsense_triggers);
+        this->LoadValue(&this->dualsense_trigger_brake);
+        this->LoadValue(&this->dualsense_trigger_throttle);
+        this->LoadValue(&this->dualsense_trigger_kick);
+        this->LoadValue(&this->dualsense_trigger_damage);
+        this->LoadValue(&this->dualsense_trigger_buzz);
+        this->LoadValue(&this->xinput);
+        this->LoadValue(&this->xinput_strength);
+        this->LoadValue(&this->xinput_impact);
+        this->LoadValue(&this->xinput_offroad);
+        this->LoadValue(&this->xinput_damage);
+        this->LoadValue(&this->xinput_damage_full);
+        this->LoadValue(&this->xinput_index);
+        this->LoadValue(&this->xinput_log);
+    };
+
+    void Config::DumpInput() {
+        this->DumpValue(&this->wheel);
+        this->DumpValue(&this->wheel_device);
+        this->DumpValue(&this->wheel_steer_axis);
+        this->DumpValue(&this->wheel_throttle_axis);
+        this->DumpValue(&this->wheel_brake_axis);
+        this->DumpValue(&this->wheel_deadzone);
+        this->DumpValue(&this->wheel_pedal_deadzone);
+        this->DumpValue(&this->wheel_steer_range);
+        this->DumpValue(&this->wheel_invert_steer);
+        this->DumpValue(&this->wheel_invert_throttle);
+        this->DumpValue(&this->wheel_invert_brake);
+        this->DumpValue(&this->wheel_auto_brake);
+        this->DumpValue(&this->wheel_trigger_axis);
+        this->DumpValue(&this->wheel_trigger_deadzone);
+        this->DumpValue(&this->wheel_invert_trigger);
+        this->DumpValue(&this->wheel_steer_expo);
+        this->DumpValue(&this->wheel_cam_yaw_axis);
+        this->DumpValue(&this->wheel_cam_pitch_axis);
+        this->DumpValue(&this->wheel_cam_deadzone);
+        this->DumpValue(&this->wheel_cam_yaw_speed);
+        this->DumpValue(&this->wheel_cam_pitch_speed);
+        this->DumpValue(&this->wheel_cam_invert_yaw);
+        this->DumpValue(&this->wheel_cam_invert_pitch);
+        this->DumpValue(&this->wheel_cam_return);
+        this->DumpValue(&this->wheel_cam_return_delay);
+        this->DumpValue(&this->wheel_cam_return_speed);
+        this->DumpValue(&this->wheel_cam_follow_offset);
+        this->DumpValue(&this->wheel_log);
+        this->DumpValue(&this->ffb);
+        this->DumpValue(&this->ffb_strength);
+        this->DumpValue(&this->ffb_center);
+        this->DumpValue(&this->ffb_speed_gain);
+        this->DumpValue(&this->ffb_invert);
+        this->DumpValue(&this->ffb_log);
+        this->DumpValue(&this->ffb_damage);
+        this->DumpValue(&this->ffb_collision);
+        this->DumpValue(&this->ffb_offroad);
+        this->DumpValue(&this->ffb_engine);
+        this->DumpValue(&this->ffb_vibe_hz);
+        this->DumpValue(&this->gamepad);
+        this->DumpValue(&this->gamepad_log);
+        this->DumpValue(&this->gamepad_mode);
+        for (int i = 0; i < 10; ++i)
+            this->DumpValue(&this->gamepad_button[i]);
+        this->DumpValue(&this->gamepad_autobind);
+        this->DumpValue(&this->dualsense);
+        this->DumpValue(&this->dualsense_strength);
+        this->DumpValue(&this->dualsense_impact);
+        this->DumpValue(&this->dualsense_offroad);
+        this->DumpValue(&this->dualsense_damage);
+        this->DumpValue(&this->dualsense_damage_full);
+        this->DumpValue(&this->dualsense_hid_input);
+        this->DumpValue(&this->dualsense_log);
+        this->DumpValue(&this->dualsense_triggers);
+        this->DumpValue(&this->dualsense_trigger_brake);
+        this->DumpValue(&this->dualsense_trigger_throttle);
+        this->DumpValue(&this->dualsense_trigger_kick);
+        this->DumpValue(&this->dualsense_trigger_damage);
+        this->DumpValue(&this->dualsense_trigger_buzz);
+        this->DumpValue(&this->xinput);
+        this->DumpValue(&this->xinput_strength);
+        this->DumpValue(&this->xinput_impact);
+        this->DumpValue(&this->xinput_offroad);
+        this->DumpValue(&this->xinput_damage);
+        this->DumpValue(&this->xinput_damage_full);
+        this->DumpValue(&this->xinput_index);
+        this->DumpValue(&this->xinput_log);
     };
 };

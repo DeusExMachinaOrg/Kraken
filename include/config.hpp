@@ -28,6 +28,9 @@ namespace kraken {
 
     template<>
     struct ConfigValue<WareUnitsList> {
+        // Ware units use synthesized per-entry sections (e.g. "repair1"), so this
+        // section is unused for routing; nullptr keeps it on the global kraken.ini.
+        const char*   section = nullptr;
         WareUnitsList value;
     };
 
@@ -132,6 +135,12 @@ namespace kraken {
         // joystick input, so JOY_BUTTON_0..9 become bindable to any action in the
         // in-game control-settings menu. Driving axes (steer/throttle/brake) stay
         // analog through the [wheel] path in fix/controls.cpp.
+        // Active control profile (folder name under <playerProfile>/input_profiles).
+        // Lives in the global kraken.ini [input] section; the input device sections
+        // below ([wheel]/[gamepad]/[dualsense]/[xinput]) are read from that
+        // profile's input.ini instead of kraken.ini. See fix/inputprofiles.cpp.
+        ConfigValue<std::string>              active_input_profile;
+
         ConfigValue<uint32_t>                 gamepad;               // master enable for the gamepad button bridge
         ConfigValue<uint32_t>                 gamepad_log;           // 1: log each button->engine event (needs log_debug=0)
         // Per-button action binding. The engine's own joystick-binding UI is a
@@ -211,6 +220,14 @@ namespace kraken {
 
         void Load();
         void Dump();
+
+        // Control-profile support (see fix/inputprofiles.cpp). The input device
+        // sections are sourced from a per-profile input.ini whose full path is set
+        // here; an empty path falls back to the global kraken.ini (back-compat /
+        // before the engine profile is up).
+        void SetInputSource(const std::string& iniPath);
+        void ReloadInput(); // re-read only the input sections (after a profile switch)
+        void DumpInput();   // write only the input sections back (save / migrate)
 
     private:
         template<typename T>
