@@ -10,6 +10,7 @@
 #include "routines.hpp"
 #include "fix/physic.hpp"
 #include "fix/cinematicmover.hpp"
+#include "fix/wheelmodel.hpp"
 
 namespace kraken::fix::physic {
     #define RIGHT_SHIFT(T, base, offset) ((T*)(reinterpret_cast<char*>(base) + offset))
@@ -474,6 +475,9 @@ namespace kraken::fix::physic {
         if (last < step) return;
         stepsize = last;
         last = 0;
+
+        // Publish the physics substep to the wheel model (no-op unless enabled).
+        kraken::fix::wheelmodel::SetStepSize(stepsize);
 
         int i, j, k;
         float stepsize1 = 1.0f / stepsize;

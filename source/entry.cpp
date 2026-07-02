@@ -21,6 +21,7 @@
 #include "fix/ultrawide.hpp"
 #include "fix/fastloading.hpp"
 #include "fix/kineticfriction.hpp"
+#include "fix/wheelmodel.hpp"
 #include "fix/cardan.hpp"
 #include "fix/tactics.hpp"
 #include "fix/complexschwarz.hpp"
@@ -83,6 +84,7 @@ namespace kraken {
         fix::ultrawide::Apply();
         fix::fastloading::Apply();
         //fix::kineticfriction::Apply();
+        fix::wheelmodel::Apply();
         fix::cardan::Apply();
         fix::tactics::Apply();
         fix::complexschwarz::Apply();

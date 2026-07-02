@@ -59,6 +59,24 @@ namespace kraken {
         this->ram_thorn_scale                   = { "thorncollide", "thorn_scale",                  0.02f,   true,  0.0f,  100.0f    };
         this->ram_wheel_damage                  = { "thorncollide", "wheel_damage",                 1,       true,  0,     1         };
         this->ram_log                           = { "thorncollide", "log",                          0,       true,  0,     1         };
+        this->wheelmodel_enabled                = { "wheelmodel", "enabled",                       0,        true,  0,      1         };
+        this->wheelmodel_apply                  = { "wheelmodel", "apply",                         0,        true,  0,      1         };
+        this->wheelmodel_player_only            = { "wheelmodel", "player_only",                   1,        true,  0,      1         };
+        this->wheelmodel_log                    = { "wheelmodel", "log",                           0,        true,  0,      1         };
+        this->wheelmodel_max_g                  = { "wheelmodel", "max_g",                         6.0f,     true,  1.0f,   100.0f    };
+        this->wheelmodel_max_speed              = { "wheelmodel", "max_speed",                     80.0f,    true,  1.0f,   10000.0f  };
+        this->wheelmodel_react_scale            = { "wheelmodel", "react_scale",                   1.0f,     true,  0.0f,   10.0f     };
+        this->wheelmodel_tyre_stiffness         = { "wheelmodel", "tyre_stiffness",                120000.0f,true,  1.0f,   1e9f      };
+        this->wheelmodel_tyre_thickness         = { "wheelmodel", "tyre_thickness",                0.1f,     true,  0.0f,   10.0f     };
+        this->wheelmodel_tyre_damping           = { "wheelmodel", "tyre_damping",                  0.5f,     true,  0.0f,   10.0f     };
+        this->wheelmodel_hard_core_lambda       = { "wheelmodel", "hard_core_lambda",              20.0f,    true,  1.0f,   1000.0f   };
+        this->wheelmodel_grip                   = { "wheelmodel", "grip",                          1.5f,     true,  0.0f,   10.0f     };
+        this->wheelmodel_pac_B                  = { "wheelmodel", "pac_B",                         8.0f,     true,  0.1f,   100.0f    };
+        this->wheelmodel_pac_C                  = { "wheelmodel", "pac_C",                         1.5f,     true,  0.1f,   5.0f      };
+        this->wheelmodel_pac_E                  = { "wheelmodel", "pac_E",                         0.97f,    true,  -10.0f, 10.0f     };
+        this->wheelmodel_slip_floor             = { "wheelmodel", "slip_floor",                    0.5f,     true,  0.01f,  100.0f    };
+        this->wheelmodel_stick_speed            = { "wheelmodel", "stick_speed",                   0.5f,     true,  0.01f,  100.0f    };
+        this->wheelmodel_wheel_inertia          = { "wheelmodel", "wheel_inertia",                 5.0f,     true,  0.001f, 10000.0f  };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -135,6 +153,24 @@ namespace kraken {
         this->LoadValue(&this->ram_thorn_scale);
         this->LoadValue(&this->ram_wheel_damage);
         this->LoadValue(&this->ram_log);
+        this->LoadValue(&this->wheelmodel_enabled);
+        this->LoadValue(&this->wheelmodel_apply);
+        this->LoadValue(&this->wheelmodel_player_only);
+        this->LoadValue(&this->wheelmodel_log);
+        this->LoadValue(&this->wheelmodel_max_g);
+        this->LoadValue(&this->wheelmodel_max_speed);
+        this->LoadValue(&this->wheelmodel_react_scale);
+        this->LoadValue(&this->wheelmodel_tyre_stiffness);
+        this->LoadValue(&this->wheelmodel_tyre_thickness);
+        this->LoadValue(&this->wheelmodel_tyre_damping);
+        this->LoadValue(&this->wheelmodel_hard_core_lambda);
+        this->LoadValue(&this->wheelmodel_grip);
+        this->LoadValue(&this->wheelmodel_pac_B);
+        this->LoadValue(&this->wheelmodel_pac_C);
+        this->LoadValue(&this->wheelmodel_pac_E);
+        this->LoadValue(&this->wheelmodel_slip_floor);
+        this->LoadValue(&this->wheelmodel_stick_speed);
+        this->LoadValue(&this->wheelmodel_wheel_inertia);
     };
 
     void Config::Dump() {
@@ -187,6 +223,24 @@ namespace kraken {
         this->DumpValue(&this->ram_thorn_scale);
         this->DumpValue(&this->ram_wheel_damage);
         this->DumpValue(&this->ram_log);
+        this->DumpValue(&this->wheelmodel_enabled);
+        this->DumpValue(&this->wheelmodel_apply);
+        this->DumpValue(&this->wheelmodel_player_only);
+        this->DumpValue(&this->wheelmodel_log);
+        this->DumpValue(&this->wheelmodel_max_g);
+        this->DumpValue(&this->wheelmodel_max_speed);
+        this->DumpValue(&this->wheelmodel_react_scale);
+        this->DumpValue(&this->wheelmodel_tyre_stiffness);
+        this->DumpValue(&this->wheelmodel_tyre_thickness);
+        this->DumpValue(&this->wheelmodel_tyre_damping);
+        this->DumpValue(&this->wheelmodel_hard_core_lambda);
+        this->DumpValue(&this->wheelmodel_grip);
+        this->DumpValue(&this->wheelmodel_pac_B);
+        this->DumpValue(&this->wheelmodel_pac_C);
+        this->DumpValue(&this->wheelmodel_pac_E);
+        this->DumpValue(&this->wheelmodel_slip_floor);
+        this->DumpValue(&this->wheelmodel_stick_speed);
+        this->DumpValue(&this->wheelmodel_wheel_inertia);
     };
 
     template<typename T>

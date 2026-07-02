@@ -29,6 +29,7 @@ add_library(kraken SHARED
     source/fix/ultrawide.cpp
     source/fix/fastloading.cpp
     source/fix/kineticfriction.cpp
+    source/fix/wheelmodel.cpp
     source/fix/cardan.cpp
     source/fix/tactics.cpp
     source/fix/complexschwarz.cpp

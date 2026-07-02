@@ -90,6 +90,27 @@ namespace kraken {
         ConfigValue<uint32_t>                 ram_wheel_damage;       // 1: ramming a wheel also damages the vehicle (fixes the side-ram dead zone)
         ConfigValue<uint32_t>                 ram_log;                // 1: thorncollide debug logging (RamOffense load + wheel ram) — needs log_debug=0
 
+        // Single-Wheel Contact Model v3 (penalty-force wheel model, wheel_model.md).
+        // enabled=0 keeps stock HTA vehicle dynamics (nothing is installed).
+        ConfigValue<uint32_t>                 wheelmodel_enabled;
+        ConfigValue<uint32_t>                 wheelmodel_apply;           // 1: apply penalty forces + suppress ODE wheel contacts (Stage 2). 0: log only
+        ConfigValue<uint32_t>                 wheelmodel_player_only;     // 1: apply only to the player's vehicle (isolate the test)
+        ConfigValue<uint32_t>                 wheelmodel_log;             // per-wheel classification/force logging
+        ConfigValue<float>                    wheelmodel_max_g;           // safety: cap per-contact force at this many g of the corner mass
+        ConfigValue<float>                    wheelmodel_max_speed;       // safety: skip apply if the contact-point speed exceeds this (m/s)
+        ConfigValue<float>                    wheelmodel_react_scale;     // Stage 3: friction→wheel-spin reaction torque scale (0 = off, 1 = physical)
+        ConfigValue<float>                    wheelmodel_tyre_stiffness;  // k_t  (N/m) contact spring
+        ConfigValue<float>                    wheelmodel_tyre_thickness;  // τ    (m) soft-tyre band (HTA has no rim/tyre split)
+        ConfigValue<float>                    wheelmodel_tyre_damping;    // ζ_t  tyre damping ratio
+        ConfigValue<float>                    wheelmodel_hard_core_lambda;// λ    hard core k_c = λ·k_t
+        ConfigValue<float>                    wheelmodel_grip;            // μ    Pacejka peak
+        ConfigValue<float>                    wheelmodel_pac_B;           // B    Pacejka stiffness
+        ConfigValue<float>                    wheelmodel_pac_C;           // C    Pacejka shape (1.5)
+        ConfigValue<float>                    wheelmodel_pac_E;           // E    Pacejka shape (0.97)
+        ConfigValue<float>                    wheelmodel_slip_floor;      // ε    slip floor (v_ref min)
+        ConfigValue<float>                    wheelmodel_stick_speed;     // v0   static-friction blend speed
+        ConfigValue<float>                    wheelmodel_wheel_inertia;   // I    spin inertia
+
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;
         ConfigValue<float>                    gun_gadgets_max_schwarz_part;

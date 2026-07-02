@@ -18,6 +18,7 @@
 
 #include "fix/cardan.hpp"
 #include "fix/thorncollide.hpp"
+#include "fix/wheelmodel.hpp"
 
 #include <cstring>
 #include <cstdint>
@@ -297,6 +298,11 @@ namespace kraken::fix::cardan {
             self, surface, contacts, numContacts, reverse);
 
         kraken::fix::thorncollide::OnWheelCollision(self, surfaceObj, contacts, numContacts);
+
+        // Wheel model v3. Feeds the ODE manifold to the penalty model. With apply
+        // off it only logs; with apply=1 it applies the §3 force and zeros
+        // *numContacts (suppressing ODE's wheel response). No-op unless enabled.
+        kraken::fix::wheelmodel::OnWheelContacts(self, contacts, numContacts);
         return result;
     }
 
