@@ -10100,14 +10100,20 @@ namespace kraken::render {
         _SetLastResult(m_pd3dDevice->SetMaterial(&d3dMat));
     };
 
+    // Virtual UI space is [interface] resolution_x/resolution_y (vanilla 1024x768); fall back to those
+    // if a config value is non-positive (RelToAbs divides by them -> a 0 would give NaN screen coords).
     void CDevice::RelToAbs(float& x, float& y) const {
-        x = m_d3dsdBackBuffer.Width * x / 1024.0f;
-        y = m_d3dsdBackBuffer.Height * y / 768.0f;
+        const float rx = Config::Instance().gui_resolution_x.value > 0 ? (float) Config::Instance().gui_resolution_x.value : 1024.0f;
+        const float ry = Config::Instance().gui_resolution_y.value > 0 ? (float) Config::Instance().gui_resolution_y.value : 768.0f;
+        x = m_d3dsdBackBuffer.Width * x / rx;
+        y = m_d3dsdBackBuffer.Height * y / ry;
     };
 
     void CDevice::AbsToRel(float& x, float& y) const {
-        x = x / m_d3dsdBackBuffer.Width * 1024.0f;
-        y = y / m_d3dsdBackBuffer.Height * 768.0f;
+        const float rx = Config::Instance().gui_resolution_x.value > 0 ? (float) Config::Instance().gui_resolution_x.value : 1024.0f;
+        const float ry = Config::Instance().gui_resolution_y.value > 0 ? (float) Config::Instance().gui_resolution_y.value : 768.0f;
+        x = x / m_d3dsdBackBuffer.Width * rx;
+        y = y / m_d3dsdBackBuffer.Height * ry;
     };
 
     int32_t CDevice::AddTextureFromBackBufferHandle(TexHandle srcTex) {
