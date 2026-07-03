@@ -98,7 +98,10 @@ namespace kraken {
         ConfigValue<uint32_t>                 wheelmodel_log;             // per-wheel classification/force logging
         ConfigValue<float>                    wheelmodel_max_g;           // safety: cap per-contact force at this many g of the corner mass
         ConfigValue<float>                    wheelmodel_max_speed;       // safety: skip apply if the contact-point speed exceeds this (m/s)
-        ConfigValue<float>                    wheelmodel_react_scale;     // Stage 3: friction→wheel-spin reaction torque scale (0 = off, 1 = physical)
+        ConfigValue<float>                    wheelmodel_react_scale;     // friction→wheel-spin reaction torque scale (0 = off, 1 = physical)
+        ConfigValue<uint32_t>                 wheelmodel_own_spin;        // 1: integrate our own §5 ω (torque-limited) so throttle governs traction/wheelspin; 0: use the engine's motor-locked spin
+        ConfigValue<float>                    wheelmodel_motor_gain;      // stiffness of τ_drive = clamp(this·(ω_engine−ω), ±drive_torque) chasing the real drivetrain spin
+        ConfigValue<float>                    wheelmodel_drive_torque;    // max wheel drive torque (N·m); grip above this holds → below it the wheel spins up (wheelspin)
         ConfigValue<float>                    wheelmodel_tyre_stiffness;  // k_t  (N/m) contact spring
         ConfigValue<float>                    wheelmodel_tyre_thickness;  // τ    (m) soft-tyre band (HTA has no rim/tyre split)
         ConfigValue<float>                    wheelmodel_tyre_damping;    // ζ_t  tyre damping ratio

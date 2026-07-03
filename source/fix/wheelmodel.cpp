@@ -11,16 +11,23 @@
 #include "ode/ode.hpp"
 
 #include <cmath>
+#include <unordered_map>
 
 namespace kraken::fix::wheelmodel {
 
     // ---- ODE Hinge2 accessors (the wheel joint gives the live, steer-aware frame) ----
     // __fastcall: joint in ecx, out-vector in edx (writes float[4]); rate returns float.
-    using GetVec3Fn = void (__fastcall*)(void* joint, float* out3);
-    using GetRateFn = float(__fastcall*)(void* joint);
-    static const auto dJointGetHinge2Axis1      = reinterpret_cast<GetVec3Fn>(0x007d0040); // suspension/up û
-    static const auto dJointGetHinge2Axis2      = reinterpret_cast<GetVec3Fn>(0x007d00f0); // axle â
-    static const auto dJointGetHinge2Angle2Rate = reinterpret_cast<GetRateFn>(0x007d0300); // wheel spin ω
+    using GetVec3Fn  = void (__fastcall*)(void* joint, float* out3);
+    using GetRateFn  = float(__fastcall*)(void* joint);
+    using GetParamFn = float(__fastcall*)(void* joint, int param);
+    static const auto dJointGetHinge2Axis1      = reinterpret_cast<GetVec3Fn>(0x007d0040);  // suspension/up û
+    static const auto dJointGetHinge2Axis2      = reinterpret_cast<GetVec3Fn>(0x007d00f0);  // axle â
+    static const auto dJointGetHinge2Angle2Rate = reinterpret_cast<GetRateFn>(0x007d0300);  // wheel spin ω
+    static const auto dJointGetHinge2Param      = reinterpret_cast<GetParamFn>(0x007cbcc0); // motor Vel2/FMax2
+    // ODE hinge2 axis-2 (wheel spin) motor params: the drivetrain writes the engine's
+    // target wheel speed to Vel2 and its max wheel torque to FMax2.
+    static constexpr int dParamVel2  = 0x102;
+    static constexpr int dParamFMax2 = 0x103;
 
     // gravity is along −Y (dWorldSetGravity 0,−g,0) ⇒ world up = +Y.
     static const vec3 WORLD_UP{ 0.0f, 1.0f, 0.0f };
@@ -29,11 +36,19 @@ namespace kraken::fix::wheelmodel {
 
     // Latest physics substep, pushed from physic.cpp::dInternalStepIsland_x2.
     // Seeded with HTA's fixed 1/120 s substep so the model is sane before the
-    // first step hook fires.
-    static float s_stepSize = 1.0f / 120.0f;
+    // first step hook fires. s_step advances every step so per-wheel spin is
+    // integrated once per frame even if a wheel reports several contacts.
+    static float    s_stepSize = 1.0f / 120.0f;
+    static uint32_t s_step     = 0;
 
-    void  SetStepSize(float stepsize) { if (stepsize > 1e-6f) s_stepSize = stepsize; }
+    void  SetStepSize(float stepsize) { if (stepsize > 1e-6f) { s_stepSize = stepsize; ++s_step; } }
     float GetStepSize(void)           { return s_stepSize; }
+
+    // own_spin: our own §5 spin DOF per wheel. omega = spin about the axle;
+    // frictionTq = last frame's friction spin torque (τ_react); step guards one
+    // integration per frame.
+    struct WheelSpin { float omega = 0.0f; float frictionTq = 0.0f; uint32_t step = 0xFFFFFFFFu; };
+    static std::unordered_map<hta::ai::Wheel*, WheelSpin> s_spin;
 
     WMParams ParamsFromConfig(void) {
         const kraken::Config& c = kraken::Config::Instance();
@@ -165,7 +180,6 @@ namespace kraken::fix::wheelmodel {
         vec3 u = Normalized(vec3{ ax1[0], ax1[1], ax1[2] });
         vec3 a = Normalized(vec3{ ax2[0], ax2[1], ax2[2] });
         if (Dot(u, WORLD_UP) < 0.0f) u = u * -1.0f; // orient û up
-        const vec3 f = Normalized(Cross(a, u));     // rolling forward (sign TBD in-sim)
 
         const vec3  c        = toVec3(wheel->GetPosition());
         // WORLD centre of mass (dBodyGetPosition). GetMassCenter() returns only the
@@ -174,11 +188,9 @@ namespace kraken::fix::wheelmodel {
         const vec3  comW     = toVec3(vehicle->GetMassCenterPosition());
         const vec3  vLin     = toVec3(vehicle->GetLinearVelocity());
         const vec3  vAng     = toVec3(vehicle->GetAngularVelocity());
-        // Spin ω about the axle: the wheel body's angular velocity projected on â
-        // (dJointGetHinge2Angle2Rate reads ~0 in-sim). v_p below is the chassis
-        // carrier velocity (no spin); §3 re-adds (ωâ)×r for the contact velocity.
-        const float omega    = Dot(toVec3(wheel->GetAngularVelocity()), a);
-        const float omegaEng = dJointGetHinge2Angle2Rate(joint); // diagnostic only
+        // Wheel spin about the axle from the engine's motor-driven wheel body
+        // (own_spin=0 uses this directly; own_spin=1 integrates its own ω below).
+        const float omegaMotor = Dot(toVec3(wheel->GetAngularVelocity()), a);
         const float R        = wheel->GetRadius();
         const float H        = wheel->GetWidth() * 0.5f;
         const uint32_t nWhl  = vehicle->GetNumWheels();
@@ -193,6 +205,28 @@ namespace kraken::fix::wheelmodel {
         const float maxSpeed  = config.wheelmodel_max_speed.value;
         const float healthyFn = 0.25f * m * gAbs; // suppress ODE only above this support
         const float reactScale = config.wheelmodel_react_scale.value; // spin↔traction coupling
+
+        // §5 own spin DOF. The drivetrain's Vel2/FMax2 read off the motor proved
+        // unreliable (FMax2 flips 0/643/6427 with timing; Vel2's sign disagreed with
+        // the real spin → reverse drove forward). The wheel body's actual spin
+        // (omegaMotor) is reliable and correctly signed — the working own_spin=0 used
+        // it. So chase omegaMotor (right direction, reflects throttle/gear/RPM, and
+        // ~0 when braking/idle) but TORQUE-LIMIT it: grip above drive_torque holds the
+        // wheel (traction), below it the wheel spins up past rolling → wheelspin.
+        const bool  ownSpin = config.wheelmodel_own_spin.value != 0;
+        float omega = omegaMotor;
+        if (ownSpin) {
+            WheelSpin& sp = s_spin[wheel];
+            if (sp.step != s_step) {                 // integrate once per frame per wheel
+                sp.step = s_step;
+                const float I   = fmaxf(P.inertia, 1e-3f);
+                const float cap = config.wheelmodel_drive_torque.value;
+                float tauMotor  = config.wheelmodel_motor_gain.value * (omegaMotor - sp.omega);
+                tauMotor = fmaxf(-cap, fminf(cap, tauMotor)); // capped at the max drive torque
+                sp.omega += (tauMotor + sp.frictionTq) / I * dt; // + last frame's τ_react
+            }
+            omega = s_spin[wheel].omega;
+        }
 
         const unsigned int n = (count < (unsigned)MAX_CONTACTS) ? count : (unsigned)MAX_CONTACTS;
         WMContact cts[MAX_CONTACTS];
@@ -217,8 +251,9 @@ namespace kraken::fix::wheelmodel {
         // wheel-body mass and self-regulates to depth_eq = mg/k_t; vertical friction
         // still lifts it (climb). Guarded: NaN-drop, per-contact cap, skip if the
         // body is already flying. The friction's spin reaction goes to the wheel body.
-        bool healthy = false;    // did the radial (support) force reach a real value?
-        bool bodyFlying = false; // a contact point exceeded maxSpeed (transient/blow-up)
+        bool  healthy = false;    // did the radial (support) force reach a real value?
+        bool  bodyFlying = false; // a contact point exceeded maxSpeed (transient/blow-up)
+        float sumFrictionTq = 0.0f; // Σ friction spin torque (τ_react) for the §5 ω step
         auto processSlot = [&](int idx, bool side) -> WMForce {
             WMForce fr;
             if (idx < 0) return fr;
@@ -239,13 +274,15 @@ namespace kraken::fix::wheelmodel {
                 // Stage 3 — spin↔traction coupling. The friction (tangential) part of
                 // the contact force, acting at the contact point, torques the wheel
                 // about its axle. Feed that spin torque to the wheel body so traction
-                // couples to spin (wheelspin, grip-limited accel, spin-driven climb);
-                // the drivetrain still drives the wheel and _CalcRpms still reads it,
-                // so RPM stays correct. Normal force is ~radial ⇒ ~no spin torque.
+                // couples to spin (wheelspin, grip-limited accel, spin-driven climb).
+                // own_spin=1: feed it to our ω DOF (τ_react). own_spin=0: push it onto
+                // the real wheel body (the drivetrain still owns the spin, RPM correct).
                 if (!side && reactScale > 0.0f) {
                     const vec3  Ft    = fr.F - cts[idx].n * Dot(fr.F, cts[idx].n); // friction only
                     const float tSpin = Dot(Cross(p - c, Ft), a) * reactScale;     // about the axle
-                    wheel->AddTorque(hta::CVector(a.x * tSpin, a.y * tSpin, a.z * tSpin));
+                    sumFrictionTq += tSpin;
+                    if (!ownSpin)
+                        wheel->AddTorque(hta::CVector(a.x * tSpin, a.y * tSpin, a.z * tSpin));
                 }
             }
             return fr;
@@ -254,6 +291,9 @@ namespace kraken::fix::wheelmodel {
         const WMForce fG = processSlot(slots.ground,   false);
         const WMForce fO = processSlot(slots.obstacle, false);
         const WMForce fS = processSlot(slots.side,     true);
+
+        // Store this frame's friction spin torque (τ_react) for next frame's ω step.
+        if (ownSpin) s_spin[wheel].frictionTq = sumFrictionTq;
 
         // Commit: suppress ODE's wheel contact whenever we're actively supporting
         // this wheel, so it penetrates and our tyre spring builds real support
@@ -280,10 +320,11 @@ namespace kraken::fix::wheelmodel {
                      Dot(vp, cts[idx].n), Len(vp), fr.F.x, fr.F.y, fr.F.z, Len(fr.F), fr.fpar_w);
         };
 
-        LOG_INFO("wheel=%p veh=%p nC=%u applyThis=%d healthy=%d dt=%.4f R=%.2f m=%.0f maxF=%.0f "
-                 "u=(%.2f,%.2f,%.2f) a=(%.2f,%.2f,%.2f) f=(%.2f,%.2f,%.2f) |vLin|=%.1f om=%.2f omEng=%.2f",
-                 (void*)wheel, (void*)vehicle, n, applyThis ? 1 : 0, healthy ? 1 : 0, dt, R, m, maxForce,
-                 u.x, u.y, u.z, a.x, a.y, a.z, f.x, f.y, f.z, Len(vLin), omega, omegaEng);
+        LOG_INFO("wheel=%p veh=%p nC=%u applyThis=%d healthy=%d thr=%.2f brk=%.2f "
+                 "R=%.2f |vLin|=%.1f om=%.2f omMot=%.2f",
+                 (void*)wheel, (void*)vehicle, n, applyThis ? 1 : 0, healthy ? 1 : 0,
+                 vehicle->GetThrottle(), vehicle->GetBrake(), R, Len(vLin),
+                 omega, omegaMotor);
         logSlot("ground",   slots.ground,   false, fG);
         logSlot("obstacle", slots.obstacle, false, fO);
         logSlot("side",     slots.side,     true,  fS);

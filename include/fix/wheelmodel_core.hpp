@@ -195,6 +195,7 @@ namespace kraken::fix::wheelmodel {
             f_lat = wm_clamp(f_lat, -capLat, capLat);
 
             // static friction near standstill: blend lateral to a critical damper
+            // that holds the patch (the slip curve mis-fires at ~0 speed).
             const float stick = wm_clamp(1.0f - fabsf(Dot(v_p, t)) / P.stick_speed, 0.0f, 1.0f);
             const float damper = wm_clamp(-v_lat * 2.0f * sqrtf(fmaxf(P.k_t * m, 0.0f)), -D, D);
             f_lat = wm_lerp(f_lat, damper, stick);

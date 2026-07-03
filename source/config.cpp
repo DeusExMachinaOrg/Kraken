@@ -66,6 +66,9 @@ namespace kraken {
         this->wheelmodel_max_g                  = { "wheelmodel", "max_g",                         6.0f,     true,  1.0f,   100.0f    };
         this->wheelmodel_max_speed              = { "wheelmodel", "max_speed",                     80.0f,    true,  1.0f,   10000.0f  };
         this->wheelmodel_react_scale            = { "wheelmodel", "react_scale",                   1.0f,     true,  0.0f,   10.0f     };
+        this->wheelmodel_own_spin               = { "wheelmodel", "own_spin",                      1,        true,  0,      1         };
+        this->wheelmodel_motor_gain             = { "wheelmodel", "motor_gain",                    200.0f,   true,  0.0f,   1e6f      };
+        this->wheelmodel_drive_torque           = { "wheelmodel", "drive_torque",                  800.0f,   true,  0.0f,   1e7f      };
         this->wheelmodel_tyre_stiffness         = { "wheelmodel", "tyre_stiffness",                120000.0f,true,  1.0f,   1e9f      };
         this->wheelmodel_tyre_thickness         = { "wheelmodel", "tyre_thickness",                0.1f,     true,  0.0f,   10.0f     };
         this->wheelmodel_tyre_damping           = { "wheelmodel", "tyre_damping",                  0.5f,     true,  0.0f,   10.0f     };
@@ -160,6 +163,9 @@ namespace kraken {
         this->LoadValue(&this->wheelmodel_max_g);
         this->LoadValue(&this->wheelmodel_max_speed);
         this->LoadValue(&this->wheelmodel_react_scale);
+        this->LoadValue(&this->wheelmodel_own_spin);
+        this->LoadValue(&this->wheelmodel_motor_gain);
+        this->LoadValue(&this->wheelmodel_drive_torque);
         this->LoadValue(&this->wheelmodel_tyre_stiffness);
         this->LoadValue(&this->wheelmodel_tyre_thickness);
         this->LoadValue(&this->wheelmodel_tyre_damping);
@@ -230,6 +236,9 @@ namespace kraken {
         this->DumpValue(&this->wheelmodel_max_g);
         this->DumpValue(&this->wheelmodel_max_speed);
         this->DumpValue(&this->wheelmodel_react_scale);
+        this->DumpValue(&this->wheelmodel_own_spin);
+        this->DumpValue(&this->wheelmodel_motor_gain);
+        this->DumpValue(&this->wheelmodel_drive_torque);
         this->DumpValue(&this->wheelmodel_tyre_stiffness);
         this->DumpValue(&this->wheelmodel_tyre_thickness);
         this->DumpValue(&this->wheelmodel_tyre_damping);
