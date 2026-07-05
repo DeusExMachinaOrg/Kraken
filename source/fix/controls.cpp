@@ -64,6 +64,13 @@ namespace kraken::fix::controls {
         float g_throttle01 = 0.0f; // [0..1]
         float g_brake01    = 0.0f; // [0..1]
 
+        // Latest raw value per axis of the selected controller [-1..1] (before
+        // deadzone/mapping), for the profile UI's live position bars. Written on the
+        // message-pump thread from OnImpulse; read on the same thread during menu
+        // paint. Kept as atomics so a future off-thread reader stays well-defined.
+        constexpr int    AXIS_LIVE_COUNT = 6;
+        std::atomic<float> g_axisLive[AXIS_LIVE_COUNT] = {};
+
         // --- config snapshot ---
         uint32_t g_device       = 0;
         int      g_steerAxis    = 0;
@@ -527,6 +534,9 @@ namespace kraken::fix::controls {
                         break;
                     int   a = static_cast<int>(ev.joy_axis.axis);
                     float v = ev.joy_axis.value; // [-1..1]
+                    // Publish the raw value for the profile UI's live bars.
+                    if (a >= 0 && a < AXIS_LIVE_COUNT)
+                        g_axisLive[a].store(v, std::memory_order_relaxed);
                     // Per-axis diagnostic: with log=1 this prints which axis moves
                     // when you press R2/L2, so trigger_axis can be set correctly.
                     if (g_log)
@@ -923,5 +933,11 @@ namespace kraken::fix::controls {
         LoadConfig();
         if (g_enabled && !g_installed)
             Install();
+    }
+
+    float AxisLive(int axis) {
+        if (axis < 0 || axis >= AXIS_LIVE_COUNT)
+            return 0.0f;
+        return g_axisLive[axis].load(std::memory_order_relaxed);
     }
 }

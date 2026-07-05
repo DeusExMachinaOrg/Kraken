@@ -78,6 +78,16 @@ namespace kraken::fix::inputprofiles {
     // profile is the active one, the change is reloaded and re-applied live.
     bool SetDevice(const std::string& profile, uint32_t deviceId);
 
+    // Assign an axis index (steer_axis / throttle_axis / brake_axis / cam_yaw_axis
+    // / cam_pitch_axis) or toggle an inversion (invert_steer / ...) in a profile's
+    // [wheel] section, reloading + re-applying live if it is the active profile.
+    // The UI axis-capture rows in the bindings list drive these. GetAxis/GetInvert
+    // read the stored value back for the row display.
+    bool SetAxis(const std::string& profile, const char* iniKey, int axisIndex);
+    bool SetInvert(const std::string& profile, const char* iniKey, bool on);
+    int  GetAxis(const std::string& profile, const char* iniKey, int def);
+    bool GetInvert(const std::string& profile, const char* iniKey);
+
     // Write the default axis layout for the CURRENTLY DETECTED controller into the
     // profile ([wheel] steer/throttle/brake/trigger/cam axes + inversions, and for
     // the native DualSense its device id + [dualsense] enabled). Applied only from

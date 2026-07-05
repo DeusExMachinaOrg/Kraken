@@ -629,6 +629,52 @@ namespace kraken::fix::inputprofiles {
         return true;
     }
 
+    // Re-read the active profile's input.ini into Config and re-apply the live
+    // input modules (no restart). Shared by SetAxis / SetInvert so a mapping edit
+    // takes effect in the sim immediately, exactly like ApplyDeviceDefaults' tail.
+    static void ReapplyActive(const std::string& profile) {
+        if (Active() != profile)
+            return;
+        std::string ini = ProfileIni(profile);
+        Config::Instance().SetInputSource(ini);
+        Config::Instance().ReloadInput();
+        controls::Reapply();
+        dualsense::Reapply();
+    }
+
+    bool SetAxis(const std::string& profile, const char* iniKey, int axisIndex) {
+        if (!Available() || !FileExists(ProfileIni(profile)))
+            return false;
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%d", axisIndex);
+        WritePrivateProfileStringA("wheel", iniKey, buf, ProfileIni(profile).c_str());
+        ReapplyActive(profile);
+        LOG_INFO("Profile '%s' [wheel] %s = %d", profile.c_str(), iniKey, axisIndex);
+        return true;
+    }
+
+    bool SetInvert(const std::string& profile, const char* iniKey, bool on) {
+        if (!Available() || !FileExists(ProfileIni(profile)))
+            return false;
+        WritePrivateProfileStringA("wheel", iniKey, on ? "1" : "0",
+                                   ProfileIni(profile).c_str());
+        ReapplyActive(profile);
+        LOG_INFO("Profile '%s' [wheel] %s = %d", profile.c_str(), iniKey, (int)on);
+        return true;
+    }
+
+    int GetAxis(const std::string& profile, const char* iniKey, int def) {
+        if (!Available())
+            return def;
+        return GetPrivateProfileIntA("wheel", iniKey, def, ProfileIni(profile).c_str());
+    }
+
+    bool GetInvert(const std::string& profile, const char* iniKey) {
+        if (!Available())
+            return false;
+        return GetPrivateProfileIntA("wheel", iniKey, 0, ProfileIni(profile).c_str()) != 0;
+    }
+
     void Apply() {
         // LoadFromProfile prologue is 5 bytes (sub esp,0x48 / push ebx / push esi);
         // LoadFromDefaults is 6 (sub esp,0x18 / push esi / mov esi,ecx).

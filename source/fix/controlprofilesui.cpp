@@ -4,11 +4,13 @@
 #include <stdint.h>
 #include <cstring>
 #include <cstdio>
+#include <cmath>
 #include <string>
 #include <vector>
 
 #include "fix/controlprofilesui.hpp"
 #include "fix/inputprofiles.hpp"
+#include "fix/controls.hpp"
 #include "config.hpp"
 #include "ext/logger.hpp"
 #include "ext/impulse.hpp"
@@ -416,6 +418,8 @@ namespace kraken::fix::controlprofilesui {
             g_populating = false;
         }
 
+        void RefreshAxisRows(); // defined with the axis-row machinery below
+
         void OnProfileSelected() {
             if (g_populating || !g_cbProfile) return;
             int idx = CbGetCurSel(g_cbProfile);
@@ -423,6 +427,7 @@ namespace kraken::fix::controlprofilesui {
             if (g_profileNames[idx] == inputprofiles::Active()) return; // no change
             inputprofiles::Switch(g_profileNames[idx]);
             PopulateCombos(); // device may differ per profile
+            RefreshAxisRows(); // axis mapping is per-profile
         }
 
         void OnDeviceSelected() {
@@ -433,6 +438,7 @@ namespace kraken::fix::controlprofilesui {
             std::string active = inputprofiles::Active();
             if (!active.empty())
                 inputprofiles::SetDevice(active, g_deviceIds[idx]);
+            RefreshAxisRows();
         }
 
         // Open the native name-entry modal (ControlProfileNameWnd.xml) and block
@@ -778,6 +784,363 @@ namespace kraken::fix::controlprofilesui {
             }
             return r;
         }
+
+        // ==================================================================
+        //  Axis-assignment rows INSIDE the engine bindings list (lstBindings)
+        // ==================================================================
+        // The bindings list (BindKeysWnd::BindKeysList = ListBoxWnd<BindKeysItem*>)
+        // is built from engine Impulses; axes are not impulses. We append extra
+        // BindKeysItem rows for the analog axes, borrowing the engine's own row
+        // skeleton (SetUp with a sentinel impulse so item/scroll/measure/render just
+        // work), then override the label, repurpose the row's two KeySetButtons as a
+        // click-to-assign "value" column (with a live position bar) and an inversion
+        // toggle, and drive everything Kraken-side. See docs/control-profiles.md and
+        // the plan file. All addresses are VAs (base 0x400000).
+
+        // Engine allocator: *(void**)0xA0988C is the kernel; its alloc fn-ptr is at
+        // +0x18 (ecx=size, edx=0, one pushed 0; callee cleans the 4). The list frees
+        // items through the same allocator, so items MUST come from here.
+        void* KernelAlloc(int nbytes) {
+            // Read the kernel pointer + its alloc fn-ptr in C++ (a raw absolute
+            // [0xA0988C] in inline asm is mis-assembled as an immediate load), then
+            // use asm only for the __usercall (ecx=size, edx=0, one pushed 0 that
+            // the callee cleans; result in eax). NB: 'size' is a MASM keyword.
+            void* kernel = *reinterpret_cast<void**>(0x00A0988C);
+            if (!kernel) return nullptr;
+            void* allocFn = *reinterpret_cast<void**>(static_cast<char*>(kernel) + 0x18);
+            void* result;
+            __asm {
+                push 0
+                xor  edx, edx
+                mov  ecx, nbytes
+                call allocFn                  ; callee cleans the pushed 0
+                mov  result, eax
+            }
+            return result;
+        }
+        // BindKeysItem::BindKeysItem(float width) @0x4A76A0 — __usercall this=EDI,
+        // width on stack, ret 4. Inits AuxInfo + zeroes fields (m_impId=-1).
+        const void* ITEMCTOR_ADDR = reinterpret_cast<void*>(0x004A76A0);
+        __declspec(naked) void __stdcall ItemCtor(void* /*item*/, float /*width*/) {
+            __asm {
+                push edi
+                mov  edi, [esp + 8]           ; item -> this (EDI)
+                mov  eax, [esp + 12]          ; width bits
+                push eax
+                call dword ptr [ITEMCTOR_ADDR] ; ret 4 cleans the pushed width
+                pop  edi
+                ret  8                        ; __stdcall: clean item + width
+            }
+        }
+        // BindKeysItem::SetUp @0x4A77B0 — all args on stack (this, impId, keys[16],
+        // parent, idx), ret 0x20. We pass an empty (zeroed) keys vector so the two
+        // KeySetButtons come up blank; label comes from impId's name (overridden).
+        const void* SETUP_ADDR = reinterpret_cast<void*>(0x004A77B0);
+        __declspec(naked) void __stdcall ItemSetUp(void* /*item*/, int /*impId*/,
+                                                   void* /*parent*/, int /*idx*/) {
+            __asm {
+                mov  eax, [esp + 16]          ; idx
+                push eax
+                mov  eax, [esp + 16]          ; parent (orig+12, now +16)
+                push eax
+                sub  esp, 0x10                ; keys byval (empty vector)
+                xor  eax, eax
+                mov  [esp], eax
+                mov  [esp + 4], eax
+                mov  [esp + 8], eax
+                mov  [esp + 0xc], eax
+                mov  eax, [esp + 0x20]        ; impId
+                push eax
+                mov  eax, [esp + 0x20]        ; item (this)
+                push eax
+                call dword ptr [SETUP_ADDR]   ; ret 0x20 cleans the 32 pushed bytes
+                ret  0x10                     ; clean our 4 incoming args (stdcall)
+            }
+        }
+        // ListBoxWnd<BindKeysItem*>::AddItem @0x4A8D60 — __usercall this=ECX,
+        // item** in EAX, ret 0.
+        const void* ADDITEM_ADDR = reinterpret_cast<void*>(0x004A8D60);
+        __declspec(naked) void __stdcall ListAddItem(void* /*list*/, void** /*itemPtr*/) {
+            __asm {
+                mov  ecx, [esp + 4]           ; list (this)
+                mov  eax, [esp + 8]           ; &item
+                call dword ptr [ADDITEM_ADDR] ; __usercall this=ECX, item** in EAX
+                ret  8                        ; __stdcall: clean our 2 args
+            }
+        }
+        // GfxServer::AddFlatAxialQuad @0x27B830 (this=GfxServer *0xA12CC0): fills a
+        // rect (BoundsBase{x0,y0,w,h}) in the button's local space with a color.
+        using AddQuad_t = void(__thiscall*)(void* gfx, void* di, void* rect, unsigned clr);
+        const AddQuad_t AddFlatAxialQuad = reinterpret_cast<AddQuad_t>(0x0067B830);
+        void** const GFXSERVER_PTR = reinterpret_cast<void**>(0x00A12CC0);
+        // Wnd::GetClientRect = vtable slot 0x50 (this, out) -> BoundsBase* (eax).
+        constexpr unsigned VT_GETCLIENTRECT = 0x50;
+
+        // BindKeysItem field offsets.
+        constexpr unsigned ITEM_BTN0   = 0x00;
+        constexpr unsigned ITEM_BTN1   = 0x04;
+        constexpr unsigned ITEM_LABEL  = 0x0c;
+        constexpr unsigned ITEM_WIDTH  = 0x18;
+        // ListBoxWnd<Item> data pointers: _Myfirst (begin) at +0x224, _Mylast (end)
+        // at +0x228 (the vector object sits at +0x220 with a 4-byte lead). Item
+        // stride is 0x24 and its first field is the BindKeysItem*. (Confirmed from
+        // BindKeysList::MeasureItem @0xA7460: item = *(*(this+0x224) + idx*0x24).)
+        constexpr unsigned LIST_ITEMS_BEGIN = 0x224;
+        constexpr unsigned LIST_ITEMS_END   = 0x228;
+        constexpr unsigned LIST_ITEM_STRIDE = 0x24;
+        // Sentinel impulse for the row skeleton: a real editable impulse (the edit
+        // table at 0xA07EB8 starts at 23) so SetUp builds the full row; EVEN (24)
+        // so SetUp skips its input-registration path (and eax,0x80000001 == 0). The
+        // shared impId is harmless — we never let the engine bind through our rows
+        // (clicks are intercepted) and we override the label.
+        constexpr int SENTINEL_IMP = 24;
+
+        struct FBounds { float x0, y0, w, h; };
+        struct FAxisDef { const char* label; const char* axisKey; const char* invKey;
+                          int defAxis; bool isTrigger; };
+
+        // RU (windows-1251) labels/values.
+        const char* const RU_STEER   = "\xD0\xF3\xEB\xFC";                 // Руль
+        const char* const RU_THROTTLE= "\xC3\xE0\xE7";                     // Газ
+        const char* const RU_BRAKE   = "\xD2\xEE\xF0\xEC\xEE\xE7";         // Тормоз
+        const char* const RU_CAMX    = "\xCE\xE1\xE7\xEE\xF0 X";           // Обзор X
+        const char* const RU_CAMY    = "\xCE\xE1\xE7\xEE\xF0 Y";           // Обзор Y
+        const char* const RU_AXIS    = "\xEE\xF1\xFC";                     // ось
+        const char* const RU_MOVEAX  = "\xE4\xE2\xE8\xE3\xE0\xE9 \xEE\xF1\xFC"; // двигай ось
+        const char* const RU_INV_ON  = "\xE8\xED\xE2: \xE4\xE0";          // инв: да
+        const char* const RU_INV_OFF = "\xE8\xED\xE2: \xED\xE5\xF2";       // инв: нет
+
+        enum { AXF_STEER, AXF_THROTTLE, AXF_BRAKE, AXF_CAMX, AXF_CAMY, AXF_COUNT };
+        FAxisDef g_axisDefs[AXF_COUNT] = {
+            { RU_STEER,    "steer_axis",     "invert_steer",     0, false },
+            { RU_THROTTLE, "throttle_axis",  "invert_throttle",  5, true  },
+            { RU_BRAKE,    "brake_axis",     "invert_brake",     4, true  },
+            { RU_CAMX,     "cam_yaw_axis",   "cam_invert_yaw",   2, false },
+            { RU_CAMY,     "cam_pitch_axis", "cam_invert_pitch", 3, false },
+        };
+
+        void* g_axisValueBtn[AXF_COUNT] = {}; // click = capture; hosts the live bar
+        void* g_axisInvBtn[AXF_COUNT]   = {}; // click = toggle inversion (toggle switch)
+        bool  g_axisInvState[AXF_COUNT] = {}; // cached inversion state (drawn each frame)
+
+        // Axis capture state (delta-based so a trigger resting at -1 can't self-win).
+        bool  g_axisCapturing = false;
+        int   g_axisCaptureFunc = -1;
+        bool  g_axisSeen[6] = {};
+        float g_axisBase[6] = {};
+
+        bool AxisBtnInfo(void* b, int* func, bool* invert) {
+            for (int f = 0; f < AXF_COUNT; ++f) {
+                if (g_axisValueBtn[f] == b) { *func = f; *invert = false; return true; }
+                if (g_axisInvBtn[f]   == b) { *func = f; *invert = true;  return true; }
+            }
+            return false;
+        }
+
+        void RefreshAxisRow(int func) {
+            std::string active = inputprofiles::Active();
+            if (void* vb = g_axisValueBtn[func]) {
+                char buf[48];
+                if (g_axisCapturing && g_axisCaptureFunc == func) {
+                    std::snprintf(buf, sizeof(buf), "%s", RU_MOVEAX);
+                } else {
+                    int ax = active.empty() ? -1
+                        : inputprofiles::GetAxis(active, g_axisDefs[func].axisKey, -1);
+                    if (ax < 0) std::snprintf(buf, sizeof(buf), "-");
+                    else        std::snprintf(buf, sizeof(buf), "%s %d", RU_AXIS, ax);
+                }
+                SetWndText(vb, buf);
+            }
+            if (void* ib = g_axisInvBtn[func]) {
+                // The inversion cell is drawn as a toggle switch (DrawInvertToggle in
+                // the DrawWndText detour) — cache the state and keep the caption blank
+                // so no text sits under the switch.
+                g_axisInvState[func] = !active.empty()
+                    && inputprofiles::GetInvert(active, g_axisDefs[func].invKey);
+                SetWndText(ib, "");
+            }
+        }
+        void RefreshAxisRows() { for (int f = 0; f < AXF_COUNT; ++f) RefreshAxisRow(f); }
+
+        void BeginAxisCapture(int func) {
+            g_axisCapturing = true;
+            g_axisCaptureFunc = func;
+            for (int i = 0; i < 6; ++i) g_axisSeen[i] = false;
+            RefreshAxisRow(func);
+            LOG_INFO("Axis capture armed for '%s' — move an axis", g_axisDefs[func].label);
+        }
+
+        // Impulse listener (attached to eImpulseJoyAxis): while capturing, baseline
+        // each axis on first observation, then the first axis to deflect > 0.5 from
+        // its baseline wins and is written to the active profile.
+        void OnAxisCapture(const impulse::Impulse& e) {
+            if (!g_axisCapturing || e.type != impulse::eImpulseJoyAxis) return;
+            if (e.joy_axis.device != Config::Instance().wheel_device.value) return;
+            int a = static_cast<int>(e.joy_axis.axis);
+            if (a < 0 || a >= 6) return;
+            float v = e.joy_axis.value;
+            if (!g_axisSeen[a]) { g_axisSeen[a] = true; g_axisBase[a] = v; return; }
+            if (std::fabs(v - g_axisBase[a]) <= 0.5f) return;
+            int func = g_axisCaptureFunc;
+            g_axisCapturing = false;
+            g_axisCaptureFunc = -1;
+            std::string active = inputprofiles::Active();
+            if (!active.empty())
+                inputprofiles::SetAxis(active, g_axisDefs[func].axisKey, a);
+            RefreshAxisRow(func);
+            LOG_INFO("Axis capture: '%s' -> axis %d", g_axisDefs[func].label, a);
+        }
+
+        // Append the axis rows to the list after the engine built the impulse rows.
+        void BuildAxisRows(void* list) {
+            for (int f = 0; f < AXF_COUNT; ++f) { g_axisValueBtn[f] = nullptr; g_axisInvBtn[f] = nullptr; }
+            char* vecBegin = *reinterpret_cast<char**>(static_cast<char*>(list) + LIST_ITEMS_BEGIN);
+            char* vecEnd   = *reinterpret_cast<char**>(static_cast<char*>(list) + LIST_ITEMS_END);
+            int count = (vecBegin && vecEnd > vecBegin)
+                ? static_cast<int>((vecEnd - vecBegin) / LIST_ITEM_STRIDE) : 0;
+            float width = 520.0f;
+            if (count > 0) {
+                void* item0 = *reinterpret_cast<void**>(vecBegin); // Item.first = BindKeysItem*
+                if (item0) width = *reinterpret_cast<float*>(static_cast<char*>(item0) + ITEM_WIDTH);
+            }
+            LOG_INFO("BuildAxisRows: list=%p items=%d width=%.1f", list, count, width);
+            int idx = count;
+            for (int f = 0; f < AXF_COUNT; ++f) {
+                void* item = KernelAlloc(0x30);
+                if (!item) continue;
+                ItemCtor(item, width);
+                ItemSetUp(item, SENTINEL_IMP, list, idx);
+                ListAddItem(list, &item);
+                ++idx;
+                SetWndText(*reinterpret_cast<void**>(static_cast<char*>(item) + ITEM_LABEL),
+                           g_axisDefs[f].label);
+                g_axisValueBtn[f] = *reinterpret_cast<void**>(static_cast<char*>(item) + ITEM_BTN0);
+                g_axisInvBtn[f]   = *reinterpret_cast<void**>(static_cast<char*>(item) + ITEM_BTN1);
+                RefreshAxisRow(f);
+            }
+            LOG_INFO("Appended %d axis rows (value=%p inv=%p ...)", AXF_COUNT,
+                     g_axisValueBtn[0], g_axisInvBtn[0]);
+        }
+
+        // Detour BindKeysList::CreateItems @0x4A69A0 (__stdcall self-on-stack, ret 4).
+        using CreateItems_t = int(__stdcall*)(void*);
+        CreateItems_t g_origCreateItems = nullptr;
+        int __stdcall CreateItems_Hook(void* self) {
+            LOG_INFO("CreateItems_Hook: list=%p", self);
+            int r = g_origCreateItems(self);
+            BuildAxisRows(self);
+            return r;
+        }
+
+        // Detour KeySetButton::OnMouseButton0 @0x4A8010 (thiscall, ret 8). For our
+        // axis buttons: on button-down (state != 0) start capture / toggle invert;
+        // consume the click so the engine never arms keyboard capture on the row.
+        using KsbMB0_t = int(__thiscall*)(void*, unsigned, void*);
+        KsbMB0_t g_origKsbMB0 = nullptr;
+        int __fastcall KsbMB0_Hook(void* self, void* /*edx*/, unsigned state, void* at) {
+            int func; bool invert;
+            if (AxisBtnInfo(self, &func, &invert)) {
+                if (state != 0) {
+                    std::string active = inputprofiles::Active();
+                    if (!active.empty()) {
+                        if (invert) {
+                            bool cur = inputprofiles::GetInvert(active, g_axisDefs[func].invKey);
+                            inputprofiles::SetInvert(active, g_axisDefs[func].invKey, !cur);
+                            RefreshAxisRow(func);
+                        } else {
+                            BeginAxisCapture(func);
+                        }
+                    }
+                }
+                return 1;
+            }
+            return g_origKsbMB0(self, state, at);
+        }
+
+        // Draw the live position bar for an axis value button, in its local space.
+        void DrawAxisBar(void* btn, void* di, int func) {
+            std::string active = inputprofiles::Active();
+            int ax = active.empty() ? -1 : inputprofiles::GetAxis(active, g_axisDefs[func].axisKey, -1);
+            if (ax < 0 || ax >= 6) return;
+            using GetClientRect_t = void*(__thiscall*)(void*, void*);
+            void** vtbl = *reinterpret_cast<void***>(btn);
+            float out[8] = {};
+            void* b = reinterpret_cast<GetClientRect_t>(vtbl[VT_GETCLIENTRECT / 4])(btn, out);
+            float w = reinterpret_cast<float*>(b)[2];
+            float h = reinterpret_cast<float*>(b)[3];
+            if (w <= 4.0f || h <= 2.0f) return;
+            float v = controls::AxisLive(ax);
+            float barH = h * 0.34f;
+            float y0 = h * 0.5f - barH * 0.5f;
+            // Faint full-width track.
+            FBounds track = { 2.0f, y0, w - 4.0f, barH };
+            AddFlatAxialQuad(*GFXSERVER_PTR, di, &track, 0x30FFFFFF);
+            FBounds fill;
+            if (g_axisDefs[func].isTrigger) {
+                float t = (v + 1.0f) * 0.5f;            // trigger rest -1 -> 0
+                if (t < 0.0f) t = 0.0f; if (t > 1.0f) t = 1.0f;
+                fill = { 2.0f, y0, (w - 4.0f) * t, barH };
+            } else {
+                float half = (w - 4.0f) * 0.5f;
+                float cx = 2.0f + half;
+                if (v >= 0.0f) fill = { cx, y0, half * v, barH };
+                else           fill = { cx - half * (-v), y0, half * (-v), barH };
+            }
+            AddFlatAxialQuad(*GFXSERVER_PTR, di, &fill, 0xFF40C0F0);
+        }
+
+        // Draw the inversion cell as a toggle switch (track + knob) in local space:
+        // OFF = faint track, knob left, grey; ON = green track, knob right, white.
+        // Colours use R==B so they read the same regardless of ARGB/ABGR channel order.
+        void DrawInvertToggle(void* btn, void* di, int func) {
+            using GetClientRect_t = void*(__thiscall*)(void*, void*);
+            void** vtbl = *reinterpret_cast<void***>(btn);
+            float out[8] = {};
+            void* b = reinterpret_cast<GetClientRect_t>(vtbl[VT_GETCLIENTRECT / 4])(btn, out);
+            float w = reinterpret_cast<float*>(b)[2];
+            float h = reinterpret_cast<float*>(b)[3];
+            if (w <= 6.0f || h <= 4.0f) return;
+            bool on = g_axisInvState[func];
+            float trackW = w * 0.55f;
+            if (trackW > 48.0f) trackW = 48.0f;
+            if (trackW < 26.0f) trackW = 26.0f;
+            float trackH = h * 0.44f;
+            float tx = (w - trackW) * 0.5f;
+            float ty = (h - trackH) * 0.5f;
+            FBounds track = { tx, ty, trackW, trackH };
+            AddFlatAxialQuad(*GFXSERVER_PTR, di, &track, on ? 0xFF40B040u : 0x40FFFFFFu);
+            float knob = trackH;
+            float kx = on ? (tx + trackW - knob) : tx;
+            FBounds kb = { kx, ty, knob, trackH };
+            AddFlatAxialQuad(*GFXSERVER_PTR, di, &kb, on ? 0xFFF0F0F0u : 0xFF909090u);
+        }
+
+        // Detour KeySetButton::DrawWndText @0x4A8520 (thiscall(di), ret 4). For our
+        // value buttons draw the live bar, for the invert buttons the toggle switch,
+        // then let the base draw the (blank for invert) caption.
+        using DrawText_t = void(__thiscall*)(void*, void*);
+        DrawText_t g_origDrawText = nullptr;
+        void __fastcall DrawText_Hook(void* self, void* /*edx*/, void* di) {
+            int func; bool invert;
+            if (AxisBtnInfo(self, &func, &invert)) {
+                if (invert) DrawInvertToggle(self, di, func);
+                else        DrawAxisBar(self, di, func);
+            }
+            g_origDrawText(self, di);
+        }
+
+        // Detour KeySetButton::SetBindText @0x4A8300 (__stdcall self-on-stack, ret 4).
+        // The engine calls this to re-derive a button's caption from its impulse's
+        // keyset (e.g. on a bindings refresh when the menu is reopened). For our axis
+        // buttons that would clobber our "ось N" / "инв: да/нет" caption with the
+        // sentinel impulse's key ("S" / "--"), so skip it and keep our own text.
+        using SetBindText_t = void(__stdcall*)(void*);
+        SetBindText_t g_origSetBindText = nullptr;
+        void __stdcall SetBindText_Hook(void* self) {
+            int func; bool invert;
+            if (AxisBtnInfo(self, &func, &invert)) return;
+            g_origSetBindText(self);
+        }
     }
 
     void Apply() {
@@ -797,9 +1160,22 @@ namespace kraken::fix::controlprofilesui {
             InstallDetour(0x0071F120, 5, (void*)&CbMouseBtn_Hook));
         g_origApplyBindings = reinterpret_cast<ApplyBindings_t>(
             InstallDetour(0x004A64E0, 5, (void*)&ApplyBindings_Hook));
+        // Axis rows inside the bindings list: append rows (CreateItems), handle their
+        // clicks (OnMouseButton0), and draw their live bars (DrawWndText).
+        g_origCreateItems = reinterpret_cast<CreateItems_t>(
+            InstallDetour(0x004A69A0, 5, (void*)&CreateItems_Hook));
+        g_origKsbMB0 = reinterpret_cast<KsbMB0_t>(
+            InstallDetour(0x004A8010, 5, (void*)&KsbMB0_Hook));
+        g_origDrawText = reinterpret_cast<DrawText_t>(
+            InstallDetour(0x004A8520, 10, (void*)&DrawText_Hook));
+        g_origSetBindText = reinterpret_cast<SetBindText_t>(
+            InstallDetour(0x004A8300, 5, (void*)&SetBindText_Hook));
+        impulse::Attach(impulse::eImpulseJoyAxis, OnAxisCapture);
         if (g_origSetup && g_origOptNotify && g_origNotify)
             LOG_INFO("Unified control page + Mouse tab installed");
         if (g_origApplyBindings)
             LOG_INFO("Bind-keys Apply sync installed (keeps active profile's bindings current)");
+        if (g_origCreateItems && g_origKsbMB0 && g_origDrawText)
+            LOG_INFO("Axis-assignment rows installed in the bindings list");
     }
 }
