@@ -22,6 +22,15 @@ namespace kraken::fix::dualsense {
     // actuators out so the pad doesn't keep buzzing.
     void Idle();
 
+    // True when Kraken currently has the DualSense HID open (native wireless/USB
+    // mode — DSX/Steam not holding it exclusively). Lets the device picker offer
+    // the controller and lets the profile pick the native axis layout on reset.
+    bool NativePresent();
+    // System product name of the open DualSense (HID product string, e.g.
+    // "Wireless Controller"); "DualSense (HID)" if the string is unavailable.
+    // Empty when not present.
+    const char* NativeName();
+
     // Wireless path: read the DualSense input report (0x31) over HID and inject
     // axes/buttons into the impulse bus (bypassing winmm, which can't read the
     // controller once it switches to full-report mode). Called from the joystick

@@ -8,8 +8,8 @@
 
 // Control profiles: named bundles of the input device config ([wheel]/[gamepad]/
 // [dualsense]/[xinput]) — one per controller (wheel, DualSense, XInput, ...) —
-// stored inside the active player profile at
-//   data/profiles/<player>/input_profiles/<name>/input.ini
+// stored GLOBALLY (shared across all player profiles) at
+//   data/input_profiles/<name>/input.ini
 // The active profile's input.ini feeds Config's input sections (see
 // Config::SetInputSource / ReloadInput); switching re-reads it and re-applies the
 // input modules live (controls / gamepad / dualsense / xinputrumble). See
@@ -58,12 +58,31 @@ namespace kraken::fix::inputprofiles {
     // (see fix/controlprofilesui.cpp), so the profile always reflects what's live.
     void SyncBindingsToProfile(const std::string& name);
 
-    // Connected controllers (winmm view), for the device picker in the menu.
+    // Temporarily suppress the automatic profile re-apply that runs after the
+    // engine reloads its bindings (GameImpulse::LoadFromDefaults/LoadFromProfile).
+    // The stock "По умолчанию"/Default button in the bindings editor loads the
+    // game's default bindings via LoadFromDefaults; without this guard our detour
+    // would immediately reload the active profile's keybindings.lua over them
+    // (wiping everything if that file is empty). controlprofilesui wraps the
+    // Default action in SuppressReapply(true/false). See control-profiles.md.
+    void SuppressReapply(bool on);
+
+    // Connected controllers (winmm + native DualSense), for the device picker.
     std::vector<impulse::DeviceInfo> Devices();
+
+    // The human-readable device name last saved for a profile (so the picker can
+    // show a configured-but-disconnected controller). "" if none stored.
+    std::string DeviceNameFor(const std::string& profile);
 
     // Assign a controller (winmm device id) to a profile's [wheel] device. If the
     // profile is the active one, the change is reloaded and re-applied live.
     bool SetDevice(const std::string& profile, uint32_t deviceId);
+
+    // Write the default axis layout for the CURRENTLY DETECTED controller into the
+    // profile ([wheel] steer/throttle/brake/trigger/cam axes + inversions, and for
+    // the native DualSense its device id + [dualsense] enabled). Applied only from
+    // the "По умолчанию" (Default) button so it never clobbers a custom mapping.
+    void ApplyDeviceDefaults(const std::string& profile);
 }
 
 #endif

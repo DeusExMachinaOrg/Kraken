@@ -63,6 +63,39 @@ namespace kraken::impulse {
 
         JoyDevState g_joy[JOY_MAX_DEV] = {};
         bool        g_joyTimerSet      = false;
+
+        // joyGetDevCaps.szPname is usually the generic "Microsoft PC-joystick
+        // driver". The real product name lives in the registry (the classic
+        // two-hop OEM-name lookup): MediaResources\Joystick\<regkey>\Current...
+        // -> Joystick<N>OEMName -> MediaProperties\...\Joystick\OEM\<oem>\OEMName.
+        bool JoyOEMName(UINT id, const JOYCAPSA& caps, char* out, DWORD outSz) {
+            char sub[256];
+            std::snprintf(sub, sizeof(sub),
+                "System\\CurrentControlSet\\Control\\MediaResources\\Joystick\\%s\\CurrentJoystickSettings",
+                caps.szRegKey);
+            HKEY key;
+            if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, sub, 0, KEY_READ, &key) != ERROR_SUCCESS)
+                return false;
+            char valName[32], oem[256];
+            std::snprintf(valName, sizeof(valName), "Joystick%uOEMName", id + 1);
+            DWORD type = 0, sz = sizeof(oem);
+            LONG r = RegQueryValueExA(key, valName, nullptr, &type,
+                                      reinterpret_cast<LPBYTE>(oem), &sz);
+            RegCloseKey(key);
+            if (r != ERROR_SUCCESS || type != REG_SZ)
+                return false;
+            char path[512];
+            std::snprintf(path, sizeof(path),
+                "System\\CurrentControlSet\\Control\\MediaProperties\\PrivateProperties\\Joystick\\OEM\\%s",
+                oem);
+            if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, path, 0, KEY_READ, &key) != ERROR_SUCCESS)
+                return false;
+            type = 0;
+            r = RegQueryValueExA(key, "OEMName", nullptr, &type,
+                                 reinterpret_cast<LPBYTE>(out), &outSz);
+            RegCloseKey(key);
+            return r == ERROR_SUCCESS && type == REG_SZ && out[0];
+        }
     }
 
     void _PollJoysticks(void) {
@@ -121,7 +154,11 @@ namespace kraken::impulse {
                 if (joyGetDevCapsA(id, &caps, sizeof(caps)) == JOYERR_NOERROR) {
                     st.numButtons = caps.wNumButtons;
                     st.numAxes    = caps.wNumAxes;
-                    strncpy_s(st.name, caps.szPname, _TRUNCATE);
+                    char oemName[128] = {0};
+                    if (JoyOEMName(id, caps, oemName, sizeof(oemName)))
+                        strncpy_s(st.name, oemName, _TRUNCATE);
+                    else
+                        strncpy_s(st.name, caps.szPname, _TRUNCATE);
                     LOG_INFO("Joystick %u connected: '%s' buttons=%u axes=%u "
                              "X[%lu..%lu] Y[%lu..%lu] Z[%lu..%lu]",
                              id, caps.szPname, caps.wNumButtons, caps.wNumAxes,
@@ -158,6 +195,7 @@ namespace kraken::impulse {
                     ev.joy_button.key    = (eKey)(eKeyJoyKey0 + b);
                     ev.joy_button.pressed = pressed;
                     ev.joy_button.repeat  = false;
+                    ev.joy_button.device  = id;
                     Immediate(ev);
                 }
                 st.buttons = info.dwButtons;
@@ -189,14 +227,67 @@ namespace kraken::impulse {
                     ev.frame          = self.frame_id;
                     ev.joy_axis.axis  = (eJoyAxis)a;
                     ev.joy_axis.value = value;
+                    ev.joy_axis.device = id;
                     Immediate(ev);
                 }
             }
         }
     }
 
+    // On-demand probe of one slot: if a connected controller lives there but the
+    // lazy round-robin poll in _PollJoysticks hasn't reached it yet, detect it
+    // NOW — mark present, read caps, and emit the connect event exactly as the
+    // poll would (the round-robin then skips it since present is already set, so
+    // this is the ONLY place the connect fires for an idle-at-menu-open pad;
+    // controls.cpp gates g_present on that event, so it must not be skipped).
+    // Used by GetDevices so the picker shows a freshly-connected idle pad without
+    // up to ~16s of round-robin lag.
+    static void _ProbeSlot(UINT id) {
+        JoyDevState& st = g_joy[id];
+        if (st.present)
+            return;
+        JOYINFOEX info = {};
+        info.dwSize  = sizeof(info);
+        info.dwFlags = JOY_RETURNALL;
+        if (joyGetPosEx(id, &info) != JOYERR_NOERROR)
+            return;
+        st.present  = true;
+        st.buttons  = 0;
+        st.axisInit = false;
+        JOYCAPSA caps = {};
+        if (joyGetDevCapsA(id, &caps, sizeof(caps)) == JOYERR_NOERROR) {
+            st.numButtons = caps.wNumButtons;
+            st.numAxes    = caps.wNumAxes;
+            char oemName[128] = {0};
+            if (JoyOEMName(id, caps, oemName, sizeof(oemName)))
+                strncpy_s(st.name, oemName, _TRUNCATE);
+            else
+                strncpy_s(st.name, caps.szPname, _TRUNCATE);
+            LOG_INFO("Joystick %u connected (on-demand scan): '%s' buttons=%u axes=%u",
+                     id, caps.szPname, caps.wNumButtons, caps.wNumAxes);
+        } else {
+            st.numButtons = 0;
+            st.numAxes    = 0;
+            std::snprintf(st.name, sizeof(st.name), "Joystick %u", id);
+            LOG_INFO("Joystick %u connected (on-demand scan, caps unavailable)", id);
+        }
+        Impulse ev            = {};
+        ev.type               = eImpulseJoyConnection;
+        ev.frame              = self.frame_id;
+        ev.joy_connect.status = eJoyStatusConnected;
+        ev.joy_connect.device = id;
+        Immediate(ev);
+    }
+
     std::vector<DeviceInfo> GetDevices(void) {
         std::vector<DeviceInfo> out;
+        // On-demand full scan (menu open): detect idle, already-connected pads
+        // now rather than waiting for the per-frame round-robin probe.
+        UINT count = joyGetNumDevs();
+        if (count > JOY_MAX_DEV)
+            count = JOY_MAX_DEV;
+        for (UINT id = 0; id < count; ++id)
+            _ProbeSlot(id);
         for (int id = 0; id < JOY_MAX_DEV; ++id) {
             const JoyDevState& st = g_joy[id];
             if (!st.present)

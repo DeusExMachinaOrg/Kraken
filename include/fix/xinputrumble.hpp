@@ -19,6 +19,13 @@ namespace kraken::fix::xinputrumble {
 
     // Called when there is no live player vehicle (menus / death): stops the motors.
     void Idle();
+
+    // True if any XInput controller (slots 0..3) is currently connected — i.e. a
+    // DS4Windows / DSX / Steam Input virtual Xbox pad, or a real Xbox controller.
+    // Used to prefer the XInput input mode even when the DualSense HID is also
+    // openable (those bridges do not hold the HID exclusively). Loads XInput on
+    // demand, independent of [xinput] enabled.
+    bool AnyConnected();
 }
 
 #endif

@@ -11,6 +11,7 @@
 #include <atomic>
 
 #include "fix/dualsense.hpp"
+#include "fix/xinputrumble.hpp"
 #include "config.hpp"
 #include "ext/logger.hpp"
 #include "ext/impulse.hpp"
@@ -64,10 +65,16 @@ namespace kraken::fix::dualsense {
         int    g_writeLen   = BT_REPORT_LEN; // == HID OutputReportByteLength (Windows requires this exact size)
         int    g_inputLen   = BT_REPORT_LEN; // == HID InputReportByteLength
         bool   g_ready      = false;
+        char   g_prodName[64] = {0};         // HID product string of the open device
 
         // --- direct HID input (wireless: bypass winmm) ---
         bool   g_hidInput   = false;  // [dualsense] hid_input
-        uint32_t g_injDevice = 0;     // device id used for injected JoyConnection (== [wheel] device)
+        // Fixed synthetic device id for the injected native-DualSense input. Must
+        // match inputprofiles::kNativeDualSenseDeviceId (100) — the picker offers
+        // the native pad under this id and consumers filter input by it, so a
+        // winmm device selected in another profile can't collide with it.
+        constexpr uint32_t kNativeDualSenseDeviceId = 100;
+        uint32_t g_injDevice = kNativeDualSenseDeviceId;
         CRITICAL_SECTION g_lock;
         bool   g_lockInit   = false;
         struct Snapshot {
@@ -167,11 +174,18 @@ namespace kraken::fix::dualsense {
                             }
                             if (h == INVALID_HANDLE_VALUE) {
                                 DWORD e = GetLastError();
-                                LOG_WARNING("DualSense candidate open failed (err=%lu): %s", e, detail->DevicePath);
-                                if (e == ERROR_SHARING_VIOLATION) // 32
-                                    LOG_WARNING("DualSense is held exclusively by another app "
-                                                "(DS4Windows / DSX / Steam Input). Close it so Kraken "
-                                                "can drive rumble/triggers directly.");
+                                // This probe runs continuously; in XInput mode the
+                                // pad is held exclusively (err=32) and would spam the
+                                // log, so warn only once until the situation changes.
+                                static DWORD s_lastWarnErr = 0;
+                                if (e != s_lastWarnErr) {
+                                    s_lastWarnErr = e;
+                                    LOG_WARNING("DualSense candidate open failed (err=%lu): %s", e, detail->DevicePath);
+                                    if (e == ERROR_SHARING_VIOLATION) // 32
+                                        LOG_WARNING("DualSense is held exclusively by another app "
+                                                    "(DS4Windows / DSX / Steam Input) — using it as an "
+                                                    "XInput pad instead; close that app for native HID.");
+                                }
                             } else {
                                 int outLen = 0, inLen = 0;
                                 PHIDP_PREPARSED_DATA pp = nullptr;
@@ -212,6 +226,17 @@ namespace kraken::fix::dualsense {
 
             g_dev       = best;
             g_bluetooth = bestIsBT;
+            // Cache the system product string for the device picker.
+            {
+                wchar_t wname[64] = {0};
+                if (HidD_GetProductString(best, wname, sizeof(wname)) && wname[0]) {
+                    int n = WideCharToMultiByte(CP_ACP, 0, wname, -1, g_prodName,
+                                                sizeof(g_prodName) - 1, nullptr, nullptr);
+                    if (n <= 0) g_prodName[0] = 0;
+                } else {
+                    g_prodName[0] = 0;
+                }
+            }
             // Windows requires the WriteFile length to equal OutputReportByteLength;
             // the 0x31/0x02 report sits at the start and the rest is zero padding.
             g_writeLen  = (bestLen > 0 && bestLen <= OUT_BUF_MAX) ? bestLen
@@ -447,11 +472,38 @@ namespace kraken::fix::dualsense {
         }
     }
 
+    static void EnsureLockInit(); // defined below; needed before the reader starts
+
     void PumpInput() {
-        if (!g_enabled || !g_hidInput)
+        // HID input/detection is independent of the rumble-enable flag: we probe
+        // and read the DualSense whenever hid_input is on, so the native controller
+        // is detected (NativePresent) even in menus and even if a profile left
+        // [dualsense] enabled=0. The open simply fails (err=32) in XInput mode.
+        if (!g_hidInput)
             return;
+        // The reader thread and this pump both take g_lock, so it must be
+        // initialized before EnsureReady spawns the reader — do it here
+        // unconditionally (Apply/Reapply only did it when [dualsense] enabled).
+        EnsureLockInit();
         if (!EnsureReady())
             return;
+
+        // If an XInput pad is present (DS4Windows / DSX / Steam Input virtual Xbox,
+        // or a real Xbox controller), that bridge already feeds input via winmm —
+        // injecting the HID reads too would double every axis/button. Keep the
+        // device open (rumble + adaptive triggers still go out via the worker) but
+        // skip input injection. Re-check only ~once a second: XInputGetState on
+        // empty slots is slow.
+        {
+            static int  s_xiTick    = 0;
+            static bool s_xiPresent = false;
+            if (--s_xiTick <= 0) {
+                s_xiPresent = xinputrumble::AnyConnected();
+                s_xiTick = 60;
+            }
+            if (s_xiPresent)
+                return;
+        }
 
         Snapshot s;
         EnterCriticalSection(&g_lock);
@@ -491,6 +543,7 @@ namespace kraken::fix::dualsense {
                 ev.type           = eImpulseJoyAxis;
                 ev.joy_axis.axis  = static_cast<eJoyAxis>(a);
                 ev.joy_axis.value = axes[a];
+                ev.joy_axis.device = g_injDevice;
                 Immediate(ev);
             }
         }
@@ -505,6 +558,7 @@ namespace kraken::fix::dualsense {
                 ev.joy_button.key     = static_cast<eKey>(eKeyJoyKey0 + b);
                 ev.joy_button.pressed = (btn & m) != 0;
                 ev.joy_button.repeat  = false;
+                ev.joy_button.device  = g_injDevice;
                 Immediate(ev);
             }
         }
@@ -659,7 +713,8 @@ namespace kraken::fix::dualsense {
         g_damageFull  = config.dualsense_damage_full.value;
         g_log         = config.dualsense_log.value != 0;
         g_hidInput    = config.dualsense_hid_input.value != 0;
-        g_injDevice   = config.wheel_device.value;
+        // g_injDevice stays the fixed native id (kNativeDualSenseDeviceId); it is
+        // NOT the [wheel] device (that would collide with a winmm selection).
 
         g_triggers     = config.dualsense_triggers.value != 0;
         g_trigBrake    = config.dualsense_trigger_brake.value;
@@ -685,6 +740,16 @@ namespace kraken::fix::dualsense {
         // launch), so just announce intent here.
         LOG_INFO("DualSense feedback enabled (strength=%.2f impact=%.2f offroad=%.2f hid_input=%d triggers=%d)",
                  g_strength, g_impactGain, g_offroadGain, g_hidInput ? 1 : 0, g_triggers ? 1 : 0);
+    }
+
+    bool NativePresent() {
+        return g_dev != INVALID_HANDLE_VALUE;
+    }
+
+    const char* NativeName() {
+        if (g_dev == INVALID_HANDLE_VALUE)
+            return "";
+        return g_prodName[0] ? g_prodName : "DualSense (HID)";
     }
 
     void Reapply() {

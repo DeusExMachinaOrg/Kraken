@@ -201,6 +201,10 @@ namespace kraken::fix::gamepad {
         void OnImpulse(const impulse::Impulse& e) {
             if (e.type != impulse::eImpulseJoyButton)
                 return;
+            // Only accept buttons from the profile's selected controller so a second
+            // connected pad (or the DualSense-as-winmm duplicate) can't also fire.
+            if (e.joy_button.device != Config::Instance().wheel_device.value)
+                return;
             // Kraken encodes the winmm button index as eKeyJoyKey0 + index.
             int button = static_cast<int>(e.joy_button.key) -
                          static_cast<int>(impulse::eKeyJoyKey0);

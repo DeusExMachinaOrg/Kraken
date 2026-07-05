@@ -73,7 +73,7 @@ namespace kraken {
         this->radio_manager_fix                 = { "constants", "radio_manager_fix",               1,     true,  0,     1           };
         this->appendix                          = { "constants", "appendix",                        1,     true,  0,     1           };
         this->wheel                             = { "wheel",     "enabled",                         0,     true,  0,     1           };
-        this->wheel_device                      = { "wheel",     "device",                          0,     true,  0,     15          };
+        this->wheel_device                      = { "wheel",     "device",                          0,     true,  0,     100         };
         this->wheel_steer_axis                  = { "wheel",     "steer_axis",                      0,     true,  0,     5           };
         this->wheel_throttle_axis               = { "wheel",     "throttle_axis",                   2,     true,  0,     5           };
         this->wheel_brake_axis                  = { "wheel",     "brake_axis",                      3,     true,  0,     5           };
@@ -140,13 +140,13 @@ namespace kraken {
                 this->gamepad_button[i] = { "gamepad", kKeys[i], std::string(kDefaults[i]), false };
         }
         this->gamepad_autobind                  = { "gamepad",   "autobind",                        1,     true,  0,     1           };
-        this->dualsense                         = { "dualsense", "enabled",                         0,     true,  0,     1           };
+        this->dualsense                         = { "dualsense", "enabled",                         1,     true,  0,     1           };
         this->dualsense_strength                = { "dualsense", "strength",                        1.0f,  true,  0.0f,  2.0f        };
         this->dualsense_impact                  = { "dualsense", "impact",                          1.0f,  true,  0.0f,  4.0f        };
         this->dualsense_offroad                 = { "dualsense", "offroad",                         1.0f,  true,  0.0f,  4.0f        };
         this->dualsense_damage                  = { "dualsense", "damage",                          1.0f,  true,  0.0f,  4.0f        };
         this->dualsense_damage_full             = { "dualsense", "damage_full",                     0.20f, true,  0.01f, 1.0f        };
-        this->dualsense_hid_input               = { "dualsense", "hid_input",                       0,     true,  0,     1           };
+        this->dualsense_hid_input               = { "dualsense", "hid_input",                       1,     true,  0,     1           };
         this->dualsense_log                     = { "dualsense", "log",                             0,     true,  0,     1           };
         this->xinput                            = { "xinput",    "enabled",                         0,     true,  0,     1           };
         this->xinput_strength                   = { "xinput",    "strength",                        1.0f,  true,  0.0f,  2.0f        };

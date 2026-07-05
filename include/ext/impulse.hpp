@@ -264,12 +264,14 @@ namespace kraken::impulse {
     struct JoyAxis {
         eJoyAxis axis;
         float    value;
+        uint32_t device;   // source winmm id (or the injected DualSense id)
     };
 
     struct JoyButton {
         eKey key;
         bool     repeat;
         bool     pressed;
+        uint32_t device;   // source winmm id (or the injected DualSense id)
     };
 
     struct Action {

@@ -92,6 +92,16 @@ namespace kraken::fix::xinputrumble {
             return -1;
         }
 
+        bool AnyPadConnected() {
+            if (!LoadXInput())
+                return false;
+            XINPUT_STATE st;
+            for (DWORD i = 0; i < 4; ++i)
+                if (g_getState(i, &st) == ERROR_SUCCESS)
+                    return true;
+            return false;
+        }
+
         DWORD WINAPI Worker(LPVOID) {
             int  lastS = -1, lastW = -1;
             int  heartbeat = 0;
@@ -272,5 +282,9 @@ namespace kraken::fix::xinputrumble {
 
     void Reapply() {
         LoadConfig(); // device/worker stay lazy; Update respects g_enabled
+    }
+
+    bool AnyConnected() {
+        return AnyPadConnected();
     }
 }

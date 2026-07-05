@@ -521,6 +521,10 @@ namespace kraken::fix::controls {
                         g_present = (ev.joy_connect.status == eJoyStatusConnected);
                     break;
                 case eImpulseJoyAxis: {
+                    // Only the profile's selected controller drives the vehicle —
+                    // ignore axes from any other connected device.
+                    if (ev.joy_axis.device != g_device)
+                        break;
                     int   a = static_cast<int>(ev.joy_axis.axis);
                     float v = ev.joy_axis.value; // [-1..1]
                     // Per-axis diagnostic: with log=1 this prints which axis moves
@@ -730,21 +734,32 @@ namespace kraken::fix::controls {
                 }
                 if (g_invSteer)
                     s = -s;
-                vehicle->SetSteer(s * g_steerRange * (*STEER_MAGNITUDE));
 
                 // Throttle and brake share the engine's single throttle axis:
                 // gas pushes forward, brake pulls back (vanilla reverse/brake).
                 float thr = g_throttle01 - g_brake01;
                 if (thr >  1.0f) thr =  1.0f;
                 if (thr < -1.0f) thr = -1.0f;
-                // autoBrake=false -> releasing the throttle coasts instead of braking
-                // (the engine's auto-brake-on-zero). Explicit braking still works via
-                // a negative throttle from the brake pedal / L2.
-                vehicle->SetThrottle(thr, g_autoBrake);
 
-                if (g_log && (s != 0.0f || thr != 0.0f || g_camX != 0.0f || g_camY != 0.0f))
-                    LOG_DEBUG("steer=%.3f throttle=%.3f (gas=%.2f brake=%.2f) cam=(%.2f,%.2f)",
-                              s, thr, g_throttle01, g_brake01, g_camX, g_camY);
+                // Coexist with the keyboard: the original (digital) Controls has
+                // already applied WASD steer/throttle this frame. Only *override*
+                // it where the analog control is actually engaged — otherwise a
+                // resting stick/idle pedals would stamp 0 over the keyboard every
+                // frame and kill WASD. Steer and drive are gated independently so
+                // you can, e.g., hold the stick while braking on the keyboard.
+                bool steerActive = (s != 0.0f);
+                bool driveActive = (g_throttle01 > 0.0f || g_brake01 > 0.0f);
+                if (steerActive)
+                    vehicle->SetSteer(s * g_steerRange * (*STEER_MAGNITUDE));
+                if (driveActive)
+                    // autoBrake=false -> releasing coasts (engine auto-brake-on-zero).
+                    // Explicit braking still works via a negative throttle (L2/brake).
+                    vehicle->SetThrottle(thr, g_autoBrake);
+
+                if (g_log && (steerActive || driveActive || g_camX != 0.0f || g_camY != 0.0f))
+                    LOG_DEBUG("steer=%.3f throttle=%.3f (gas=%.2f brake=%.2f) cam=(%.2f,%.2f) [s=%d d=%d]",
+                              s, thr, g_throttle01, g_brake01, g_camX, g_camY,
+                              (int)steerActive, (int)driveActive);
             }
 
             if (g_ffbEnabled) {
@@ -864,6 +879,18 @@ namespace kraken::fix::controls {
             if (hz < 1.0f) hz = 1.0f;
             g_ffbVibePeriod = static_cast<DWORD>(1000000.0f / hz); // Hz -> microseconds
         }
+
+        // Reset the cached analog inputs to neutral. Axis values only refresh on a
+        // *change* event (impulse fires per axis delta), so a controller resting at
+        // center sends nothing — and a stale value carried over from the previous
+        // device/profile (e.g. a right turn held on the XInput pad before switching
+        // to the native DualSense) would keep steering with no live input. Clearing
+        // on every LoadConfig (profile switch) guarantees a neutral start.
+        g_steer      = 0.0f;
+        g_throttle01 = 0.0f;
+        g_brake01    = 0.0f;
+        g_camX       = 0.0f;
+        g_camY       = 0.0f;
     }
 
     // Install the impulse listener + Controls detour exactly once. ApplyWheel /
