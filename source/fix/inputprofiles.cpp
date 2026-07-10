@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -640,6 +641,7 @@ namespace kraken::fix::inputprofiles {
         Config::Instance().ReloadInput();
         controls::Reapply();
         dualsense::Reapply();
+        xinputrumble::Reapply();
     }
 
     bool SetAxis(const std::string& profile, const char* iniKey, int axisIndex) {
@@ -673,6 +675,51 @@ namespace kraken::fix::inputprofiles {
         if (!Available())
             return false;
         return GetPrivateProfileIntA("wheel", iniKey, 0, ProfileIni(profile).c_str()) != 0;
+    }
+
+    // Generic section/key accessors for the feedback (vibration/triggers/FFB)
+    // settings, which live in the same profile input.ini across [wheel]/[dualsense]/
+    // [xinput]. Writers re-apply the active profile so edits take effect live.
+    bool SetFloat(const std::string& profile, const char* section, const char* key, float v) {
+        if (!Available() || !FileExists(ProfileIni(profile)))
+            return false;
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.6f", v);
+        WritePrivateProfileStringA(section, key, buf, ProfileIni(profile).c_str());
+        ReapplyActive(profile);
+        LOG_INFO("Profile '%s' [%s] %s = %.3f", profile.c_str(), section, key, v);
+        return true;
+    }
+
+    bool SetBool(const std::string& profile, const char* section, const char* key, bool on) {
+        if (!Available() || !FileExists(ProfileIni(profile)))
+            return false;
+        WritePrivateProfileStringA(section, key, on ? "true" : "false",
+                                   ProfileIni(profile).c_str());
+        ReapplyActive(profile);
+        LOG_INFO("Profile '%s' [%s] %s = %d", profile.c_str(), section, key, (int)on);
+        return true;
+    }
+
+    float GetFloat(const std::string& profile, const char* section, const char* key, float def) {
+        if (!Available())
+            return def;
+        char buf[32], defbuf[32];
+        std::snprintf(defbuf, sizeof(defbuf), "%.6f", def);
+        GetPrivateProfileStringA(section, key, defbuf, buf, sizeof(buf),
+                                 ProfileIni(profile).c_str());
+        return static_cast<float>(std::atof(buf));
+    }
+
+    bool GetBool(const std::string& profile, const char* section, const char* key, bool def) {
+        if (!Available())
+            return def;
+        char buf[16];
+        GetPrivateProfileStringA(section, key, def ? "true" : "false", buf, sizeof(buf),
+                                 ProfileIni(profile).c_str());
+        // Accept "1"/"true"/"yes" (config.cpp writes bools as true/false).
+        return buf[0] == '1' || buf[0] == 't' || buf[0] == 'T'
+            || buf[0] == 'y' || buf[0] == 'Y';
     }
 
     void Apply() {

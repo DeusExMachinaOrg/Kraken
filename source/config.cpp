@@ -146,6 +146,7 @@ namespace kraken {
         this->dualsense_offroad                 = { "dualsense", "offroad",                         1.0f,  true,  0.0f,  4.0f        };
         this->dualsense_damage                  = { "dualsense", "damage",                          1.0f,  true,  0.0f,  4.0f        };
         this->dualsense_damage_full             = { "dualsense", "damage_full",                     0.20f, true,  0.01f, 1.0f        };
+        this->dualsense_engine                  = { "dualsense", "engine",                          0.0f,  true,  0.0f,  4.0f        };
         this->dualsense_hid_input               = { "dualsense", "hid_input",                       1,     true,  0,     1           };
         this->dualsense_log                     = { "dualsense", "log",                             0,     true,  0,     1           };
         this->xinput                            = { "xinput",    "enabled",                         0,     true,  0,     1           };
@@ -154,6 +155,7 @@ namespace kraken {
         this->xinput_offroad                    = { "xinput",    "offroad",                         1.0f,  true,  0.0f,  4.0f        };
         this->xinput_damage                     = { "xinput",    "damage",                          1.0f,  true,  0.0f,  4.0f        };
         this->xinput_damage_full                = { "xinput",    "damage_full",                     0.20f, true,  0.01f, 1.0f        };
+        this->xinput_engine                     = { "xinput",    "engine",                          0.0f,  true,  0.0f,  4.0f        };
         this->xinput_index                      = { "xinput",    "index",                          -1,     true, -1,     3           };
         this->xinput_log                        = { "xinput",    "log",                             0,     true,  0,     1           };
         this->dualsense_triggers                = { "dualsense", "triggers",                        0,     true,  0,     1           };
@@ -293,6 +295,7 @@ namespace kraken {
         this->LoadValue(&this->dualsense_offroad);
         this->LoadValue(&this->dualsense_damage);
         this->LoadValue(&this->dualsense_damage_full);
+        this->LoadValue(&this->dualsense_engine);
         this->LoadValue(&this->dualsense_hid_input);
         this->LoadValue(&this->dualsense_log);
         this->LoadValue(&this->xinput);
@@ -301,6 +304,7 @@ namespace kraken {
         this->LoadValue(&this->xinput_offroad);
         this->LoadValue(&this->xinput_damage);
         this->LoadValue(&this->xinput_damage_full);
+        this->LoadValue(&this->xinput_engine);
         this->LoadValue(&this->xinput_index);
         this->LoadValue(&this->xinput_log);
         this->LoadValue(&this->dualsense_triggers);
@@ -725,6 +729,7 @@ namespace kraken {
         this->LoadValue(&this->dualsense_offroad);
         this->LoadValue(&this->dualsense_damage);
         this->LoadValue(&this->dualsense_damage_full);
+        this->LoadValue(&this->dualsense_engine);
         this->LoadValue(&this->dualsense_hid_input);
         this->LoadValue(&this->dualsense_log);
         this->LoadValue(&this->dualsense_triggers);
@@ -739,6 +744,7 @@ namespace kraken {
         this->LoadValue(&this->xinput_offroad);
         this->LoadValue(&this->xinput_damage);
         this->LoadValue(&this->xinput_damage_full);
+        this->LoadValue(&this->xinput_engine);
         this->LoadValue(&this->xinput_index);
         this->LoadValue(&this->xinput_log);
     };

@@ -88,6 +88,14 @@ namespace kraken::fix::inputprofiles {
     int  GetAxis(const std::string& profile, const char* iniKey, int def);
     bool GetInvert(const std::string& profile, const char* iniKey);
 
+    // Generic per-profile accessors for the feedback settings (vibration/triggers/
+    // FFB) that span [wheel]/[dualsense]/[xinput]. Setters reload + re-apply live if
+    // the profile is active. The "Controller" tab widgets drive these.
+    bool  SetFloat(const std::string& profile, const char* section, const char* key, float v);
+    bool  SetBool(const std::string& profile, const char* section, const char* key, bool on);
+    float GetFloat(const std::string& profile, const char* section, const char* key, float def);
+    bool  GetBool(const std::string& profile, const char* section, const char* key, bool def = false);
+
     // Write the default axis layout for the CURRENTLY DETECTED controller into the
     // profile ([wheel] steer/throttle/brake/trigger/cam axes + inversions, and for
     // the native DualSense its device id + [dualsense] enabled). Applied only from

@@ -34,6 +34,7 @@ namespace kraken::fix::xinputrumble {
         float g_impactGain  = 1.0f;
         float g_offroadGain = 1.0f;
         float g_damageGain  = 1.0f;
+        float g_engineGain  = 0.0f;  // engine/accel hum gain (light speed-scaled buzz)
         float g_damageFull  = 0.20f;
         int   g_cfgIndex    = -1;   // [xinput] index: -1 = auto-detect, 0..3 explicit
         bool  g_log         = false;
@@ -231,6 +232,9 @@ namespace kraken::fix::xinputrumble {
         if (g_damageEnv > strong) strong = g_damageEnv;                 // hits drive the strong motor
         float weakOut = g_weakSmooth * g_offroadGain;
         if (g_damageEnv * 0.6f > weakOut) weakOut = g_damageEnv * 0.6f; // + a sharp high-freq bite
+        // Engine hum: light sustained buzz growing with speed (engine-RPM proxy),
+        // added to the weak motor. Opt-in via [xinput] engine (default 0).
+        weakOut += speedFactor * 0.35f * g_engineGain;
         strong  *= g_strength;
         weakOut *= g_strength;
         if (strong  > 1.0f) strong  = 1.0f;
@@ -265,6 +269,7 @@ namespace kraken::fix::xinputrumble {
         g_impactGain  = config.xinput_impact.value;
         g_offroadGain = config.xinput_offroad.value;
         g_damageGain  = config.xinput_damage.value;
+        g_engineGain  = config.xinput_engine.value;
         g_damageFull  = config.xinput_damage_full.value;
         g_cfgIndex    = static_cast<int>(config.xinput_index.value);
         g_log         = config.xinput_log.value != 0;

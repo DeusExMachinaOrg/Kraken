@@ -47,6 +47,7 @@ namespace kraken::fix::dualsense {
         float g_impactGain   = 1.0f;
         float g_offroadGain  = 1.0f;
         float g_damageGain   = 1.0f;
+        float g_engineGain   = 0.0f;  // engine/accel hum gain (light speed-scaled buzz)
         float g_damageFull   = 0.20f; // fraction of max HP lost that gives a full pulse
         bool  g_log          = false;
 
@@ -635,6 +636,9 @@ namespace kraken::fix::dualsense {
         if (dmgMotor > strong) strong = dmgMotor;                 // hits drive the strong motor
         float weakOut = g_weakSmooth * g_offroadGain;
         if (dmgMotor * 0.6f > weakOut) weakOut = dmgMotor * 0.6f; // + a sharp high-freq bite
+        // Engine hum: a light sustained buzz that grows with speed (engine-RPM proxy),
+        // added to the weak (high-freq) motor. Opt-in via [dualsense] engine (default 0).
+        weakOut += speedFactor * 0.35f * g_engineGain;
         strong  *= g_strength;
         weakOut *= g_strength;
         if (strong  > 1.0f) strong  = 1.0f;
@@ -710,6 +714,7 @@ namespace kraken::fix::dualsense {
         g_impactGain  = config.dualsense_impact.value;
         g_offroadGain = config.dualsense_offroad.value;
         g_damageGain  = config.dualsense_damage.value;
+        g_engineGain  = config.dualsense_engine.value;
         g_damageFull  = config.dualsense_damage_full.value;
         g_log         = config.dualsense_log.value != 0;
         g_hidInput    = config.dualsense_hid_input.value != 0;

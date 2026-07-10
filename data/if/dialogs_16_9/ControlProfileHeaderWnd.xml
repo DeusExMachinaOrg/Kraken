@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="windows-1251" standalone="yes" ?>
+<!-- Kraken control-profile header (16:9). Captions empty here, set from C++ in
+     windows-1251. Coords = 4:3 * 1.40625 + (240 x-offset). Two ComboBoxWnd
+     dropdowns (profile + device) + New/Delete. -->
+<Prefabs>
+	<Node
+		name="wndProfileHeader"
+		class="Wnd"
+		org="0.000 0.000 1920.000 1080.000"
+		style="768"
+		order="10"
+		id="0"
+		caption=""
+		tip=""
+		backimage=""
+		paneName="defaultWnd"
+		scrollPaneName="Scroll1"
+		paneFlags="0"
+		wrap="2"
+		format="1"
+		font="0"
+		clientEdges="0.000 0.000 0.000 0.000"
+		wndColor="00000000"
+		textColor="ffffffff"
+		textColorDisabled="ff7f7f7f">
+
+		<Node
+			name="lblProfileCaption"
+			class="Wnd"
+			org="486.094 270.000 168.750 39.375"
+			style="2880"
+			order="6"
+			id="0"
+			caption=""
+			tip=""
+			backimage=""
+			paneName="defaultWnd"
+			scrollPaneName="Scroll1"
+			paneFlags="7"
+			wrap="0"
+			format="2"
+			font="0"
+			clientEdges="0.000 0.000 0.000 0.000"
+			wndColor="00000000"
+			textColor="fF404040"
+			textColorDisabled="ff7f7f7f">
+			<Animations />
+		</Node>
+
+		<Node
+			name="cbProfile"
+			class="ComboBoxWnd"
+			org="668.906 270.000 246.094 39.375"
+			style="576"
+			order="2"
+			id="12010"
+			caption=""
+			tip=""
+			backimage=""
+			paneName="PaneComboBox"
+			scrollPaneName="Scroll1"
+			paneFlags="7"
+			wrap="2"
+			format="1"
+			font="1"
+			clientEdges="0.000 0.000 0.000 0.000"
+			state="0"
+			comboStyle="7"
+			maxListHeight="168.000"
+			selTextFixedHeight="39"
+			wndColor="00000000"
+			textColor="fF404040"
+			textColorDisabled="ff7f7f7f">
+			<Animations />
+		</Node>
+
+		<Node
+			name="emboss_cbProfile"
+			class="Wnd"
+			org="666.094 267.188 251.719 45.000"
+			style="768"
+			order="1"
+			id=""
+			caption=""
+			tip=""
+			backimage=""
+			paneName="PaneEmboss"
+			scrollPaneName="Scroll1"
+			paneFlags="6"
+			wrap="2"
+			format="1"
+			font="0"
+			textColor="ff404040"
+			clientEdges="0.000 0.000 0.000 0.000" />
+
+		<Node
+			name="btnProfileNew"
+			org="926.250 270.000 133.594 39.375"
+			style="265728"
+			order="25"
+			id="12003"
+			caption=""
+			tip=""
+			backimage=""
+			paneName="PaneBtnGray1"
+			scrollPaneName="Scroll1"
+			paneFlags="7"
+			wrap="0"
+			format="0"
+			font="0"
+			clientEdges="0.000 0.000 0.000 0.000"
+			wndColor="00000000"
+			textColor="fF404040"
+			textColorDisabled="ff7f7f7f"
+			btnIsImaged="0"
+			class="ButtonWnd">
+			<Animations />
+		</Node>
+
+		<Node
+			name="btnProfileDelete"
+			org="1064.063 270.000 133.594 39.375"
+			style="265728"
+			order="25"
+			id="12004"
+			caption=""
+			tip=""
+			backimage=""
+			paneName="PaneBtnGray1"
+			scrollPaneName="Scroll1"
+			paneFlags="7"
+			wrap="0"
+			format="0"
+			font="0"
+			clientEdges="0.000 0.000 0.000 0.000"
+			wndColor="00000000"
+			textColor="fF404040"
+			textColorDisabled="ff7f7f7f"
+			btnIsImaged="0"
+			class="ButtonWnd">
+			<Animations />
+		</Node>
+
+		<Node
+			name="lblDeviceCaption"
+			class="Wnd"
+			org="443.906 317.812 210.938 39.375"
+			style="2880"
+			order="6"
+			id="0"
+			caption=""
+			tip=""
+			backimage=""
+			paneName="defaultWnd"
+			scrollPaneName="Scroll1"
+			paneFlags="7"
+			wrap="0"
+			format="2"
+			font="0"
+			clientEdges="0.000 0.000 0.000 0.000"
+			wndColor="00000000"
+			textColor="fF404040"
+			textColorDisabled="ff7f7f7f">
+			<Animations />
+		</Node>
+
+		<Node
+			name="cbDevice"
+			class="ComboBoxWnd"
+			org="668.906 317.812 478.125 39.375"
+			style="576"
+			order="2"
+			id="12011"
+			caption=""
+			tip=""
+			backimage=""
+			paneName="PaneComboBox"
+			scrollPaneName="Scroll1"
+			paneFlags="7"
+			wrap="2"
+			format="1"
+			font="1"
+			clientEdges="0.000 0.000 0.000 0.000"
+			state="0"
+			comboStyle="7"
+			maxListHeight="168.000"
+			selTextFixedHeight="39"
+			wndColor="00000000"
+			textColor="fF404040"
+			textColorDisabled="ff7f7f7f">
+			<Animations />
+		</Node>
+
+		<Node
+			name="emboss_cbDevice"
+			class="Wnd"
+			org="666.094 315.000 483.750 45.000"
+			style="768"
+			order="1"
+			id=""
+			caption=""
+			tip=""
+			backimage=""
+			paneName="PaneEmboss"
+			scrollPaneName="Scroll1"
+			paneFlags="6"
+			wrap="2"
+			format="1"
+			font="0"
+			textColor="ff404040"
+			clientEdges="0.000 0.000 0.000 0.000" />
+
+		<Animations />
+	</Node>
+</Prefabs>
