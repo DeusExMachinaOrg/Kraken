@@ -70,6 +70,7 @@ namespace kraken {
         ConfigValue<uint32_t>                 cctl_leak_fix;
         ConfigValue<uint32_t>                 mortarvolleylauncherfix;
         ConfigValue<uint32_t>                 gunlights;
+        ConfigValue<uint32_t>                 boss01_fast_charge;
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;
