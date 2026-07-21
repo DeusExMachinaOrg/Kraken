@@ -62,7 +62,6 @@ namespace kraken {
         ConfigValue<WareUnitsList>            ware_units;
         ConfigValue<uint32_t>                 ultrawide;
         ConfigValue<uint32_t>                 objcontupgrade;
-        ConfigValue<uint32_t>                 show_load_every; // Update loading screen each N objects (vanilla N = 1)
         ConfigValue<uint32_t>                 cardan_fix;
         ConfigValue<uint32_t>                 tactics;
         ConfigValue<uint32_t>                 tactics_lock;
