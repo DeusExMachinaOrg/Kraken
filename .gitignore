@@ -1,6 +1,7 @@
 # Directories
 build
 .vscode
+.vs
 
 # Bindary files
 **/*.obj
