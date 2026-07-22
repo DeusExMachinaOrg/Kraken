@@ -18,6 +18,8 @@
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
+#include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 
 #include "hta/m3d/Landscape.hpp"
@@ -26,12 +28,14 @@
 #include "hta/m3d/RoadSet.hpp"
 #include "hta/m3d/GeomObjectRoad.hpp"
 #include "hta/m3d/AnimatedModel.hpp"
+#include "ode/ode.hpp"
 #include "routines.hpp"
 
 #include <cfloat>
 #include <cstdarg>
 #include <cstdio>
 #include <thread>
+#include <vector>
 
 JPH_SUPPRESS_WARNINGS
 
@@ -119,6 +123,18 @@ namespace kraken::fix::jolt {
     // real autoloaded save), confirmed empirically (two exports logged 3s apart on one run).
     static JPH::BodyID                        g_landscapeBodyId;
     static JPH::BodyID                        g_roadsBodyId; // same replace-on-reload pattern
+    // One body per exported static obstacle (box/sphere) - unlike landscape/roads there's no
+    // single batched mesh, so this is a list rather than one BodyID. Same replace-on-reload
+    // pattern: cleared and rebuilt from scratch each time ExportStaticObstaclesToJolt runs.
+    static std::vector<JPH::BodyID>           g_staticObstacleBodyIds;
+    // Set to a small positive frame count whenever a level (re)load is detected (see
+    // ReadRoadsFromXmlFileHook below); StepPhysics ticks it down and re-runs the static-obstacle
+    // export on every one of those frames, not just the last one - level loading is synchronous
+    // on this engine's main thread, so even the earliest of those frames is already strictly
+    // after CWorld::Load has fully returned, but re-running for a few frames is a cheap,
+    // self-healing margin against any object placement this hasn't been confirmed to precede
+    // (docs §22.9) rather than betting everything on a single guessed frame offset.
+    static int32_t                            g_staticsExportPendingFrames = 0;
 
     static void TraceImpl(const char* fmt, ...) {
         char buffer[1024];
@@ -136,6 +152,8 @@ namespace kraken::fix::jolt {
     }
 #endif
 
+    static void ExportStaticObstaclesToJolt(); // defined below, used by StepPhysics
+
     JPH::PhysicsSystem* GetPhysicsSystem() {
         return g_physicsSystem;
     }
@@ -143,6 +161,10 @@ namespace kraken::fix::jolt {
     void StepPhysics(float inDeltaTime) {
         if (g_physicsSystem == nullptr)
             return;
+        if (g_staticsExportPendingFrames > 0) {
+            --g_staticsExportPendingFrames;
+            ExportStaticObstaclesToJolt();
+        }
         g_physicsSystem->Update(inDeltaTime, 1, g_tempAllocator, g_jobSystem);
     }
 
@@ -350,6 +372,215 @@ namespace kraken::fix::jolt {
             exportedCount, nodeCount, vertices.size(), triangles.size(), skippedCount);
     }
 
+    // Static-obstacle export (docs §22.6/§22.7/§22.9) - rocks, buildings, and any other static
+    // geometry sitting in ai::gGlobalSpace that isn't the landscape or roads. Confirmed root
+    // cause of the live "vehicle ghosts through rocks/other vehicles" bug (§22.6): Jolt's world
+    // only ever contained landscape + roads, so anything else was invisible to it.
+    //
+    // Unlike the landscape/road exports above, this doesn't hook a specific loader function -
+    // disassembly of the one plausible XML-driven candidate (m3d::CWorld::LoadStaticObstacles,
+    // VA 0x5C8670, "obstacles.xml" Boxes/Box nodes) showed it only builds ai::Obstacle/Obb
+    // objects for AI navigation avoidance and links them via m3d::Landscape::LinkObstacleToCells
+    // - no ODE call anywhere in that function, confirming it's unrelated to physical collision
+    // (same dead-end category as m3d::GeomObjectStatics/m3d::StaticModelsServer/
+    // ai::ObjContainer::LinkGeomsToCollisionCells before it, docs §22.7). Whatever loader
+    // actually attaches physical ODE geoms for rocks/buildings was not identified - but it
+    // doesn't need to be: any geom in ai::gGlobalSpace with no attached dBody is static under
+    // ODE by definition (docs §22.7), so walking the space directly finds them regardless of
+    // which subsystem created them.
+    // dSpaceGetGeom (the "official" per-index accessor - real PDB symbol, called successfully,
+    // no crash) turned out to be a dead stub: disassembling the vtable slot it dispatches
+    // through resolved to dxSpace::getGeom(int), which is just `xor eax,eax; ret 4` in the base
+    // class and is NOT overridden by dxHashSpace (confirmed via dxHashSpace's own class_overview
+    // - it only overrides cleanGeoms/collide/collide2, not getGeom) - so it always returns
+    // nullptr regardless of index, for this exact space subtype. Caught live: the first deployed
+    // build logged "0 exported... 0 dynamic geoms skipped... 0 unexported class skipped" against
+    // a nonzero total count, which only adds up if the per-geom loop body never ran at all.
+    //
+    // The actual working enumeration (confirmed via class_overview against game.pdb): dxSpace
+    // keeps its members split across two intrusive singly-linked lists - m_firstEnabled (offset
+    // 0x58) and m_firstDisabled (offset 0x5c) - chained through each dxGeom's own `next` field
+    // (offset 0x20, confirmed distinct from the body-ownership `body_next` at 0x14). This is
+    // populated by dxSpace::add(), which dxHashSpace inherits unmodified, so walking both lists
+    // is a complete, space-subtype-agnostic enumeration - the guarantee dSpaceGetGeom was
+    // supposed to provide but doesn't. dSpaceGetNumGeoms is unaffected (reads dxSpace::count
+    // directly at offset 0x54, no virtual dispatch) and stays the source of the total-count log.
+    static dxGeom* SpaceFirstEnabledGeom(dxSpace* space) {
+        return *reinterpret_cast<dxGeom* const*>(reinterpret_cast<const uint8_t*>(space) + 0x58);
+    }
+    static dxGeom* SpaceFirstDisabledGeom(dxSpace* space) {
+        return *reinterpret_cast<dxGeom* const*>(reinterpret_cast<const uint8_t*>(space) + 0x5c);
+    }
+    static dxGeom* GeomNextInSpace(dxGeom* geom) {
+        return *reinterpret_cast<dxGeom* const*>(reinterpret_cast<const uint8_t*>(geom) + 0x20);
+    }
+
+    static void ExportStaticObstaclesToJolt() {
+        if (g_physicsSystem == nullptr)
+            return;
+
+        // ai::gGlobalSpace (VA 0xA12940, confirmed via find_public_symbols against game.pdb -
+        // `?gGlobalSpace@ai@@3PAUdxSpace@@A`) - the same space ai::NearCallback iterates
+        // (docs §22.3/§22.7), declared as a raw fixed-address global the same way other fix/
+        // modules read game globals (e.g. fix/gunlights.cpp's LightActivated).
+        dxSpace* space = *reinterpret_cast<dxSpace* const*>(0x00A12940);
+        if (space == nullptr) {
+            LOG_WARNING("Jolt: static obstacle export skipped, ai::gGlobalSpace not yet created");
+            return;
+        }
+
+        JPH::BodyInterface& bodyInterface = g_physicsSystem->GetBodyInterface();
+
+        for (JPH::BodyID id : g_staticObstacleBodyIds) {
+            bodyInterface.RemoveBody(id);
+            bodyInterface.DestroyBody(id);
+        }
+        g_staticObstacleBodyIds.clear();
+
+        const int32_t numGeoms = dSpaceGetNumGeoms(space);
+        int32_t classHistogram[32] = {};
+        int32_t boxCount = 0, sphereCount = 0, triMeshCount = 0, skippedDynamicCount = 0, skippedOtherClassCount = 0;
+        int32_t walkedCount = 0;
+
+        std::vector<JPH::BodyID> newBodies;
+        newBodies.reserve((size_t) numGeoms);
+
+        for (int32_t listIndex = 0; listIndex < 2; ++listIndex) {
+            dxGeom* geom = (listIndex == 0) ? SpaceFirstEnabledGeom(space) : SpaceFirstDisabledGeom(space);
+            for (; geom != nullptr; geom = GeomNextInSpace(geom)) {
+                ++walkedCount;
+                if (dGeomGetBody(geom) != nullptr) {
+                    ++skippedDynamicCount; // anything ODE could move - vehicles, wheels, shells, ...
+                    continue;
+                }
+
+                const int32_t geomClass = dGeomGetClass(geom);
+                if (geomClass >= 0 && geomClass < 32)
+                    ++classHistogram[geomClass];
+
+                JPH::Ref<JPH::Shape> shape;
+                // Trimesh vertices come back already in world space (dGeomTriMeshGetTriangle
+                // applies the geom's position/rotation internally, docs §22.9) - same convention
+                // as the road export above, so that branch skips the position/quaternion fetch
+                // below and uses an identity transform instead.
+                bool worldSpaceVertices = false;
+                if (geomClass == dBoxClass) {
+                    float lengths[3]; // full side lengths, not half-extents
+                    dGeomBoxGetLengths(geom, lengths);
+                    JPH::BoxShapeSettings settings(JPH::Vec3(lengths[0] * 0.5f, lengths[1] * 0.5f, lengths[2] * 0.5f));
+                    JPH::ShapeSettings::ShapeResult result = settings.Create();
+                    if (result.HasError()) {
+                        LOG_WARNING("Jolt: static box shape creation failed: %s", result.GetError().c_str());
+                        ++skippedOtherClassCount;
+                        continue;
+                    }
+                    shape = result.Get();
+                } else if (geomClass == dSphereClass) {
+                    const float radius = (float) dGeomSphereGetRadius(geom);
+                    JPH::SphereShapeSettings settings(radius);
+                    JPH::ShapeSettings::ShapeResult result = settings.Create();
+                    if (result.HasError()) {
+                        LOG_WARNING("Jolt: static sphere shape creation failed: %s", result.GetError().c_str());
+                        ++skippedOtherClassCount;
+                        continue;
+                    }
+                    shape = result.Get();
+                } else if (geomClass == dTriMeshClass) {
+                    const int32_t triCount = dGeomTriMeshGetTriangleCount(geom);
+                    if (triCount <= 0) {
+                        ++skippedOtherClassCount;
+                        continue;
+                    }
+                    JPH::VertexList         vertices;
+                    JPH::IndexedTriangleList triangles;
+                    vertices.reserve((size_t) triCount * 3);
+                    triangles.reserve((size_t) triCount);
+                    for (int32_t t = 0; t < triCount; ++t) {
+                        float v0[4], v1[4], v2[4];
+                        dGeomTriMeshGetTriangle(geom, t, v0, v1, v2);
+                        const uint32_t base = (uint32_t) vertices.size();
+                        vertices.emplace_back(v0[0], v0[1], v0[2]);
+                        vertices.emplace_back(v1[0], v1[1], v1[2]);
+                        vertices.emplace_back(v2[0], v2[1], v2[2]);
+                        triangles.emplace_back(base, base + 1, base + 2, 0u);
+                    }
+                    JPH::MeshShapeSettings settings(vertices, triangles);
+                    JPH::ShapeSettings::ShapeResult result = settings.Create();
+                    if (result.HasError()) {
+                        LOG_WARNING("Jolt: static trimesh shape creation failed: %s", result.GetError().c_str());
+                        ++skippedOtherClassCount;
+                        continue;
+                    }
+                    shape = result.Get();
+                    worldSpaceVertices = true;
+                } else {
+                    // Capsule/plane/etc. - not exported yet (see docs §22.9 on the capsule
+                    // axis-remap this would need). Counted per-class below so a live run shows
+                    // exactly what's left.
+                    ++skippedOtherClassCount;
+                    continue;
+                }
+
+                JPH::RVec3 bodyPos  = JPH::RVec3(0.0f, 0.0f, 0.0f);
+                JPH::Quat  bodyRot  = JPH::Quat::sIdentity();
+                if (!worldSpaceVertices) {
+                    const float* pos = dGeomGetPosition(geom);
+                    float quat[4]; // ODE's native dQuaternion layout: {w, x, y, z}
+                    dGeomGetQuaternion(geom, quat);
+                    bodyPos = JPH::RVec3(pos[0], pos[1], pos[2]);
+                    JPH::Quat rawRot(quat[1], quat[2], quat[3], quat[0]);
+                    // dQfromR (what dGeomGetQuaternion computes from a body-less geom's own
+                    // rotation matrix, docs §22.9) isn't guaranteed to return a unit quaternion
+                    // for every geom in practice - hit live as repeated JPH_ASSERT
+                    // "inQuat.IsNormalized()" spam (non-fatal, AssertFailedImpl always returns
+                    // false, but a non-unit quaternion still means wrong/undefined rotation math
+                    // downstream). Normalize defensively; fall back to identity for the
+                    // degenerate near-zero case rather than feed Normalize() a ~0 vector.
+                    bodyRot = (rawRot.LengthSq() > 1.0e-8f) ? rawRot.Normalized() : JPH::Quat::sIdentity();
+                }
+
+                JPH::BodyCreationSettings bodySettings(
+                    shape, bodyPos, bodyRot, JPH::EMotionType::Static, Layers::NON_MOVING);
+
+                JPH::Body* body = bodyInterface.CreateBody(bodySettings);
+                if (body == nullptr) {
+                    LOG_ERROR("Jolt: static obstacle body creation failed (out of bodies?)");
+                    continue;
+                }
+                newBodies.push_back(body->GetID());
+                bodyInterface.AddBody(body->GetID(), JPH::EActivation::DontActivate);
+                if (geomClass == dBoxClass) ++boxCount;
+                else if (geomClass == dSphereClass) ++sphereCount;
+                else ++triMeshCount;
+            }
+        }
+
+        const int32_t exportedCount = (int32_t) newBodies.size();
+        g_staticObstacleBodyIds = std::move(newBodies);
+
+        if (walkedCount != numGeoms) {
+            LOG_WARNING("Jolt: static obstacle export - walked %d geoms via m_firstEnabled/"
+                        "m_firstDisabled but dSpaceGetNumGeoms reports %d - list walk may be "
+                        "missing something (nested subspaces? docs §22.9), counts below are only "
+                        "over what was actually walked",
+                        walkedCount, numGeoms);
+        }
+        LOG_INFO("Jolt: exported %d static obstacles (%d box, %d sphere, %d trimesh) - %d geoms "
+                 "walked in gGlobalSpace (%d total per dSpaceGetNumGeoms), %d dynamic geoms "
+                 "skipped, %d body-less geoms of unexported class skipped",
+                 exportedCount, boxCount, sphereCount, triMeshCount, walkedCount, numGeoms,
+                 skippedDynamicCount, skippedOtherClassCount);
+        for (int32_t c = 0; c < 32; ++c) {
+            if (classHistogram[c] > 0 && c != dBoxClass && c != dSphereClass && c != dTriMeshClass) {
+                LOG_INFO("Jolt: static obstacle export - %d body-less geom(s) of unexported ODE class %d "
+                         "(docs §22.9 - classes confirmed by disassembly: 0=sphere, 1=box, 2=capsule, "
+                         "7=trimesh; others not confirmed against this binary, treat the raw ID as a "
+                         "lead not a fact)",
+                         classHistogram[c], c);
+            }
+        }
+    }
+
     // RoadManager::ReadRoadsFromXmlFile (VA 0x7B8550) is the last road-loading step inside
     // CWorld::Load per the sequence already confirmed for the landscape hook above. Same
     // wrap-the-call-site approach as PostServersLoadHook - ChangeCall on the CALL SITE at VA
@@ -364,6 +595,12 @@ namespace kraken::fix::jolt {
     static int32_t __fastcall ReadRoadsFromXmlFileHook(hta::m3d::RoadManager* roadManager, void*, const char* path) {
         int32_t result = roadManager->ReadRoadsFromXmlFile(path);
         ExportRoadsToJolt(roadManager);
+        // Arms the static-obstacle export burst (see StepPhysics and
+        // ExportStaticObstaclesToJolt's own comment) - this is the last of the two known
+        // per-level-load hooks to fire, so by the time the first of these frames runs,
+        // CWorld::Load has certainly returned and ai::gGlobalSpace holds everything it's going
+        // to hold for this level.
+        g_staticsExportPendingFrames = 30;
         return result;
     }
 
@@ -399,12 +636,15 @@ namespace kraken::fix::jolt {
         g_objectVsBroadPhaseFilter = new ObjectVsBroadPhaseLayerFilterImpl();
         g_objectLayerPairFilter    = new ObjectLayerPairFilterImpl();
 
-        // Placeholder capacities - nothing is added yet (Stage 0+ will size these for
-        // real vehicle/static counts once we know what a level actually needs).
-        constexpr JPH::uint cMaxBodies            = 1024;
+        // cMaxBodies bumped from the original 1024 placeholder now that static-obstacle export
+        // (docs §22.9) can add one body per body-less box/sphere geom in a level, on top of
+        // landscape+roads+vehicles+wheels - real per-level obstacle counts aren't measured yet
+        // (that's part of what the first live run of the new export will show), so this errs
+        // generous rather than risk CreateBody silently dropping obstacles past the cap.
+        constexpr JPH::uint cMaxBodies            = 8192;
         constexpr JPH::uint cNumBodyMutexes        = 0; // 0 = Jolt default
-        constexpr JPH::uint cMaxBodyPairs          = 1024;
-        constexpr JPH::uint cMaxContactConstraints = 1024;
+        constexpr JPH::uint cMaxBodyPairs          = 4096;
+        constexpr JPH::uint cMaxContactConstraints = 2048;
 
         g_physicsSystem = new JPH::PhysicsSystem();
         g_physicsSystem->Init(
@@ -415,6 +655,7 @@ namespace kraken::fix::jolt {
 
         routines::ChangeCall((void*) 0x005CA413, &PostServersLoadHook);
         routines::ChangeCall((void*) 0x005CAC68, &ReadRoadsFromXmlFileHook);
-        LOG_INFO("Jolt: static geometry export hooks installed (landscape heightfield + roads)");
+        LOG_INFO("Jolt: static geometry export hooks installed (landscape heightfield + roads + "
+                 "static obstacles via gGlobalSpace walk)");
     }
 }
