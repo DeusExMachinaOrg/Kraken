@@ -20,6 +20,7 @@
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
+#include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 
 #include "hta/m3d/Landscape.hpp"
@@ -420,6 +421,179 @@ namespace kraken::fix::jolt {
         return *reinterpret_cast<dxGeom* const*>(reinterpret_cast<const uint8_t*>(geom) + 0x20);
     }
 
+    // Accumulator threaded through the recursive space walk (docs §22.13) - one instance per
+    // ExportStaticObstaclesToJolt call, shared by every recursive WalkSpaceForStaticExport frame,
+    // so a single summary can be logged once the whole tree (top-level space + any nested
+    // sub-spaces) has been walked.
+    struct StaticExportContext {
+        JPH::BodyInterface&       bodyInterface;
+        std::vector<JPH::BodyID>& newBodies;
+        int32_t classHistogram[32] = {};
+        int32_t boxCount = 0, sphereCount = 0, triMeshCount = 0, capsuleCount = 0;
+        int32_t skippedDynamicCount = 0, skippedOtherClassCount = 0;
+        int32_t walkedCount = 0;
+        int32_t nestedSpaceCount = 0;
+    };
+
+    // Walks one dxSpace's geoms (both m_firstEnabled/m_firstDisabled lists), recursing into any
+    // nested sub-space it finds (docs §22.13) - a body-less geom whose class falls in
+    // dFirstSpaceClass..dLastSpaceClass is itself a dxSpace (dxSpace inherits dxGeom), with its
+    // own m_firstEnabled/m_firstDisabled lists - the original single-level walk (docs §22.9)
+    // missed whatever these contained (154 dxSimpleSpace + at least 1 other space-class instance
+    // on the test level, per that pass's own class histogram). depth is a defensive cap against
+    // unexpectedly deep or (in the face of a data-model surprise) circular nesting - real ODE
+    // usage should never approach it.
+    static void WalkSpaceForStaticExport(dxSpace* space, StaticExportContext& ctx, int depth) {
+        constexpr int kMaxRecursionDepth = 8;
+        if (depth > kMaxRecursionDepth) {
+            LOG_WARNING("Jolt: static obstacle export - hit max sub-space recursion depth (%d), stopping this branch", kMaxRecursionDepth);
+            return;
+        }
+
+        for (int32_t listIndex = 0; listIndex < 2; ++listIndex) {
+            dxGeom* geom = (listIndex == 0) ? SpaceFirstEnabledGeom(space) : SpaceFirstDisabledGeom(space);
+            for (; geom != nullptr; geom = GeomNextInSpace(geom)) {
+                ++ctx.walkedCount;
+                if (dGeomGetBody(geom) != nullptr) {
+                    ++ctx.skippedDynamicCount; // anything ODE could move - vehicles, wheels, shells, ...
+                    continue;
+                }
+
+                const int32_t geomClass = dGeomGetClass(geom);
+                if (geomClass >= 0 && geomClass < 32)
+                    ++ctx.classHistogram[geomClass];
+
+                if (geomClass >= dFirstSpaceClass && geomClass <= dLastSpaceClass) {
+                    ++ctx.nestedSpaceCount;
+                    WalkSpaceForStaticExport(reinterpret_cast<dxSpace*>(geom), ctx, depth + 1);
+                    continue;
+                }
+
+                JPH::Ref<JPH::Shape> shape;
+                // Trimesh vertices come back already in world space (dGeomTriMeshGetTriangle
+                // applies the geom's position/rotation internally, docs §22.9) - same convention
+                // as the road export above, so that branch skips the position/quaternion fetch
+                // below and uses an identity transform instead.
+                bool worldSpaceVertices = false;
+                // Extra LOCAL-frame rotation the shape needs before the geom's own world
+                // rotation is applied (docs §22.13) - only capsule needs this (identity/no-op
+                // for everything else).
+                JPH::Quat localShapeRemap = JPH::Quat::sIdentity();
+                if (geomClass == dBoxClass) {
+                    float lengths[3]; // full side lengths, not half-extents
+                    dGeomBoxGetLengths(geom, lengths);
+                    JPH::BoxShapeSettings settings(JPH::Vec3(lengths[0] * 0.5f, lengths[1] * 0.5f, lengths[2] * 0.5f));
+                    JPH::ShapeSettings::ShapeResult result = settings.Create();
+                    if (result.HasError()) {
+                        LOG_WARNING("Jolt: static box shape creation failed: %s", result.GetError().c_str());
+                        ++ctx.skippedOtherClassCount;
+                        continue;
+                    }
+                    shape = result.Get();
+                } else if (geomClass == dSphereClass) {
+                    const float radius = (float) dGeomSphereGetRadius(geom);
+                    JPH::SphereShapeSettings settings(radius);
+                    JPH::ShapeSettings::ShapeResult result = settings.Create();
+                    if (result.HasError()) {
+                        LOG_WARNING("Jolt: static sphere shape creation failed: %s", result.GetError().c_str());
+                        ++ctx.skippedOtherClassCount;
+                        continue;
+                    }
+                    shape = result.Get();
+                } else if (geomClass == dTriMeshClass) {
+                    const int32_t triCount = dGeomTriMeshGetTriangleCount(geom);
+                    if (triCount <= 0) {
+                        ++ctx.skippedOtherClassCount;
+                        continue;
+                    }
+                    JPH::VertexList         vertices;
+                    JPH::IndexedTriangleList triangles;
+                    vertices.reserve((size_t) triCount * 3);
+                    triangles.reserve((size_t) triCount);
+                    for (int32_t t = 0; t < triCount; ++t) {
+                        float v0[4], v1[4], v2[4];
+                        dGeomTriMeshGetTriangle(geom, t, v0, v1, v2);
+                        const uint32_t base = (uint32_t) vertices.size();
+                        vertices.emplace_back(v0[0], v0[1], v0[2]);
+                        vertices.emplace_back(v1[0], v1[1], v1[2]);
+                        vertices.emplace_back(v2[0], v2[1], v2[2]);
+                        triangles.emplace_back(base, base + 1, base + 2, 0u);
+                    }
+                    JPH::MeshShapeSettings settings(vertices, triangles);
+                    JPH::ShapeSettings::ShapeResult result = settings.Create();
+                    if (result.HasError()) {
+                        LOG_WARNING("Jolt: static trimesh shape creation failed: %s", result.GetError().c_str());
+                        ++ctx.skippedOtherClassCount;
+                        continue;
+                    }
+                    shape = result.Get();
+                    worldSpaceVertices = true;
+                } else if (geomClass == dCCylinderClass) {
+                    float radius = 0.0f, length = 0.0f;
+                    dGeomCCylinderGetParams(geom, &radius, &length);
+                    if (radius <= 0.0f || length <= 0.0f) {
+                        ++ctx.skippedOtherClassCount;
+                        continue;
+                    }
+                    JPH::CapsuleShapeSettings settings(length * 0.5f, radius);
+                    JPH::ShapeSettings::ShapeResult result = settings.Create();
+                    if (result.HasError()) {
+                        LOG_WARNING("Jolt: static capsule shape creation failed: %s", result.GetError().c_str());
+                        ++ctx.skippedOtherClassCount;
+                        continue;
+                    }
+                    shape = result.Get();
+                    // ODE's CCylinder/capsule long axis is local Z; Jolt's CapsuleShape long
+                    // axis is local Y (docs §22.9/§22.13, not previously implemented for exactly
+                    // this reason). Rotating +90deg around local X maps Y (0,1,0) -> Z (0,0,1)
+                    // (cos90=0, sin90=1), so applying this BEFORE the geom's own world rotation
+                    // puts the capsule's long axis where ODE's local Z actually points once
+                    // world-rotated.
+                    localShapeRemap = JPH::Quat::sRotation(JPH::Vec3::sAxisX(), JPH::DegreesToRadians(90.0f));
+                } else {
+                    // Plane/etc. - not exported yet. Counted per-class below so a live run shows
+                    // exactly what's left.
+                    ++ctx.skippedOtherClassCount;
+                    continue;
+                }
+
+                JPH::RVec3 bodyPos  = JPH::RVec3(0.0f, 0.0f, 0.0f);
+                JPH::Quat  bodyRot  = JPH::Quat::sIdentity();
+                if (!worldSpaceVertices) {
+                    const float* pos = dGeomGetPosition(geom);
+                    float quat[4]; // ODE's native dQuaternion layout: {w, x, y, z}
+                    dGeomGetQuaternion(geom, quat);
+                    bodyPos = JPH::RVec3(pos[0], pos[1], pos[2]);
+                    JPH::Quat rawRot(quat[1], quat[2], quat[3], quat[0]);
+                    // dQfromR (what dGeomGetQuaternion computes from a body-less geom's own
+                    // rotation matrix, docs §22.9) isn't guaranteed to return a unit quaternion
+                    // for every geom in practice - hit live as repeated JPH_ASSERT
+                    // "inQuat.IsNormalized()" spam (non-fatal, AssertFailedImpl always returns
+                    // false, but a non-unit quaternion still means wrong/undefined rotation math
+                    // downstream). Normalize defensively; fall back to identity for the
+                    // degenerate near-zero case rather than feed Normalize() a ~0 vector.
+                    bodyRot = (rawRot.LengthSq() > 1.0e-8f) ? rawRot.Normalized() : JPH::Quat::sIdentity();
+                    bodyRot = bodyRot * localShapeRemap; // no-op (identity) for everything but capsule
+                }
+
+                JPH::BodyCreationSettings bodySettings(
+                    shape, bodyPos, bodyRot, JPH::EMotionType::Static, Layers::NON_MOVING);
+
+                JPH::Body* body = ctx.bodyInterface.CreateBody(bodySettings);
+                if (body == nullptr) {
+                    LOG_ERROR("Jolt: static obstacle body creation failed (out of bodies?)");
+                    continue;
+                }
+                ctx.newBodies.push_back(body->GetID());
+                ctx.bodyInterface.AddBody(body->GetID(), JPH::EActivation::DontActivate);
+                if (geomClass == dBoxClass) ++ctx.boxCount;
+                else if (geomClass == dSphereClass) ++ctx.sphereCount;
+                else if (geomClass == dCCylinderClass) ++ctx.capsuleCount;
+                else ++ctx.triMeshCount;
+            }
+        }
+    }
+
     static void ExportStaticObstaclesToJolt() {
         if (g_physicsSystem == nullptr)
             return;
@@ -442,146 +616,41 @@ namespace kraken::fix::jolt {
         }
         g_staticObstacleBodyIds.clear();
 
-        const int32_t numGeoms = dSpaceGetNumGeoms(space);
-        int32_t classHistogram[32] = {};
-        int32_t boxCount = 0, sphereCount = 0, triMeshCount = 0, skippedDynamicCount = 0, skippedOtherClassCount = 0;
-        int32_t walkedCount = 0;
-
+        // Top-level count only (dSpaceGetNumGeoms reads gGlobalSpace's own `count` field, not a
+        // recursive total) - used only to size the reservation and as a lower-bound sanity check
+        // below, not as "the" total any more now that nested sub-spaces are walked too.
+        const int32_t topLevelCount = dSpaceGetNumGeoms(space);
         std::vector<JPH::BodyID> newBodies;
-        newBodies.reserve((size_t) numGeoms);
+        newBodies.reserve((size_t) topLevelCount);
 
-        for (int32_t listIndex = 0; listIndex < 2; ++listIndex) {
-            dxGeom* geom = (listIndex == 0) ? SpaceFirstEnabledGeom(space) : SpaceFirstDisabledGeom(space);
-            for (; geom != nullptr; geom = GeomNextInSpace(geom)) {
-                ++walkedCount;
-                if (dGeomGetBody(geom) != nullptr) {
-                    ++skippedDynamicCount; // anything ODE could move - vehicles, wheels, shells, ...
-                    continue;
-                }
-
-                const int32_t geomClass = dGeomGetClass(geom);
-                if (geomClass >= 0 && geomClass < 32)
-                    ++classHistogram[geomClass];
-
-                JPH::Ref<JPH::Shape> shape;
-                // Trimesh vertices come back already in world space (dGeomTriMeshGetTriangle
-                // applies the geom's position/rotation internally, docs §22.9) - same convention
-                // as the road export above, so that branch skips the position/quaternion fetch
-                // below and uses an identity transform instead.
-                bool worldSpaceVertices = false;
-                if (geomClass == dBoxClass) {
-                    float lengths[3]; // full side lengths, not half-extents
-                    dGeomBoxGetLengths(geom, lengths);
-                    JPH::BoxShapeSettings settings(JPH::Vec3(lengths[0] * 0.5f, lengths[1] * 0.5f, lengths[2] * 0.5f));
-                    JPH::ShapeSettings::ShapeResult result = settings.Create();
-                    if (result.HasError()) {
-                        LOG_WARNING("Jolt: static box shape creation failed: %s", result.GetError().c_str());
-                        ++skippedOtherClassCount;
-                        continue;
-                    }
-                    shape = result.Get();
-                } else if (geomClass == dSphereClass) {
-                    const float radius = (float) dGeomSphereGetRadius(geom);
-                    JPH::SphereShapeSettings settings(radius);
-                    JPH::ShapeSettings::ShapeResult result = settings.Create();
-                    if (result.HasError()) {
-                        LOG_WARNING("Jolt: static sphere shape creation failed: %s", result.GetError().c_str());
-                        ++skippedOtherClassCount;
-                        continue;
-                    }
-                    shape = result.Get();
-                } else if (geomClass == dTriMeshClass) {
-                    const int32_t triCount = dGeomTriMeshGetTriangleCount(geom);
-                    if (triCount <= 0) {
-                        ++skippedOtherClassCount;
-                        continue;
-                    }
-                    JPH::VertexList         vertices;
-                    JPH::IndexedTriangleList triangles;
-                    vertices.reserve((size_t) triCount * 3);
-                    triangles.reserve((size_t) triCount);
-                    for (int32_t t = 0; t < triCount; ++t) {
-                        float v0[4], v1[4], v2[4];
-                        dGeomTriMeshGetTriangle(geom, t, v0, v1, v2);
-                        const uint32_t base = (uint32_t) vertices.size();
-                        vertices.emplace_back(v0[0], v0[1], v0[2]);
-                        vertices.emplace_back(v1[0], v1[1], v1[2]);
-                        vertices.emplace_back(v2[0], v2[1], v2[2]);
-                        triangles.emplace_back(base, base + 1, base + 2, 0u);
-                    }
-                    JPH::MeshShapeSettings settings(vertices, triangles);
-                    JPH::ShapeSettings::ShapeResult result = settings.Create();
-                    if (result.HasError()) {
-                        LOG_WARNING("Jolt: static trimesh shape creation failed: %s", result.GetError().c_str());
-                        ++skippedOtherClassCount;
-                        continue;
-                    }
-                    shape = result.Get();
-                    worldSpaceVertices = true;
-                } else {
-                    // Capsule/plane/etc. - not exported yet (see docs §22.9 on the capsule
-                    // axis-remap this would need). Counted per-class below so a live run shows
-                    // exactly what's left.
-                    ++skippedOtherClassCount;
-                    continue;
-                }
-
-                JPH::RVec3 bodyPos  = JPH::RVec3(0.0f, 0.0f, 0.0f);
-                JPH::Quat  bodyRot  = JPH::Quat::sIdentity();
-                if (!worldSpaceVertices) {
-                    const float* pos = dGeomGetPosition(geom);
-                    float quat[4]; // ODE's native dQuaternion layout: {w, x, y, z}
-                    dGeomGetQuaternion(geom, quat);
-                    bodyPos = JPH::RVec3(pos[0], pos[1], pos[2]);
-                    JPH::Quat rawRot(quat[1], quat[2], quat[3], quat[0]);
-                    // dQfromR (what dGeomGetQuaternion computes from a body-less geom's own
-                    // rotation matrix, docs §22.9) isn't guaranteed to return a unit quaternion
-                    // for every geom in practice - hit live as repeated JPH_ASSERT
-                    // "inQuat.IsNormalized()" spam (non-fatal, AssertFailedImpl always returns
-                    // false, but a non-unit quaternion still means wrong/undefined rotation math
-                    // downstream). Normalize defensively; fall back to identity for the
-                    // degenerate near-zero case rather than feed Normalize() a ~0 vector.
-                    bodyRot = (rawRot.LengthSq() > 1.0e-8f) ? rawRot.Normalized() : JPH::Quat::sIdentity();
-                }
-
-                JPH::BodyCreationSettings bodySettings(
-                    shape, bodyPos, bodyRot, JPH::EMotionType::Static, Layers::NON_MOVING);
-
-                JPH::Body* body = bodyInterface.CreateBody(bodySettings);
-                if (body == nullptr) {
-                    LOG_ERROR("Jolt: static obstacle body creation failed (out of bodies?)");
-                    continue;
-                }
-                newBodies.push_back(body->GetID());
-                bodyInterface.AddBody(body->GetID(), JPH::EActivation::DontActivate);
-                if (geomClass == dBoxClass) ++boxCount;
-                else if (geomClass == dSphereClass) ++sphereCount;
-                else ++triMeshCount;
-            }
-        }
+        StaticExportContext ctx{bodyInterface, newBodies};
+        WalkSpaceForStaticExport(space, ctx, 0);
 
         const int32_t exportedCount = (int32_t) newBodies.size();
         g_staticObstacleBodyIds = std::move(newBodies);
 
-        if (walkedCount != numGeoms) {
-            LOG_WARNING("Jolt: static obstacle export - walked %d geoms via m_firstEnabled/"
-                        "m_firstDisabled but dSpaceGetNumGeoms reports %d - list walk may be "
-                        "missing something (nested subspaces? docs §22.9), counts below are only "
-                        "over what was actually walked",
-                        walkedCount, numGeoms);
+        if (ctx.walkedCount < topLevelCount) {
+            LOG_WARNING("Jolt: static obstacle export - walked only %d geoms but dSpaceGetNumGeoms "
+                        "reports %d at the top level alone - list walk may be missing something "
+                        "(docs §22.9/§22.13), counts below are only over what was actually walked",
+                        ctx.walkedCount, topLevelCount);
         }
-        LOG_INFO("Jolt: exported %d static obstacles (%d box, %d sphere, %d trimesh) - %d geoms "
-                 "walked in gGlobalSpace (%d total per dSpaceGetNumGeoms), %d dynamic geoms "
-                 "skipped, %d body-less geoms of unexported class skipped",
-                 exportedCount, boxCount, sphereCount, triMeshCount, walkedCount, numGeoms,
-                 skippedDynamicCount, skippedOtherClassCount);
+        LOG_INFO("Jolt: exported %d static obstacles (%d box, %d sphere, %d trimesh, %d capsule) - "
+                 "%d geoms walked total (%d nested sub-space(s) recursed into, %d at top level per "
+                 "dSpaceGetNumGeoms), %d dynamic geoms skipped, %d body-less geoms of unexported "
+                 "class skipped",
+                 exportedCount, ctx.boxCount, ctx.sphereCount, ctx.triMeshCount, ctx.capsuleCount,
+                 ctx.walkedCount, ctx.nestedSpaceCount, topLevelCount, ctx.skippedDynamicCount,
+                 ctx.skippedOtherClassCount);
         for (int32_t c = 0; c < 32; ++c) {
-            if (classHistogram[c] > 0 && c != dBoxClass && c != dSphereClass && c != dTriMeshClass) {
+            const bool isSpaceClass = c >= dFirstSpaceClass && c <= dLastSpaceClass;
+            if (ctx.classHistogram[c] > 0 && c != dBoxClass && c != dSphereClass && c != dTriMeshClass
+                && c != dCCylinderClass && !isSpaceClass) {
                 LOG_INFO("Jolt: static obstacle export - %d body-less geom(s) of unexported ODE class %d "
-                         "(docs §22.9 - classes confirmed by disassembly: 0=sphere, 1=box, 2=capsule, "
-                         "7=trimesh; others not confirmed against this binary, treat the raw ID as a "
-                         "lead not a fact)",
-                         classHistogram[c], c);
+                         "(docs §22.9/§22.13 - classes confirmed by disassembly: 0=sphere, 1=box, "
+                         "2=capsule, 7=trimesh, 11-14=space (recursed into, not \"unexported\"); "
+                         "others not confirmed against this binary, treat the raw ID as a lead not a fact)",
+                         ctx.classHistogram[c], c);
             }
         }
     }
@@ -640,15 +709,16 @@ namespace kraken::fix::jolt {
         g_objectVsBroadPhaseFilter = new ObjectVsBroadPhaseLayerFilterImpl();
         g_objectLayerPairFilter    = new ObjectLayerPairFilterImpl();
 
-        // cMaxBodies bumped from the original 1024 placeholder now that static-obstacle export
-        // (docs §22.9) can add one body per body-less box/sphere geom in a level, on top of
-        // landscape+roads+vehicles+wheels - real per-level obstacle counts aren't measured yet
-        // (that's part of what the first live run of the new export will show), so this errs
-        // generous rather than risk CreateBody silently dropping obstacles past the cap.
-        constexpr JPH::uint cMaxBodies            = 8192;
+        // cMaxBodies bumped again (docs §22.14) - 8192 (itself already a bump from an original
+        // 1024 placeholder) turned out to be a real, live-confirmed truncation bug on an actual
+        // game save: exported only 8129 of the level's static obstacles before hitting the cap,
+        // logging 24732 "out of bodies" errors for the rest - true candidate count on that one
+        // level alone was ~33000. Sized with real headroom above that measured number now,
+        // rather than another guess.
+        constexpr JPH::uint cMaxBodies            = 65536;
         constexpr JPH::uint cNumBodyMutexes        = 0; // 0 = Jolt default
-        constexpr JPH::uint cMaxBodyPairs          = 4096;
-        constexpr JPH::uint cMaxContactConstraints = 2048;
+        constexpr JPH::uint cMaxBodyPairs          = 16384;
+        constexpr JPH::uint cMaxContactConstraints = 8192;
 
         g_physicsSystem = new JPH::PhysicsSystem();
         g_physicsSystem->Init(

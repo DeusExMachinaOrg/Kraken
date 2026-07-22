@@ -55,6 +55,7 @@ namespace kraken::fix::testharness {
         bool                running  = false;
         float               clock    = 0.0f;
         std::ofstream       telemetry;
+        bool                tornWheel = false; // one-shot latch for testharness_tear_wheel_at_t
     };
 
     static State g_state;
@@ -160,6 +161,7 @@ namespace kraken::fix::testharness {
         state.token   = token;
         state.clock   = 0.0f;
         state.running = true;
+        state.tornWheel = false;
 
         hta::ai::Vehicle* vehicle = GetTargetVehicle();
         if (vehicle) {
@@ -285,6 +287,27 @@ namespace kraken::fix::testharness {
         if (!vehicle) {
             FinishScenario("no_vehicle");
             return;
+        }
+
+        // Debug-only one-shot wheel tear (docs §22.2/§22.14) - lets the UAF fix
+        // (ShadowState::wheelOrder revalidation, joltshadow.cpp's ShadowWheelsStillPresent) be
+        // exercised deterministically instead of only waiting for real combat damage.
+        // ShadowWheelsStillPresent's actual check is `info.m_bWheelPresent` on the vehicle's OWN
+        // m_wheels[] entry, not whether the Wheel object itself still exists - confirmed via
+        // disassembly of WheelRuntimeInfo::SetWheel (VA 0x5CE8F0): it sets m_wheel=arg and
+        // m_bWheelPresent=(arg!=nullptr) in one place. A raw DetachFromPhysicObj() call on the
+        // Wheel object alone does NOT flip this flag (tried first, live - no rebuild triggered),
+        // so SetWheel(nullptr) is the actual, precise way to simulate what real wheel loss does
+        // to this specific piece of state.
+        const float tearAtT = kraken::Config::Instance().testharness_tear_wheel_at_t.value;
+        if (!state.tornWheel && tearAtT >= 0.0f && state.clock >= tearAtT) {
+            state.tornWheel = true;
+            if (!vehicle->m_wheels.empty()) {
+                LOG_INFO("Debug: tearing wheel 0 off target vehicle at t=%.3f", state.clock);
+                vehicle->m_wheels[0].SetWheel(nullptr);
+            } else {
+                LOG_WARNING("Debug: tear_wheel_at_t fired but vehicle has no wheels");
+            }
         }
 
         const Sample* sample = SampleAt(state, state.clock);

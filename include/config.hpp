@@ -76,6 +76,11 @@ namespace kraken {
         ConfigValue<uint32_t>                 testharness_god_mode;
         ConfigValue<uint32_t>                 testharness_perfmon;
         ConfigValue<float>                    testharness_perfmon_interval;
+        // Debug-only, one-shot: at this scenario clock time, call DetachFromPhysicObj() on the
+        // target vehicle's wheel 0 - lets a real wheel-tear event be triggered deterministically
+        // for testing (docs §22.2's UAF fix), instead of needing to wait for real combat damage.
+        // -1 (default) disables it.
+        ConfigValue<float>                    testharness_tear_wheel_at_t;
         ConfigValue<uint32_t>                 jolt;
         ConfigValue<uint32_t>                 jolt_threads;
         ConfigValue<uint32_t>                 jolt_shadow;

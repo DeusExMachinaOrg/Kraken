@@ -49,6 +49,7 @@ namespace kraken {
         this->testharness_god_mode              = { "testharness","god_mode",                       0,     true,  0,     1           };
         this->testharness_perfmon               = { "testharness","perfmon",                        0,     true,  0,     1           };
         this->testharness_perfmon_interval      = { "testharness","perfmon_interval",                5.0,   true,  0.5,   60.0        };
+        this->testharness_tear_wheel_at_t       = { "testharness","tear_wheel_at_t",                 -1.0,  true, -1.0,   3600.0       };
         this->jolt                              = { "jolt",       "enabled",                         0,     true,  0,     1           };
         this->jolt_threads                      = { "jolt",       "threads",                         0,     true,  0,     64          };
         this->jolt_shadow                       = { "jolt_harness","shadow",                         0,     true,  0,     1           };
@@ -127,6 +128,7 @@ namespace kraken {
         this->LoadValue(&this->testharness_god_mode);
         this->LoadValue(&this->testharness_perfmon);
         this->LoadValue(&this->testharness_perfmon_interval);
+        this->LoadValue(&this->testharness_tear_wheel_at_t);
         this->LoadValue(&this->jolt);
         this->LoadValue(&this->jolt_threads);
         this->LoadValue(&this->jolt_shadow);
@@ -183,6 +185,7 @@ namespace kraken {
         this->DumpValue(&this->testharness_god_mode);
         this->DumpValue(&this->testharness_perfmon);
         this->DumpValue(&this->testharness_perfmon_interval);
+        this->DumpValue(&this->testharness_tear_wheel_at_t);
         this->DumpValue(&this->jolt);
         this->DumpValue(&this->jolt_threads);
         this->DumpValue(&this->jolt_shadow);
