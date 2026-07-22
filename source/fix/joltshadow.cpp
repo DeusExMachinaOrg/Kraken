@@ -167,6 +167,20 @@ namespace kraken::fix::joltshadow {
     static std::vector<ShadowState> g_aiShadows;
     static bool                     g_aiShadowsInitialized = false;
 
+    // "Other vehicles" mirroring (docs §22.6/§22.11) - every vehicle that ISN'T the player's own
+    // shadow target or a fully Jolt-shadowed AI target (g_aiTargets) gets a lightweight kinematic
+    // box body in Jolt, position/rotation-synced from its real ODE state every frame, so a
+    // Jolt-driven vehicle collides with it instead of ghosting through (the dynamic-geom half of
+    // the ghost-passthrough bug that fix::jolt's static-obstacle export deliberately excludes).
+    // Re-scanned fresh every frame rather than cached, specifically so a vehicle destroyed since
+    // last frame is dropped by simply not appearing in this frame's scan - never by dereferencing
+    // a stale Vehicle* (same use-after-free caution as the wheel-teardown fix, docs §22.2).
+    struct VehicleMirrorEntry {
+        hta::ai::Vehicle* vehicle = nullptr; // used only for pointer-identity comparison, never dereferenced across frames without a fresh scan confirming it's still live
+        JPH::BodyID       bodyId;
+    };
+    static std::vector<VehicleMirrorEntry> g_vehicleMirrors;
+
     static JPH::VehicleCollisionTester* g_collisionTester = nullptr; // built once, shared/leaked forever across every rebuild
     static uint32_t                     g_shadowGeneration = 0;      // how many shadow vehicles have been built this process, for logging only
 
@@ -870,6 +884,87 @@ namespace kraken::fix::joltshadow {
         LOG_INFO("Stage 3: selected %u AI vehicle(s) for Jolt shadow (requested %u)", found, aiCount);
     }
 
+    // "Other vehicles" mirroring (docs §22.6/§22.11) - see g_vehicleMirrors' own comment above
+    // for the why. Called once per real frame, only when the shared PhysicsSystem is actually
+    // about to step (same "anyLive" gate UpdateShadow already uses for StepPhysicsProfiled) -
+    // no point syncing kinematic mirrors into a world that isn't being simulated this frame.
+    //
+    // Chassis-only approximation, same box-from-prototype-mass-size shortcut BuildShadow already
+    // uses for the Jolt-shadowed vehicle itself (docs' own comment there) - not the real
+    // multi-part ODE collision. Good enough to stop a Jolt-driven vehicle from passing straight
+    // through another vehicle; not a faithful reproduction of per-part collision.
+    static void MirrorOtherVehicles(hta::ai::Vehicle* playerVehicle, float elapsedTime) {
+        JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+        if (physics == nullptr)
+            return;
+        JPH::BodyInterface& bodyInterface = physics->GetBodyInterface();
+
+        hta::ai::CServer* server = hta::ai::CServer::Instance();
+        if (server == nullptr || server->m_pObjects == nullptr)
+            return;
+
+        // Fresh scan every frame - see g_vehicleMirrors' comment on why this must never reuse a
+        // pointer across frames without reconfirming it's still enumerated.
+        std::vector<hta::ai::Vehicle*> currentOthers;
+        hta::ai::ObjContainer* objects = server->m_pObjects;
+        for (hta::ai::ObjContainer::iterator it = objects->updatingBegin(); it != objects->updatingEnd(); ++it) {
+            hta::ai::Vehicle* vehicle = (*it)->cast<hta::ai::Vehicle>();
+            if (vehicle == nullptr || vehicle == playerVehicle)
+                continue;
+            if (std::find(g_aiTargets.begin(), g_aiTargets.end(), vehicle) != g_aiTargets.end())
+                continue; // already fully Jolt-shadowed (Stage 3) - don't also give it a mirror body
+            currentOthers.push_back(vehicle);
+        }
+
+        // Drop mirrors for vehicles no longer present (destroyed, or promoted to a full AI
+        // shadow target above) - compares pointer VALUES only, never dereferences the removed one.
+        for (size_t i = 0; i < g_vehicleMirrors.size(); ) {
+            bool stillPresent = std::find(currentOthers.begin(), currentOthers.end(), g_vehicleMirrors[i].vehicle) != currentOthers.end();
+            if (stillPresent) {
+                ++i;
+                continue;
+            }
+            bodyInterface.RemoveBody(g_vehicleMirrors[i].bodyId);
+            bodyInterface.DestroyBody(g_vehicleMirrors[i].bodyId);
+            g_vehicleMirrors[i] = g_vehicleMirrors.back();
+            g_vehicleMirrors.pop_back();
+        }
+
+        for (hta::ai::Vehicle* vehicle : currentOthers) {
+            auto existing = std::find_if(g_vehicleMirrors.begin(), g_vehicleMirrors.end(),
+                [vehicle](const VehicleMirrorEntry& e) { return e.vehicle == vehicle; });
+
+            const hta::CVector    pos = vehicle->GetPosition();
+            const hta::Quaternion rot = vehicle->GetRotation();
+            const JPH::RVec3 joltPos(pos.x, pos.y, pos.z);
+            const JPH::Quat  joltRot(rot.x, rot.y, rot.z, rot.w);
+
+            if (existing != g_vehicleMirrors.end()) {
+                bodyInterface.MoveKinematic(existing->bodyId, joltPos, joltRot, elapsedTime);
+                continue;
+            }
+
+            const hta::ai::VehiclePrototypeInfo* protoInfo = vehicle->GetPrototypeInfo();
+            const hta::CVector massSize = protoInfo != nullptr ? protoInfo->m_massSize : hta::CVector(2.0f, 1.0f, 4.0f);
+            const JPH::Vec3 halfExtents(
+                std::max(massSize.x * 0.5f, 0.1f),
+                std::max(massSize.y * 0.5f, 0.1f),
+                std::max(massSize.z * 0.5f, 0.1f));
+
+            JPH::BodyCreationSettings bodySettings(
+                new JPH::BoxShape(halfExtents), joltPos, joltRot,
+                JPH::EMotionType::Kinematic, kMovingLayer);
+
+            JPH::Body* body = bodyInterface.CreateBody(bodySettings);
+            if (body == nullptr) {
+                LOG_ERROR("Jolt: other-vehicle mirror body creation failed (out of bodies?)");
+                continue;
+            }
+            g_vehicleMirrors.push_back(VehicleMirrorEntry{vehicle, body->GetID()});
+            bodyInterface.AddBody(body->GetID(), JPH::EActivation::Activate);
+        }
+    }
+
     // ------------------------------------------------------------------------------------------
     // In-process suspension/friction autotuner (docs/jolt-integration-techanalysis.md §8.5/§16/§20.2/§20.3).
     //
@@ -1562,8 +1657,10 @@ namespace kraken::fix::joltshadow {
         bool anyLive = playerLive;
         for (size_t i = 0; i < aiShadowCount; ++i)
             anyLive = anyLive || aiLive[i];
-        if (anyLive)
+        if (anyLive) {
+            MirrorOtherVehicles(playerVehicle, elapsedTime);
             StepPhysicsProfiled(elapsedTime);
+        }
 
         // --- Pass 3 (post-step) ---
         if (playerLive) {
