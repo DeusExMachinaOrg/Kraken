@@ -29,6 +29,9 @@
 #include "fix/mortarvolleylauncherfix.hpp"
 #include "fix/gunlights.hpp"
 #include "fix/bossmetalarm.hpp"
+#include "fix/testharness.hpp"
+#include "fix/jolt.hpp"
+#include "fix/joltshadow.hpp"
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
     Config* G_CONFIG = new Config();
@@ -85,5 +88,8 @@ namespace kraken {
         fix::mortarvolleylauncherfix::Apply();
         fix::gunlights::Apply();
         fix::bossmetalarm::Apply();
+        fix::testharness::Apply();
+        fix::jolt::Apply();
+        fix::joltshadow::Apply();
     };
 };

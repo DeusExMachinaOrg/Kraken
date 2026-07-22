@@ -44,6 +44,23 @@ namespace kraken {
         this->mortarvolleylauncherfix           = { "constants", "mortarvolleylauncherfix",         1,     true,  0,     1           };
         this->gunlights                         = { "constants", "gunlights",                       1,     true,  0,     1           };
         this->boss01_fast_charge                = { "constants", "boss01_fast_charge",              1,     true,  0,     1           };
+        this->testharness                       = { "testharness","enabled",                        0,     true,  0,     1           };
+        this->testharness_autoload              = { "testharness","autoload_save",                  0,     true,  0,     1           };
+        this->testharness_god_mode              = { "testharness","god_mode",                       0,     true,  0,     1           };
+        this->testharness_perfmon               = { "testharness","perfmon",                        0,     true,  0,     1           };
+        this->testharness_perfmon_interval      = { "testharness","perfmon_interval",                5.0,   true,  0.5,   60.0        };
+        this->jolt                              = { "jolt",       "enabled",                         0,     true,  0,     1           };
+        this->jolt_threads                      = { "jolt",       "threads",                         0,     true,  0,     64          };
+        this->jolt_shadow                       = { "jolt_harness","shadow",                         0,     true,  0,     1           };
+        this->jolt_apply                        = { "jolt_harness","apply",                          0,     true,  0,     1           };
+        this->jolt_player_only                  = { "jolt_harness","player_only",                    1,     true,  0,     1           };
+        this->jolt_ai_count                     = { "jolt_harness","ai_count",                       0,     true,  0,     16          };
+        this->jolt_susp_frequency               = { "jolt_harness","susp_frequency",                 1.5,   true,  0.3,   8.0         };
+        this->jolt_susp_damping                 = { "jolt_harness","susp_damping",                   0.5,   true,  0.05,  1.5         };
+        this->jolt_friction_long                = { "jolt_harness","friction_long",                  1.0,   true,  0.2,   3.0         };
+        this->jolt_friction_lat                 = { "jolt_harness","friction_lat",                   1.0,   true,  0.2,   3.0         };
+        this->jolt_autotune                     = { "jolt_harness","autotune",                       0,     true,  0,     1           };
+        this->jolt_autotune_max_trials          = { "jolt_harness","autotune_max_trials",             24,    true,  1,     500         };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -105,6 +122,23 @@ namespace kraken {
         this->LoadValue(&this->mortarvolleylauncherfix);
         this->LoadValue(&this->gunlights);
         this->LoadValue(&this->boss01_fast_charge);
+        this->LoadValue(&this->testharness);
+        this->LoadValue(&this->testharness_autoload);
+        this->LoadValue(&this->testharness_god_mode);
+        this->LoadValue(&this->testharness_perfmon);
+        this->LoadValue(&this->testharness_perfmon_interval);
+        this->LoadValue(&this->jolt);
+        this->LoadValue(&this->jolt_threads);
+        this->LoadValue(&this->jolt_shadow);
+        this->LoadValue(&this->jolt_apply);
+        this->LoadValue(&this->jolt_player_only);
+        this->LoadValue(&this->jolt_ai_count);
+        this->LoadValue(&this->jolt_susp_frequency);
+        this->LoadValue(&this->jolt_susp_damping);
+        this->LoadValue(&this->jolt_friction_long);
+        this->LoadValue(&this->jolt_friction_lat);
+        this->LoadValue(&this->jolt_autotune);
+        this->LoadValue(&this->jolt_autotune_max_trials);
     };
 
     void Config::Dump() {
@@ -144,6 +178,23 @@ namespace kraken {
         this->DumpValue(&this->mortarvolleylauncherfix);
         this->DumpValue(&this->gunlights);
         this->DumpValue(&this->boss01_fast_charge);
+        this->DumpValue(&this->testharness);
+        this->DumpValue(&this->testharness_autoload);
+        this->DumpValue(&this->testharness_god_mode);
+        this->DumpValue(&this->testharness_perfmon);
+        this->DumpValue(&this->testharness_perfmon_interval);
+        this->DumpValue(&this->jolt);
+        this->DumpValue(&this->jolt_threads);
+        this->DumpValue(&this->jolt_shadow);
+        this->DumpValue(&this->jolt_apply);
+        this->DumpValue(&this->jolt_player_only);
+        this->DumpValue(&this->jolt_ai_count);
+        this->DumpValue(&this->jolt_susp_frequency);
+        this->DumpValue(&this->jolt_susp_damping);
+        this->DumpValue(&this->jolt_friction_long);
+        this->DumpValue(&this->jolt_friction_lat);
+        this->DumpValue(&this->jolt_autotune);
+        this->DumpValue(&this->jolt_autotune_max_trials);
     };
 
     template<typename T>

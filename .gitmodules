@@ -4,3 +4,6 @@
 [submodule "extern/hta"]
 	path = extern/hta
 	url = https://github.com/DeusExMachinaOrg/Headers
+[submodule "extern/joltphysics"]
+	path = extern/joltphysics
+	url = https://github.com/jrouwe/JoltPhysics.git
