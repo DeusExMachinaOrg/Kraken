@@ -48,9 +48,22 @@ JPH_SUPPRESS_WARNINGS
 // in our own separate Jolt PhysicsSystem with no effect on the game's real ODE physics.
 namespace kraken::fix::jolt {
     namespace Layers {
-        static constexpr JPH::ObjectLayer NON_MOVING = 0;
-        static constexpr JPH::ObjectLayer MOVING     = 1;
-        static constexpr JPH::ObjectLayer NUM_LAYERS = 2;
+        static constexpr JPH::ObjectLayer NON_MOVING  = 0;
+        static constexpr JPH::ObjectLayer MOVING      = 1;
+        // docs §23.5: a query-only "pretend" layer for VehicleCollisionTesterRay's wheel-
+        // ground raycast - never assigned to a real body (so it needs no BroadPhaseLayer
+        // mapping in BPLayerInterfaceImpl below; Jolt's DefaultBroadPhaseLayerFilter/
+        // DefaultObjectLayerFilter only ever call ShouldCollide(WHEEL_QUERY, candidate) on
+        // the filters below, never GetBroadPhaseLayer(WHEEL_QUERY) - confirmed by reading
+        // PhysicsSystem::GetDefaultBroadPhaseLayerFilter/GetDefaultLayerFilter). Restricted
+        // to NON_MOVING only, unlike MOVING (which collides with everything) - without this,
+        // a wheel raycast in a dense vehicle crowd hits neighboring vehicles' kinematic
+        // mirror bodies (docs §22.11) instead of the ground, since those share the MOVING
+        // layer with the ray's own vehicle. Live-observed symptom: suspension stuck fully
+        // extended and zero tire traction (vehicle slides instead of driving) whenever
+        // surrounded by other vehicles.
+        static constexpr JPH::ObjectLayer WHEEL_QUERY = 2;
+        static constexpr JPH::ObjectLayer NUM_LAYERS  = 2; // BPLayerInterfaceImpl's array size - WHEEL_QUERY is query-only, see above, so it's deliberately excluded
     }
 
     namespace BroadPhaseLayers {
@@ -90,9 +103,10 @@ namespace kraken::fix::jolt {
     public:
         bool ShouldCollide(JPH::ObjectLayer layer1, JPH::BroadPhaseLayer layer2) const override {
             switch (layer1) {
-                case Layers::NON_MOVING: return layer2 == BroadPhaseLayers::MOVING;
-                case Layers::MOVING:     return true;
-                default:                 return false;
+                case Layers::NON_MOVING:  return layer2 == BroadPhaseLayers::MOVING;
+                case Layers::MOVING:      return true;
+                case Layers::WHEEL_QUERY: return layer2 == BroadPhaseLayers::NON_MOVING;
+                default:                  return false;
             }
         }
     };
@@ -101,9 +115,10 @@ namespace kraken::fix::jolt {
     public:
         bool ShouldCollide(JPH::ObjectLayer object1, JPH::ObjectLayer object2) const override {
             switch (object1) {
-                case Layers::NON_MOVING: return object2 == Layers::MOVING;
-                case Layers::MOVING:     return true;
-                default:                 return false;
+                case Layers::NON_MOVING:  return object2 == Layers::MOVING;
+                case Layers::MOVING:      return true;
+                case Layers::WHEEL_QUERY: return object2 == Layers::NON_MOVING;
+                default:                  return false;
             }
         }
     };

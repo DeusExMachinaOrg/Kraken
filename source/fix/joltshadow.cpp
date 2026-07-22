@@ -35,6 +35,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -72,6 +73,12 @@ namespace kraken::fix::joltshadow {
     // Must match kraken::fix::jolt::Layers::MOVING (jolt.cpp) - duplicated here rather than
     // exposing Jolt-typed constants through the intentionally lightweight jolt.hpp.
     static constexpr JPH::ObjectLayer kMovingLayer = 1;
+
+    // Must match kraken::fix::jolt::Layers::WHEEL_QUERY (jolt.cpp, see its comment for why
+    // this exists) - a query-only layer restricted to colliding with NON_MOVING (ground)
+    // only, used for the wheel-ground raycast tester so it can't hit neighboring vehicles'
+    // kinematic mirror bodies (docs §22.11/§23.5).
+    static constexpr JPH::ObjectLayer kWheelQueryLayer = 2;
 
     // Not in extern/hta's ode.hpp yet - declared locally rather than editing that submodule.
     // Confirmed via disassembly (docs §22.3): counts the body's dxJointNode linked list at
@@ -320,8 +327,29 @@ namespace kraken::fix::joltshadow {
             // [jolt_harness], searchable via the in-process autotuner (AutoTune* below), applied
             // identically to every wheel of every shadow vehicle (no per-wheel/per-vehicle
             // tuning - a single global "feel" knob, matching the scope this increment targets).
+            //
+            // docs §23.5: susp_frequency alone is NOT scale-invariant across suspensionRange.
+            // In FrequencyAndDamping mode, a spring's resting compression under gravity is an
+            // ABSOLUTE length x_rest = g / (2*pi*f)^2 - independent of vehicle mass (heavier
+            // vehicles get proportionally stiffer springs for the same f automatically), but
+            // also independent of suspensionRange. So the same tuned frequency gives wildly
+            // different resting-compression FRACTIONS on different vehicles: confirmed live
+            // (docs §23.5's direct JPH::Wheel::GetSuspensionLength() telemetry) that at the
+            // tuned 1.8Hz, a small vehicle (range ~0.25m) rests at a healthy 20-30% compressed,
+            // while a large real-save truck (range ~1.0m) rests at only 0-8% - visually reads
+            // as "suspension stuck fully raised" and, worse, sits so lightly loaded that tire
+            // friction has almost no normal force to work with (matches the live report that
+            // pushed wheels don't spin - the tire just doesn't have enough grip to roll).
+            // Fix: scale frequency per-wheel by sqrt(kReferenceSuspensionRange / suspensionRange)
+            // so every vehicle settles at approximately the SAME resting fraction regardless of
+            // its own suspensionRange, rather than the same absolute frequency. Damping is a
+            // dimensionless ratio (0=undamped, 1=critical) and needs no such correction.
+            constexpr float kReferenceSuspensionRange = 0.25f; // the range susp_frequency was tuned against (docs §16.5, small/menu-demo vehicle)
+            const float wheelFrequency = g_activeTuning.suspensionFrequency
+                * std::sqrt(kReferenceSuspensionRange / suspensionRange);
+
             ws->mSuspensionSpring.mMode      = JPH::ESpringMode::FrequencyAndDamping;
-            ws->mSuspensionSpring.mFrequency = g_activeTuning.suspensionFrequency;
+            ws->mSuspensionSpring.mFrequency = wheelFrequency;
             ws->mSuspensionSpring.mDamping   = g_activeTuning.suspensionDamping;
             // WheelSettingsWV's constructor already seeds mLongitudinalFriction/mLateralFriction
             // with a plausible-shaped 3-point slip curve (see WheeledVehicleController.cpp) -
@@ -381,7 +409,7 @@ namespace kraken::fix::joltshadow {
 
         state.constraint = new JPH::VehicleConstraint(*body, vehicleSettings);
         if (g_collisionTester == nullptr)
-            g_collisionTester = new JPH::VehicleCollisionTesterRay(kMovingLayer);
+            g_collisionTester = new JPH::VehicleCollisionTesterRay(kWheelQueryLayer);
         state.constraint->SetVehicleCollisionTester(g_collisionTester);
 
         physics->AddConstraint(state.constraint);
@@ -471,6 +499,42 @@ namespace kraken::fix::joltshadow {
             label, (double) d.posDrift, (double) d.velDrift, (double) d.angleDriftDeg,
             (double) d.joltCom.GetX(), (double) d.joltCom.GetY(), (double) d.joltCom.GetZ(),
             (double) d.odeCom.GetX(), (double) d.odeCom.GetY(), (double) d.odeCom.GetZ());
+    }
+
+    // docs §23.5: direct ground-truth for the suspension/traction bug report - reads Jolt's
+    // OWN per-wheel state (JPH::Wheel::HasContact/GetSuspensionLength/GetAngularVelocity)
+    // instead of the stale ODE-side m_numWheelsTouchingGround counter (which testharness's
+    // telemetry already showed doesn't reflect Jolt's wheel state at all, since the ODE
+    // wheels are DisablePhysics()'d every frame under apply=1 and never re-collide). Same
+    // log cadence as LogDivergence.
+    static void LogWheelState(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label) {
+        if (state.constraint == nullptr)
+            return;
+
+        // docs §23.6: the exact same fields UpdateShadowInputs feeds into SetDriverInput -
+        // logged once here so a frozen-wheel report can be checked against real input state
+        // (e.g. handbrake stuck on) instead of guessed at.
+        LOG_INFO("docs §23.6: driver input (%s) realThrottle=%.2f brake=%.2f handBrake=%d steerRad=%.3f",
+            label, (double) vehicle->m_realThrottle, (double) vehicle->m_brake,
+            vehicle->m_bHandBrake ? 1 : 0, (double) vehicle->m_steerRadians);
+
+        const JPH::Wheels& wheels = state.constraint->GetWheels();
+        for (size_t i = 0; i < wheels.size(); ++i) {
+            const JPH::Wheel* wheel = wheels[i];
+            if (wheel == nullptr)
+                continue;
+
+            const JPH::WheelSettings* settings = wheel->GetSettings();
+            const float minLen = settings ? settings->mSuspensionMinLength : 0.0f;
+            const float maxLen = settings ? settings->mSuspensionMaxLength : 0.0f;
+            const float len    = wheel->GetSuspensionLength();
+            const float range  = maxLen - minLen;
+            const float compressionPct = range > 1.0e-6f ? (maxLen - len) / range * 100.0f : -1.0f;
+
+            LOG_INFO("docs §23.5: wheel state (%s) wheel=%zu contact=%d suspLen=%.3f (range %.3f-%.3f, %.0f%% compressed) angVel=%.2f",
+                label, i, wheel->HasContact() ? 1 : 0, (double) len, (double) minLen, (double) maxLen,
+                (double) compressionPct, (double) wheel->GetAngularVelocity());
+        }
     }
 
     // RMSE accumulator for the in-process autotuner (AutoTune* section, further below) - only
@@ -823,8 +887,10 @@ namespace kraken::fix::joltshadow {
 
         ++state.frameCounter;
         constexpr uint64_t kLogIntervalFrames = 60; // ~once/second at 60fps, ~twice/second at 30 - avoids flooding kraken.log
-        if (state.frameCounter % kLogIntervalFrames == 0)
+        if (state.frameCounter % kLogIntervalFrames == 0) {
             LogDivergence(vehicle, state, label);
+            LogWheelState(vehicle, state, label);
+        }
     }
 
     // Which player-vehicle "generation" (see UpdateOneVehiclePreStep/BuildShadow) g_aiShadows was
@@ -1727,6 +1793,51 @@ namespace kraken::fix::joltshadow {
         return true;
     }
 
+    // docs §23.4: the §22.3/§22.4 diagnostic (dBodyGetNumJoints excess on the player's own
+    // chassis/wheel bodies) monitors ai::NearCallback's generic dJointCreateContact path -
+    // but vehicle-vs-vehicle ramming does NOT go through that path at all. It's dispatched to
+    // its own dedicated handler, ai::CollideVehiclePartAndVehiclePart (VA 0x00890430), which
+    // calls ai::CalcDamageToVehicles (VA 0x0088F700) to compute ram damage directly from
+    // dContact data - the exact same "specialized per-class-pair handler bypasses the generic
+    // joint path" pattern already confirmed for wheel-ground contact (CollideWheelDefault).
+    // So the old diagnostic was watching the wrong signal for vehicle-vs-vehicle specifically;
+    // this one hooks the real one. Preserves 100% of stock behavior (calls through via a
+    // 5-byte trampoline at a confirmed instruction boundary - `sub esp,0x5c; push ebx; push
+    // ebp`, verified via tools/lora disasm against the deployed game.pdb) and only adds a log
+    // line when the player's own vehicle is either party.
+    using CalcDamageToVehiclesFn = void(__fastcall*)(hta::ai::Vehicle*, hta::ai::Vehicle*, void*, float*, void*, void*);
+    static uint8_t s_calcDamageTrampoline[16];
+    static CalcDamageToVehiclesFn Real_CalcDamageToVehicles = nullptr;
+
+    static void __fastcall CalcDamageToVehiclesHook(hta::ai::Vehicle* v1, hta::ai::Vehicle* v2,
+            void* contacts, float* dSpeed, void* damageInfo, void* contactPos) {
+        Real_CalcDamageToVehicles(v1, v2, contacts, dSpeed, damageInfo, contactPos);
+
+        hta::ai::DynamicScene* scene = hta::ai::DynamicScene::Instance();
+        hta::ai::Vehicle* player = scene ? scene->GetVehicleControlledByPlayer() : nullptr;
+        if (player != nullptr && (v1 == player || v2 == player)) {
+            LOG_WARNING("docs §23.4: live ram-damage call involves the PLAYER vehicle (v1=%p v2=%p player=%p) dSpeed=%.2f",
+                (void*) v1, (void*) v2, (void*) player, dSpeed ? (double) *dSpeed : -1.0);
+        }
+    }
+
+    static void InstallRamDamageDiagnostic() {
+        void* const orig = reinterpret_cast<void*>(0x0088F700);
+        DWORD oldProtect;
+        VirtualProtect(s_calcDamageTrampoline, sizeof(s_calcDamageTrampoline), PAGE_EXECUTE_READWRITE, &oldProtect);
+        std::memcpy(s_calcDamageTrampoline, orig, 5);
+        s_calcDamageTrampoline[5] = 0xE9;
+        *reinterpret_cast<int32_t*>(s_calcDamageTrampoline + 6) = static_cast<int32_t>(
+            reinterpret_cast<uintptr_t>(orig) + 5
+            - (reinterpret_cast<uintptr_t>(s_calcDamageTrampoline) + 10));
+        VirtualProtect(s_calcDamageTrampoline, sizeof(s_calcDamageTrampoline), oldProtect, &oldProtect);
+        Real_CalcDamageToVehicles = reinterpret_cast<CalcDamageToVehiclesFn>(
+            reinterpret_cast<uintptr_t>(s_calcDamageTrampoline));
+
+        routines::Redirect(5, orig, reinterpret_cast<void*>(&CalcDamageToVehiclesHook));
+        LOG_INFO("docs §23.4: ram-damage diagnostic installed (ai::CalcDamageToVehicles @ 0x0088F700)");
+    }
+
     void Apply() {
         const kraken::Config& config = kraken::Config::Instance();
         if (config.jolt.value == 0 || config.jolt_shadow.value == 0)
@@ -1736,6 +1847,8 @@ namespace kraken::fix::joltshadow {
             LOG_ERROR("Feature enabled but Jolt PhysicsSystem is not initialized ([jolt] enabled=1 is required) - skipping");
             return;
         }
+
+        InstallRamDamageDiagnostic();
 
         if (config.jolt_apply.value != 0) {
             LOG_INFO("Feature enabled - Jolt WILL DRIVE the player's vehicle this run (player_only=%u, max_speed=%.0fm/s gate)",
