@@ -81,6 +81,13 @@ namespace kraken {
         // for testing (docs §22.2's UAF fix), instead of needing to wait for real combat damage.
         // -1 (default) disables it.
         ConfigValue<float>                    testharness_tear_wheel_at_t;
+        // Debug-only: redirects the scenario/telemetry harness to drive the nearest OTHER live
+        // vehicle instead of the player, teleporting it directly behind the player (facing the
+        // same way, so throttle alone drives it straight into the player) and holding the player
+        // parked (throttle=0, handbrake) every tick. Lets an ODE-vs-Jolt-disabled-body ram be
+        // reproduced deterministically instead of waiting for real AI/combat (docs §22.4).
+        ConfigValue<uint32_t>                 testharness_ram_test;
+        ConfigValue<float>                    testharness_ram_test_offset;
         ConfigValue<uint32_t>                 jolt;
         ConfigValue<uint32_t>                 jolt_threads;
         ConfigValue<uint32_t>                 jolt_shadow;

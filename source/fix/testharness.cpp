@@ -18,8 +18,11 @@
 #include "hta/ai/Vehicle.hpp"
 #include "hta/ai/Wheel.hpp"
 #include "hta/ai/DynamicScene.hpp"
+#include "hta/ai/CServer.hpp"
+#include "hta/ai/ObjContainer.hpp"
 
 #include "fix/testharness.hpp"
+#include "fix/joltshadow.hpp"
 
 namespace kraken::fix::testharness {
     namespace fs = std::filesystem;
@@ -59,6 +62,22 @@ namespace kraken::fix::testharness {
     };
 
     static State g_state;
+
+    // Debug-only (docs §22.4/§22.6): when [testharness] ram_test=1, StartScenario dynamically
+    // computes a spawn point for the PLAYER right behind another live vehicle - found once,
+    // read-only, and never otherwise touched - so a plain scenario.csv drive rams the player
+    // straight into it. This reproduces an ODE-driven vehicle colliding with the Jolt-disabled
+    // player body deterministically, instead of waiting for real AI/combat to do it. Only the
+    // player is ever teleported, via the exact same spawn mechanism the normal (non-ram_test)
+    // path already uses - an earlier version of this tried teleporting the OTHER vehicle
+    // instead, which meant hand-repositioning its separate chassis+wheel ODE bodies (Hinge2-
+    // jointed) and fighting whatever game-side logic keeps live AI vehicles where they're
+    // supposed to be; that fought back with its own large corrective jumps every time. Letting
+    // the target vehicle stay completely untouched sidesteps all of that.
+    struct RamTestState {
+        hta::ai::Vehicle* target = nullptr; // logged only, never dereferenced after StartScenario
+    };
+    static RamTestState g_ramTest;
 
     static std::vector<std::string> Split(const std::string& line) {
         std::vector<std::string> tokens;
@@ -124,6 +143,21 @@ namespace kraken::fix::testharness {
         return result;
     }
 
+    // Same enumeration idiom as fix::joltshadow's MirrorOtherVehicles (CServer::m_pObjects,
+    // updatingBegin/End, Obj::cast<Vehicle>) - reused here rather than re-derived.
+    static hta::ai::Vehicle* FindOtherLiveVehicle(hta::ai::Vehicle* exclude) {
+        hta::ai::CServer* server = hta::ai::CServer::Instance();
+        if (server == nullptr || server->m_pObjects == nullptr) return nullptr;
+
+        hta::ai::ObjContainer* objects = server->m_pObjects;
+        for (hta::ai::ObjContainer::iterator it = objects->updatingBegin(); it != objects->updatingEnd(); ++it) {
+            hta::ai::Vehicle* vehicle = (*it)->cast<hta::ai::Vehicle>();
+            if (vehicle != nullptr && vehicle != exclude)
+                return vehicle;
+        }
+        return nullptr;
+    }
+
     static hta::ai::Vehicle* GetTargetVehicle() {
         hta::ai::DynamicScene* scene = hta::ai::DynamicScene::Instance();
         if (!scene) return nullptr;
@@ -163,11 +197,52 @@ namespace kraken::fix::testharness {
         state.running = true;
         state.tornWheel = false;
 
+        g_ramTest.target = nullptr;
+
+        if (kraken::Config::Instance().testharness_ram_test.value != 0) {
+            hta::ai::Vehicle* player = GetTargetVehicle();
+            hta::ai::Vehicle* target = player ? FindOtherLiveVehicle(player) : nullptr;
+
+            if (!player || !target) {
+                LOG_ERROR("ram_test: %s, ignoring trigger",
+                    !player ? "no player vehicle" : "no other live vehicle to ram into");
+                state.running = false;
+                return;
+            }
+
+            g_ramTest.target = target;
+
+            const float            offset    = kraken::Config::Instance().testharness_ram_test_offset.value;
+            const hta::CVector     targetPos = target->GetPosition();
+            const hta::Quaternion  targetRot = target->GetRotation();
+            // Chassis-local Z-forward convention (assumed elsewhere in this codebase too, see
+            // joltshadow.cpp's suspension-axis comments) - spawning the player behind the
+            // target facing the same way means a plain throttle=1/steer=0 scenario.csv drives
+            // it straight into the target, no pursuit steering needed. The target itself is
+            // never touched here - it stays a completely normal, live vehicle throughout,
+            // same as it would be if the player just happened to drive into it during real
+            // play - only the player's spawn point is computed dynamically instead of coming
+            // from a fixed scenario.csv "spawn" line.
+            const hta::CVector forward = targetRot * hta::CVector(0.0f, 0.0f, 1.0f);
+
+            state.spawnPos = targetPos - forward * offset;
+            state.spawnRot = targetRot;
+            state.hasSpawn = true;
+
+            LOG_INFO("ram_test: will spawn player %.1fm behind other vehicle %p and drive into it per scenario.csv",
+                (double) offset, (void*) target);
+        }
+
         hta::ai::Vehicle* vehicle = GetTargetVehicle();
         if (vehicle) {
             if (state.hasSpawn) {
                 vehicle->SetPositionSelf(state.spawnPos);
                 vehicle->SetRotationSelf(state.spawnRot);
+                // Under [jolt_harness] apply=1, ApplyJoltToVehicle overwrites this ODE-side
+                // teleport again next frame unless Jolt's own shadow body is moved too - see
+                // joltshadow::TeleportPlayerShadow's comment. Harmless no-op otherwise (Jolt
+                // off, no shadow built yet, or this isn't the player).
+                kraken::fix::joltshadow::TeleportPlayerShadow(state.spawnPos, state.spawnRot);
             }
             vehicle->SetLinearVelocity(hta::CVector(0.0f, 0.0f, 0.0f));
             vehicle->SetAngularVelocity(hta::CVector(0.0f, 0.0f, 0.0f));

@@ -1698,6 +1698,35 @@ namespace kraken::fix::joltshadow {
         UpdateShadow(elapsedTime);
     }
 
+    // Exposed for fix::testharness's ram_test debug mode (docs §22.4/§22.6). Under apply=1,
+    // ApplyJoltToVehicle overwrites the player's ODE position/rotation/velocity EVERY frame
+    // with whatever Jolt's own VehicleConstraint body independently tracks - so a plain
+    // ODE-side PhysicObj::SetPositionSelf() teleport (the mechanism testharness already uses
+    // for scripted-scenario spawn points) only lasts until the next StepScene, then silently
+    // snaps back to wherever Jolt thinks the player is. Found live: testharness tried to spawn
+    // the player 15m behind another vehicle to test a ram, and the player kept reverting to
+    // its original autoload position one frame later. The fix is to move Jolt's OWN body too,
+    // not just the ODE mirror - then the next ApplyJoltToVehicle call reads back the position
+    // this function just set instead of fighting it. Returns false (no-op) if Jolt isn't
+    // active or the player's shadow hasn't been built yet, both of which are normal states
+    // testharness itself can't distinguish from "should have worked".
+    bool TeleportPlayerShadow(const hta::CVector& pos, const hta::Quaternion& rot) {
+        if (g_playerShadow.bodyId.IsInvalid())
+            return false;
+
+        JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+        if (physics == nullptr)
+            return false;
+
+        JPH::BodyInterface& bodyInterface = physics->GetBodyInterface();
+        bodyInterface.SetPositionAndRotation(g_playerShadow.bodyId,
+            JPH::RVec3(pos.x, pos.y, pos.z), JPH::Quat(rot.x, rot.y, rot.z, rot.w),
+            JPH::EActivation::Activate);
+        bodyInterface.SetLinearVelocity(g_playerShadow.bodyId, JPH::Vec3::sZero());
+        bodyInterface.SetAngularVelocity(g_playerShadow.bodyId, JPH::Vec3::sZero());
+        return true;
+    }
+
     void Apply() {
         const kraken::Config& config = kraken::Config::Instance();
         if (config.jolt.value == 0 || config.jolt_shadow.value == 0)
