@@ -10,6 +10,7 @@
 #include "fix/jolt.hpp"
 #include "config.hpp"
 #include "routines.hpp"
+#include "ode/ode.hpp"
 
 #include <Jolt/Jolt.h>
 #include <Jolt/Physics/PhysicsSystem.h>
@@ -71,6 +72,11 @@ namespace kraken::fix::joltshadow {
     // Must match kraken::fix::jolt::Layers::MOVING (jolt.cpp) - duplicated here rather than
     // exposing Jolt-typed constants through the intentionally lightweight jolt.hpp.
     static constexpr JPH::ObjectLayer kMovingLayer = 1;
+
+    // Not in extern/hta's ode.hpp yet - declared locally rather than editing that submodule.
+    // Confirmed via disassembly (docs §22.3): counts the body's dxJointNode linked list at
+    // [body+0x14]/[node+8], i.e. exactly ODE's real, live joint count - not cached anywhere.
+    static const auto dBodyGetNumJoints = (int (__fastcall*)(dxBody*))(0x007C4B90);
 
     // hta::ai::Wheel::STEERING_LIMIT is declared in the header port (Wheel.hpp) but has no
     // backing definition anywhere in extern/hta (confirmed via grep of Wheel.cpp) - likely
@@ -139,6 +145,21 @@ namespace kraken::fix::joltshadow {
         std::vector<uint32_t>   wheelSourceIndex; // parallel to wheelOrder: the vehicle->m_wheels[] index each entry was captured from at build time - lets ShadowWheelsStillPresent detect a wheel that's since been detached/replaced (see its comment)
         uint64_t                frameCounter    = 0;
         uint32_t                builtGeneration = 0; // g_tuningGeneration at the time this state's shadow was (re)built
+
+        // Docs §22.3 ramming diagnostic (see ApplyJoltToVehicle). dBodyGetNumJoints() counts
+        // EVERY joint on the body, including its own permanent per-wheel Hinge2 suspension
+        // joints - not just transient ODE contact joints - so a raw >0 check is useless (it's
+        // never 0 for a normal vehicle). -1 means "not yet captured"; BuildShadow resets it so
+        // the first post-rebuild ApplyJoltToVehicle call re-captures the structural baseline.
+        int  chassisBaselineJointCount = -1;
+        bool chassisHadExtraJointLastFrame = false; // rising-edge tracker vs. the baseline above
+
+        // Same idea, per wheel (parallel to wheelOrder) - wheels touch the ground EVERY frame,
+        // so this is expected to fire immediately if wheel-ground contact goes through the same
+        // ai::NearCallback/dJointCreateContact pipeline as chassis ramming (docs §7's still-open
+        // question: does CollideWheelAndLandscape/CollideWheelAndAsphalt use a separate path?).
+        std::vector<int>  wheelBaselineJointCount;
+        std::vector<bool> wheelHadExtraJointLastFrame;
     };
 
     static ShadowState              g_playerShadow;
@@ -245,6 +266,8 @@ namespace kraken::fix::joltshadow {
         wheelOrder.reserve(numWheels);
         wheelSourceIndex.clear();
         wheelSourceIndex.reserve(numWheels);
+        state.wheelBaselineJointCount.clear();      // re-captured lazily in ApplyJoltToVehicle (docs §22.3)
+        state.wheelHadExtraJointLastFrame.clear();
 
         for (uint32_t i = 0; i < numWheels; ++i) {
             const hta::ai::Vehicle::WheelRuntimeInfo& info = vehicle->m_wheels[i];
@@ -354,6 +377,8 @@ namespace kraken::fix::joltshadow {
 
         ++g_shadowGeneration;
         state.builtGeneration = g_tuningGeneration;
+        state.chassisBaselineJointCount = -1;      // re-capture structural joint count on next apply (docs §22.3)
+        state.chassisHadExtraJointLastFrame = false;
         LOG_INFO("Shadow vehicle #%u built (%s): %u wheels (%d driven axle(s)), mass=%.1f, chassis=%.2fx%.2fx%.2f, susp=%.2fHz/%.2f, friction=%.2f/%.2f",
             g_shadowGeneration, label, (uint32_t) vehicleSettings.mWheels.size(), drivenAxles, (double) bodySettings.mMassPropertiesOverride.mMass,
             (double) (halfExtents.GetX() * 2.0f), (double) (halfExtents.GetY() * 2.0f), (double) (halfExtents.GetZ() * 2.0f),
@@ -527,11 +552,43 @@ namespace kraken::fix::joltshadow {
             return;
         }
 
+        // Docs §22.3 ramming diagnostic: confirms empirically (not just via disassembly) whether
+        // ai::NearCallback actually attached a live ODE contact joint to this chassis THIS frame,
+        // before DisablePhysics()'s dBodyDetachAllContactJoints() below clears it again - i.e.
+        // whether the "ODE creates contact joints against a disabled body" risk found by static
+        // analysis really fires during gameplay ramming. dBodyGetNumJoints() counts EVERY joint
+        // (including the chassis's own permanent per-wheel Hinge2 suspension joints), so compare
+        // against a captured structural baseline rather than a raw >0 check - only an EXCESS over
+        // that baseline means something extra (a contact joint) got attached. Rising-edge only
+        // (not logged every frame of a sustained contact) to avoid log spam.
+        if (vehicle->m_body != nullptr && vehicle->m_body->_id != nullptr) {
+            const int numJoints = dBodyGetNumJoints(vehicle->m_body->_id);
+            if (state.chassisBaselineJointCount < 0) {
+                state.chassisBaselineJointCount = numJoints;
+            } else {
+                const bool hasExtra = numJoints > state.chassisBaselineJointCount;
+                if (hasExtra && !state.chassisHadExtraJointLastFrame) {
+                    LOG_WARNING("Shadow apply (%s): chassis had %d ODE joint(s) attached "
+                                "(baseline %d structural) before this frame's DisablePhysics "
+                                "(docs §22.3 ramming risk observed live)",
+                                label, numJoints, state.chassisBaselineJointCount);
+                }
+                state.chassisHadExtraJointLastFrame = hasExtra;
+            }
+        }
+
         vehicle->DisablePhysics();
         vehicle->SetPositionSelf(hta::CVector(joltPos.GetX(), joltPos.GetY(), joltPos.GetZ()));
         vehicle->SetRotationSelf(hta::Quaternion(joltRot.GetX(), joltRot.GetY(), joltRot.GetZ(), joltRot.GetW()));
         vehicle->SetLinearVelocity(hta::CVector(joltVel.GetX(), joltVel.GetY(), joltVel.GetZ()));
         vehicle->SetAngularVelocity(hta::CVector(joltAngVel.GetX(), joltAngVel.GetY(), joltAngVel.GetZ()));
+
+        // Lazily size the per-wheel diagnostic trackers to match wheelOrder (docs §22.3) - grown
+        // here rather than in BuildShadow's own wheel-population loop to keep that loop untouched.
+        if (state.wheelBaselineJointCount.size() < state.wheelOrder.size()) {
+            state.wheelBaselineJointCount.resize(state.wheelOrder.size(), -1);
+            state.wheelHadExtraJointLastFrame.resize(state.wheelOrder.size(), false);
+        }
 
         const JPH::Wheels& wheels = state.constraint->GetWheels();
         for (size_t i = 0; i < state.wheelOrder.size() && i < wheels.size(); ++i) {
@@ -547,6 +604,27 @@ namespace kraken::fix::joltshadow {
             if (!AllFinite({wheelPos.GetX(), wheelPos.GetY(), wheelPos.GetZ(),
                             wheelRot.GetX(), wheelRot.GetY(), wheelRot.GetZ(), wheelRot.GetW()}))
                 continue; // leave this one wheel wherever it last was rather than write garbage
+
+            // Docs §22.3 ramming diagnostic, wheel side (see the chassis version above for the
+            // full rationale) - wheels touch the ground EVERY frame, so this answers docs §7's
+            // still-open question (does wheel-ground contact go through ai::NearCallback at all,
+            // or a separate CollideWheelAndLandscape/CollideWheelAndAsphalt path that bypasses it)
+            // almost immediately, rather than waiting for a rare ramming event.
+            if (wheel->m_body != nullptr && wheel->m_body->_id != nullptr) {
+                const int numJoints = dBodyGetNumJoints(wheel->m_body->_id);
+                if (state.wheelBaselineJointCount[i] < 0) {
+                    state.wheelBaselineJointCount[i] = numJoints;
+                } else {
+                    const bool hasExtra = numJoints > state.wheelBaselineJointCount[i];
+                    if (hasExtra && !state.wheelHadExtraJointLastFrame[i]) {
+                        LOG_WARNING("Shadow apply (%s): wheel %zu had %d ODE joint(s) attached "
+                                    "(baseline %d structural) before this frame's DisablePhysics "
+                                    "(docs §22.3/§7 wheel-ground contact-joint check)",
+                                    label, i, numJoints, state.wheelBaselineJointCount[i]);
+                    }
+                    state.wheelHadExtraJointLastFrame[i] = hasExtra;
+                }
+            }
 
             wheel->DisablePhysics();
             wheel->SetPositionSelf(hta::CVector(wheelPos.GetX(), wheelPos.GetY(), wheelPos.GetZ()));
