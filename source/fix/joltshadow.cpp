@@ -8,6 +8,7 @@
 #include "ext/logger.hpp"
 #include "fix/joltshadow.hpp"
 #include "fix/jolt.hpp"
+#include "fix/kineticfriction.hpp"
 #include "config.hpp"
 #include "routines.hpp"
 #include "ode/ode.hpp"
@@ -411,6 +412,56 @@ namespace kraken::fix::joltshadow {
         if (g_collisionTester == nullptr)
             g_collisionTester = new JPH::VehicleCollisionTesterRay(kWheelQueryLayer);
         state.constraint->SetVehicleCollisionTester(g_collisionTester);
+
+        // docs §23.8: reuse fix::kineticfriction's slip-based tire model (already the ONLY
+        // friction model every ODE-driven vehicle's wheels use, via CollideWheelAndAsphalt/
+        // CollideWheelAndLandscape) instead of Jolt's own simplified linear slip curve, so a
+        // Jolt-shadowed vehicle's tire feel isn't a quietly different, unrelated model from
+        // every other vehicle in the game. Known, accepted gap vs. the ODE path: no per-soil-
+        // type friction multiplier (kineticfriction.cpp's "friction" param, from a terrain/
+        // road tile lookup) and no skid-trace visual effects - both are additive refinements,
+        // not required for the core physics-parity goal.
+        // Captures wheelMu/frictionScale BY VALUE (not a pointer into wheelOrder/g_activeTuning
+        // - this lambda outlives the BuildShadow call that created it) and the owning Vehicle*
+        // for oil-surface handling (Vehicle::m_onOilMode). Safe against the vehicle pointer
+        // going stale: this callback is replaced wholesale, along with the rest of
+        // state.constraint, on every rebuild (vehicle swap/tuning change/wheel loss) - the
+        // old callback is abandoned together with the old constraint, never called again,
+        // same leak-forever-on-rebuild pattern already used for the rest of ShadowState.
+        {
+            std::vector<float> wheelMu;
+            wheelMu.reserve(wheelOrder.size());
+            for (hta::ai::Wheel* w : wheelOrder) {
+                const hta::ai::WheelPrototypeInfo* proto = w->GetPrototypeInfo();
+                wheelMu.push_back(proto != nullptr ? proto->m_mU : 1.0f);
+            }
+            const float frictionLongScale = g_activeTuning.frictionLongScale;
+            const float frictionLatScale  = g_activeTuning.frictionLatScale;
+
+            JPH::WheeledVehicleController* controller =
+                static_cast<JPH::WheeledVehicleController*>(state.constraint->GetController());
+            controller->SetTireMaxImpulseCallback(
+                [wheelMu, vehicle, frictionLongScale, frictionLatScale](JPH::uint inWheelIndex,
+                        float& outLongitudinalImpulse, float& outLateralImpulse, float inSuspensionImpulse,
+                        float /*inLongitudinalFriction*/, float /*inLateralFriction*/,
+                        float inLongitudinalSlip, float /*inLateralSlip*/, float /*inDeltaTime*/) {
+                    static const kraken::fix::kineticfriction::TireParams kTireParams;
+                    float muLong = kraken::fix::kineticfriction::mu_from_kappa(inLongitudinalSlip, kTireParams);
+                    float muLat  = muLong * kTireParams.lateral_factor;
+
+                    const float perWheelMu = inWheelIndex < wheelMu.size() ? wheelMu[inWheelIndex] : 1.0f;
+                    muLong *= perWheelMu * frictionLongScale;
+                    muLat  *= perWheelMu * frictionLatScale;
+
+                    if (vehicle != nullptr && vehicle->m_onOilMode) {
+                        muLong *= kTireParams.oil_factor;
+                        muLat  *= kTireParams.oil_factor;
+                    }
+
+                    outLongitudinalImpulse = muLong * inSuspensionImpulse;
+                    outLateralImpulse      = muLat  * inSuspensionImpulse;
+                });
+        }
 
         physics->AddConstraint(state.constraint);
         physics->AddStepListener(state.constraint);

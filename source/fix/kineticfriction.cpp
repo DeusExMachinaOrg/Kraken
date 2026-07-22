@@ -20,47 +20,8 @@
 #include "fix/kineticfriction.hpp"
 
 namespace kraken::fix::kineticfriction {
-    struct TireParams {
-        float mu_peak        = 1.50f; // Пик динамического трения
-        float mu_min         = 0.50f; // Хвост при полном скольжении
-        float xg             = 0.06f; // Параметр нарастания к пику
-        float q              = 2.00f; // Экспонента роста
-        float xd             = 0.12f; // Начало спада
-        float p              = 3.00f; // Экспонента спада
-        float mu_cap         = 4.50f; // Потолок (защита от артефактов)
-        float x0             = 0.01f; // Зона статического трения
-        float r0             = 2.00f; // Резкость перехода статика→динамика
-        float mu_static      = 3.00f; // Статическое трение (покой/идеальное качение)
-        float lateral_factor = 1.20f; // Множитель перпендикулярного скольжения
-        float oil_factor     = 0.05f; // Фактор трения на масле
-    };
-
-    inline float calculateKappa(float wheelRadius,
-                                float omega_parallel,
-                                float V_parallel,
-                                float eps = 0.05f) {
-        const float Rw = wheelRadius * omega_parallel;
-        const float V_abs = fabsf(V_parallel);
-        const float Rw_abs = fabsf(Rw);
-
-        const float denom = fmaxf(fmaxf(V_abs, Rw_abs), eps);
-        const float kappa = (Rw - V_parallel) / denom;
-
-        // Single-line branchless blend
-        const float t = fmaxf(0.0f, fminf(1.0f, (V_abs - 0.1f) / 0.9f));
-        return kappa * t * t * (3.0f - 2.0f * t);
-    };
-
-    inline float mu_from_kappa(float kappa, const TireParams& t) {
-        const float x = fabsf(kappa);
-        const float G = 1.0f - expf(-powf(fmaxf(x, 1e-6f) / t.xg, t.q));
-        const float D = 1.0f / (1.0f + powf(x / t.xd, t.p));
-        float mu = t.mu_min + (t.mu_peak - t.mu_min) * (G * D);
-        const float w0 = 1.0f - expf(-powf(x / t.x0, t.r0));
-        mu = w0 * mu + (1.0f - w0) * t.mu_static;
-        return fminf(mu, t.mu_cap);
-    };
-
+    // TireParams/calculateKappa/mu_from_kappa now live in fix/kineticfriction.hpp, shared with
+    // fix::joltshadow's SetTireMaxImpulseCallback (docs §23.8).
 
     const auto CollideWheelDefault = (int32_t (__fastcall*)(hta::ai::Wheel*, hta::m3d::Object*, dContact*, uint32_t*, bool))(0x00891430);
 
