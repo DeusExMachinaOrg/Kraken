@@ -29,6 +29,8 @@
 #include "hta/Quaternion.hpp"
 
 #include <algorithm>
+#include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -63,8 +65,8 @@ JPH_SUPPRESS_WARNINGS
 // Suspension spring (frequency/damping) and tire friction (longitudinal/lateral scale) ARE
 // tunable, via [jolt_harness] susp_frequency/susp_damping/friction_long/friction_lat - see
 // TuningParams/g_activeTuning below - and can additionally be searched automatically by the
-// in-process coordinate-descent autotuner ([jolt_harness] autotune=1, see the AutoTune* section
-// near the bottom of this file), per docs/jolt-integration-techanalysis.md §8.5/§16.
+// in-process Nelder-Mead autotuner ([jolt_harness] autotune=1, see the AutoTune* section
+// near the bottom of this file), per docs/jolt-integration-techanalysis.md §8.5/§16/§20.3.
 namespace kraken::fix::joltshadow {
     // Must match kraken::fix::jolt::Layers::MOVING (jolt.cpp) - duplicated here rather than
     // exposing Jolt-typed constants through the intentionally lightweight jolt.hpp.
@@ -119,7 +121,7 @@ namespace kraken::fix::joltshadow {
     // Live tuning state - starts at Jolt's own literal defaults (matches WheelSettings::
     // mSuspensionSpring{1.5f,0.5f} and WheelSettingsWV's friction curves at scale 1.0) until
     // Apply() overwrites it from kraken.ini; g_tuningGeneration is bumped on every change so
-    // BuildShadow's callers know to rebuild (see UpdateOneVehicle).
+    // BuildShadow's callers know to rebuild (see UpdateOneVehiclePreStep).
     static TuningParams g_activeTuning     = {1.5f, 0.5f, 1.0f, 1.0f};
     static uint32_t     g_tuningGeneration = 0;
 
@@ -155,7 +157,7 @@ namespace kraken::fix::joltshadow {
 
     // Builds a fresh shadow chassis+wheel body/constraint mirroring `vehicle`'s prototype
     // geometry into `state`, called once for the first vehicle a given ShadowState tracks and
-    // again every time it changes (level reload, vehicle switch - see UpdateOneVehicle below).
+    // again every time it changes (level reload, vehicle switch - see UpdateOneVehiclePreStep below).
     // Returns false (and logs why) if the vehicle's data isn't usable yet.
     //
     // Deliberately NEVER tears down a ShadowState's previous JPH::VehicleConstraint/Body - an
@@ -456,8 +458,9 @@ namespace kraken::fix::joltshadow {
 
     // Stage 2/3 (docs/jolt-integration-techanalysis.md): writes this frame's Jolt simulation
     // result INTO the real ODE vehicle, so it actually drives gameplay instead of just being
-    // logged. Gated by the caller (UpdateOneVehicle) on [jolt_harness] apply, and (for the
-    // player) player_only, and (for AI) ai_count - see Apply() for the exact ini semantics.
+    // logged. Gated by the caller (UpdateShadow, via UpdateOneVehiclePostStep's allowApply
+    // parameter) on [jolt_harness] apply, and (for the player) player_only, and (for AI)
+    // ai_count - see Apply() for the exact ini semantics.
     //
     // Two things confirmed by research before writing this (see the Stage 2 doc section for
     // full evidence): (1) PhysicObj::GetPosition/GetRotation always read fresh from the live
@@ -546,10 +549,113 @@ namespace kraken::fix::joltshadow {
         }
     }
 
-    // Shared per-vehicle per-frame tick, used identically for the player and for every Stage
-    // 3 AI vehicle - builds/rebuilds the shadow as needed, feeds inputs, steps physics,
-    // optionally applies the result back to ODE, and periodically logs divergence.
-    static void UpdateOneVehicle(hta::ai::Vehicle* vehicle, ShadowState& state, float elapsedTime, bool allowApply, const char* label) {
+    // ------------------------------------------------------------------------------------------
+    // Perf split instrumentation (docs/jolt-integration-techanalysis.md §17 follow-up). §17
+    // measured -57% FPS at ai_count=16 (~2.25ms/AI vehicle) and flagged, but explicitly did NOT
+    // confirm with a profiler, a hypothesis: that the cost is dominated by ApplyJoltToVehicle's
+    // single-threaded ODE write-back above, not by JPH::PhysicsSystem::Update() itself (which
+    // Jolt's own job system parallelizes across islands). This section measures - it does not
+    // change - the two existing call sites (see StepPhysicsProfiled/ApplyJoltToVehicleProfiled
+    // below - StepPhysicsProfiled is called once per frame from UpdateShadow itself since the
+    // §18.1 single-step fix, ApplyJoltToVehicleProfiled from UpdateOneVehiclePostStep, one per
+    // live vehicle): no control flow, arguments, or return values are altered anywhere, only
+    // std::chrono::steady_clock timestamps wrapped
+    // around calls that already happen. Same measurement style (steady_clock, accumulate between
+    // logs, periodic kraken::logger summary rather than per-frame spam) as fix::testharness's own
+    // PerfTick (testharness.cpp).
+    //
+    // Gated on the ALREADY-EXISTING [testharness] perfmon/perfmon_interval config rather than a
+    // new ini flag - this is conceptually the same feature PerfTick already is ("periodic
+    // wall-clock perf line to kraken.log"), just splitting a different pair of calls. When
+    // perfmon=0 the only added cost versus the pre-instrumentation code is one extra uint32
+    // config read per call - no timing, no accumulation, no logging.
+    struct JoltProfileState {
+        bool                                   hasLast           = false;
+        std::chrono::steady_clock::time_point  lastLogTime;
+        double                                 physicsUpdateMs   = 0.0; // sum of StepPhysics() wall time this interval - at most one call per frame (see UpdateShadow's Pass 2 - docs/jolt-integration-techanalysis.md §18.1/§19 on why it used to be one call per vehicle)
+        double                                 applyVehicleMs    = 0.0; // sum of ApplyJoltToVehicle() wall time this interval - ALL calls
+        uint64_t                               applyVehicleCalls = 0;  // count of ApplyJoltToVehicle() calls this interval (only the ones that actually ran, i.e. allowApply==true)
+        uint64_t                               frames            = 0;  // UpdateShadow() invocations this interval - one per real game frame, see JoltProfileFrameEnd's call site
+    };
+    static JoltProfileState g_joltProfile;
+
+    // Thin wrapper around kraken::fix::jolt::StepPhysics - identical call/args/return (none) to
+    // the call it replaces; only measures wall time when profiling is on.
+    static void StepPhysicsProfiled(float elapsedTime) {
+        if (kraken::Config::Instance().testharness_perfmon.value == 0) {
+            kraken::fix::jolt::StepPhysics(elapsedTime);
+            return;
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        kraken::fix::jolt::StepPhysics(elapsedTime);
+        const auto t1 = std::chrono::steady_clock::now();
+        g_joltProfile.physicsUpdateMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
+    }
+
+    // Thin wrapper around ApplyJoltToVehicle, same pattern as StepPhysicsProfiled above.
+    static void ApplyJoltToVehicleProfiled(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label) {
+        if (kraken::Config::Instance().testharness_perfmon.value == 0) {
+            ApplyJoltToVehicle(vehicle, state, label);
+            return;
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        ApplyJoltToVehicle(vehicle, state, label);
+        const auto t1 = std::chrono::steady_clock::now();
+        g_joltProfile.applyVehicleMs += std::chrono::duration<double, std::milli>(t1 - t0).count();
+        ++g_joltProfile.applyVehicleCalls;
+    }
+
+    // Called once per UpdateShadow() invocation (i.e. once per real game frame - see the call
+    // site at the end of UpdateShadow, below), after every vehicle this frame has already been
+    // run through StepPhysicsProfiled/ApplyJoltToVehicleProfiled above. Counts the frame, then -
+    // no more often than once every perfmon_interval seconds - logs one summary line and resets
+    // the interval's accumulators, exactly like PerfTick's own windowed-average pattern.
+    static void JoltProfileFrameEnd() {
+        const kraken::Config& config = kraken::Config::Instance();
+        if (config.testharness_perfmon.value == 0)
+            return;
+
+        ++g_joltProfile.frames;
+
+        const auto now = std::chrono::steady_clock::now();
+        if (!g_joltProfile.hasLast) {
+            g_joltProfile.lastLogTime = now;
+            g_joltProfile.hasLast     = true;
+            return;
+        }
+
+        const double elapsedSec  = std::chrono::duration<double>(now - g_joltProfile.lastLogTime).count();
+        const double intervalSec = (double) config.testharness_perfmon_interval.value;
+        if (elapsedSec < intervalSec)
+            return;
+
+        const double physicsAvgMs  = g_joltProfile.physicsUpdateMs / (double) g_joltProfile.frames;
+        const double applyAvgMs    = g_joltProfile.applyVehicleMs  / (double) g_joltProfile.frames;
+        const double callsPerFrame = (double) g_joltProfile.applyVehicleCalls / (double) g_joltProfile.frames;
+
+        LOG_INFO("[jolt_profile] physics_update_avg_ms=%.2f applyvehicle_avg_ms=%.2f applyvehicle_calls_per_frame=%.2f frames=%llu",
+            physicsAvgMs, applyAvgMs, callsPerFrame, (unsigned long long) g_joltProfile.frames);
+
+        g_joltProfile.physicsUpdateMs   = 0.0;
+        g_joltProfile.applyVehicleMs    = 0.0;
+        g_joltProfile.applyVehicleCalls = 0;
+        g_joltProfile.frames            = 0;
+        g_joltProfile.lastLogTime       = now;
+    }
+    // ------------------------------------------------------------------------------------------
+
+    // Shared per-vehicle per-frame tick, used identically for the player and for every Stage 3
+    // AI vehicle - split into a pre-step half (rebuild-on-swap + feed inputs) and a post-step
+    // half (apply/autotune/periodic log) so UpdateShadow (below) can sandwich exactly ONE shared
+    // StepPhysicsProfiled call between them for every vehicle at once, instead of stepping the
+    // one shared JPH::PhysicsSystem once per vehicle (docs/jolt-integration-techanalysis.md
+    // §18.1/§18.4 - at ai_count=16 that used to re-simulate the entire shared world 17x/frame).
+    //
+    // Returns false if this ShadowState isn't usable this frame (BuildShadow failed, e.g. right
+    // after a level load before the vehicle's data is fully ready) - same semantics as the old
+    // combined function's early return: the caller simply skips this vehicle for this frame and
+    // retries on the next one, no state is left half-initialized.
+    static bool UpdateOneVehiclePreStep(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label) {
         // Rebuilds on either a vehicle swap (level reload, vehicle switch) or a tuning-parameter
         // change (g_tuningGeneration bumped by SetTuningOverride - the autotuner uses this to
         // apply a new candidate suspension/friction set between trials without needing to
@@ -557,17 +663,22 @@ namespace kraken::fix::joltshadow {
         // constraint/body is abandoned rather than torn down either way.
         if (vehicle != state.vehicle || state.builtGeneration != g_tuningGeneration) {
             if (!BuildShadow(vehicle, state, label))
-                return; // vehicle data can be not-yet-fully-initialized right after a level
-                        // load - just keep retrying on later frames
+                return false; // vehicle data can be not-yet-fully-initialized right after a level
+                              // load - just keep retrying on later frames
             state.vehicle = vehicle;
             state.frameCounter = 0;
         }
 
         UpdateShadowInputs(vehicle, state);
-        kraken::fix::jolt::StepPhysics(elapsedTime);
+        return true;
+    }
 
+    // Second half of the per-vehicle tick (see UpdateOneVehiclePreStep above) - runs AFTER
+    // UpdateShadow's single shared StepPhysicsProfiled call for this frame. Only called for
+    // vehicles whose pre-step returned true.
+    static void UpdateOneVehiclePostStep(hta::ai::Vehicle* vehicle, ShadowState& state, bool allowApply, const char* label) {
         if (allowApply)
-            ApplyJoltToVehicle(vehicle, state, label);
+            ApplyJoltToVehicleProfiled(vehicle, state, label);
         AccumulateForAutotune(vehicle, state);
 
         ++state.frameCounter;
@@ -576,7 +687,7 @@ namespace kraken::fix::joltshadow {
             LogDivergence(vehicle, state, label);
     }
 
-    // Which player-vehicle "generation" (see UpdateOneVehicle/BuildShadow) g_aiShadows was
+    // Which player-vehicle "generation" (see UpdateOneVehiclePreStep/BuildShadow) g_aiShadows was
     // last selected for - re-scanning whenever this changes, see InitAiShadowsIfNeeded.
     static hta::ai::Vehicle* g_aiInitPlayerVehicle = nullptr;
 
@@ -598,7 +709,7 @@ namespace kraken::fix::joltshadow {
     // full writeup.
     //
     // Re-scans whenever the player's own vehicle changes (level reload, vehicle switch) -
-    // the same signal UpdateOneVehicle already uses for the player path. This matters in
+    // the same signal UpdateOneVehiclePreStep already uses for the player path. This matters in
     // practice: the very first opportunity to scan lands on testharness's autoload sequence's
     // placeholder pre-autoload map (a near-empty default level with no AI traffic) before the
     // real save loads - scanning once and latching "0 AI vehicles found" forever would
@@ -634,7 +745,7 @@ namespace kraken::fix::joltshadow {
     }
 
     // ------------------------------------------------------------------------------------------
-    // In-process suspension/friction autotuner (docs/jolt-integration-techanalysis.md §8.5/§16).
+    // In-process suspension/friction autotuner (docs/jolt-integration-techanalysis.md §8.5/§16/§20.2/§20.3).
     //
     // Gated by [jolt_harness] autotune=1 - requires testharness=1 too (reuses its trigger.txt/
     // scenario.csv/output_<token>.done file protocol wholesale rather than inventing a second
@@ -642,23 +753,47 @@ namespace kraken::fix::joltshadow {
     // during a tuning run - if it did, the ODE "ground truth" the score is measured against
     // would already be corrupted by Jolt's own previous-trial output).
     //
-    // Runs a simple coordinate/pattern search (§8.5: "начать просто... coordinate descent") over
-    // the 4 TuningParams fields: probe current+step on one axis; if the resulting scripted-
-    // scenario RMSE (§8.4, via g_autotuneAccum) improves, keep it and probe the same axis/
-    // direction again; if not, try current-step once; if neither improves, halve that axis' step
-    // and move to the next axis. Stops when the trial budget (autotune_max_trials) is exhausted
-    // or every axis' step has shrunk below a small threshold (logged explicitly either way, per
-    // §8.5's requirement to never silently truncate the search).
+    // Runs a standard Nelder-Mead simplex search over the 4 TuningParams fields (n=4, n+1=5
+    // vertices) rather than the coordinate descent §8.5 originally called for: §16.5/§20.2 found
+    // coordinate descent converges to a much better point on the fixed physics-step code (score
+    // 29.53 -> 5.08) but still exhibits a sharp per-axis "cliff" (a neighboring probe on the same
+    // axis, same direction, jumping the score straight back up from 5.08 to 37.53) - a method that
+    // can move diagonally through parameter space, rather than one axis at a time, is expected to
+    // ride that cliff more smoothly. Reflection/expansion/contraction/shrink coefficients are the
+    // textbook defaults (alpha=1, gamma=2, rho=0.5, sigma=0.5) - no reason yet to believe this
+    // particular score landscape needs anything hand-tuned. Stops when the trial budget
+    // (autotune_max_trials) is exhausted or the simplex has collapsed (AutoTuneSimplexConverged,
+    // see its own comment for the exact threshold and why) - logged explicitly either way, per
+    // §8.5's requirement to never silently truncate the search.
     //
     // Drives testharness's OWN reset-to-spawn/scripted-input machinery one trial at a time by
     // writing a fresh trigger token and waiting for the matching .done file to appear - i.e. this
     // module IS the "external tool" testharness.cpp's own header comment says can drive it,
     // just implemented in-process instead of as a separate script.
+    //
+    // Nelder-Mead itself is NOT expressible as an ordinary blocking loop here: each vertex
+    // evaluation is asynchronous (a real scripted maneuver that plays out over several seconds of
+    // game time, advanced one frame at a time by AutoTuneTick - see AutoTunePhase below), so the
+    // algorithm is its OWN small state machine (AutoTuneStage) layered on top of the existing
+    // per-trial state machine (AutoTunePhase), rather than a synchronous function that "just runs"
+    // the simplex to completion. AutoTuneStage tracks WHAT KIND of point is currently being
+    // evaluated (which of the 5 bootstrap vertices / the reflected point / the expanded point /
+    // the contracted point / which of the 4 shrink vertices), so that AutoTuneRecordResult -
+    // called once a trial's score is known, an indeterminate number of frames after it was
+    // submitted - can resume exactly where the algorithm left off and branch according to the
+    // textbook decision tree. Whichever leaf of that tree needs a fresh point to evaluate computes
+    // it right there and stores it into g_autotune.candidate; AutoTuneStartNextTrial's only job is
+    // to submit whatever candidate is already queued (plus the trial-budget check).
     enum class AutoTunePhase { Idle, AwaitingReset, Running };
 
-    struct AutoTuneAxis {
-        float step        = 0.0f;
-        bool  triedMinus  = false; // whether the "-step" direction has been tried yet this round, after "+step" failed to improve
+    // Which kind of point the CURRENT (or about-to-be-submitted) trial is evaluating - i.e. where
+    // in the Nelder-Mead decision tree AutoTuneRecordResult should resume once its score arrives.
+    enum class AutoTuneStage {
+        Bootstrap, // filling the initial simplex's 5 vertices in order (index 0 = unperturbed baseline, see AutoTuneInitialize)
+        Reflect,   // evaluating x_r; its score decides Expand vs. plain accept vs. Contract
+        Expand,    // evaluating x_e (only reached when x_r already beat the best vertex)
+        Contract,  // evaluating x_c (outside or inside the simplex, per the standard rule - see AutoTuneRecordResult)
+        Shrink,    // re-evaluating vertices 1..4 in order after shrinking the whole simplex toward the best vertex
     };
 
     struct AutoTuneState {
@@ -669,15 +804,25 @@ namespace kraken::fix::joltshadow {
         hta::CVector     spawnPos;
         hta::Quaternion  spawnRot;
 
-        TuningParams     current;             // best-known-good params so far (baseline for the next probe)
-        TuningParams     candidate;           // params under evaluation this trial
-        double           bestScore   = -1.0;  // -1 = baseline not yet evaluated
+        TuningParams     current;             // best vertex found so far over the WHOLE run (see AutoTuneRecordResult) - what AutoTuneFinish reports/leaves live
+        TuningParams     candidate;           // params under evaluation THIS trial
+        double           bestScore   = -1.0;  // -1 = nothing evaluated yet; otherwise mirrors `current`'s score, kept alongside it for the trial-result log line
         uint32_t         trialIndex  = 0;
         uint32_t         maxTrials   = 24;
 
-        int              axisIndex   = 0;     // which of the 4 TuningParams fields is being probed (see AxisValue)
-        int              axisSign    = +1;
-        AutoTuneAxis     axes[4];
+        // The simplex itself: n+1=5 vertices in the 4D TuningParams space, with their scores.
+        // Sorted ascending by score (index 0 = best, 4 = worst) at the start of every main-loop
+        // iteration (AutoTuneBeginIteration) and stays sorted in between, since within an
+        // iteration we only ever overwrite the worst vertex (index 4) or shrink every non-best
+        // vertex uniformly toward the best one - neither can change the relative order of 0..3.
+        TuningParams     simplex[5];
+        double           simplexScore[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+        int              fillIndex   = 0;     // Bootstrap: next vertex (0..4) awaiting a score. Shrink: next vertex (1..4) awaiting a re-evaluated score. Unused otherwise.
+
+        AutoTuneStage    stage       = AutoTuneStage::Bootstrap;
+        TuningParams     centroid;             // mean of simplex[0..3] (all but the worst) - computed once per iteration by AutoTuneBeginIteration, read by whichever of Expand/Contract ends up following Reflect's result
+        TuningParams     reflected;            // x_r itself - needed by Expand's formula (x_e = centroid + gamma*(x_r-centroid)) and by the plain-accept assignment
+        double           reflectedScore = 0.0; // score(x_r) - needed by the Contract-vs-shrink decision (compared against score(x_c))
 
         AutoTunePhase    phase       = AutoTunePhase::Idle;
         std::string      currentToken;
@@ -698,6 +843,18 @@ namespace kraken::fix::joltshadow {
             default: return &p.frictionLatScale;
         }
     }
+    // Read-only counterpart of the above, under a deliberately DIFFERENT name (not an overload) -
+    // the simplex math below constantly reads ONE vertex (centroid/best/worst/other) while
+    // writing a DIFFERENT one, and giving the read path its own name/return-by-value makes it
+    // impossible to accidentally do pointer arithmetic on a `float*` where a `float` was meant.
+    static float AxisGet(const TuningParams& p, int idx) {
+        switch (idx) {
+            case 0: return p.suspensionFrequency;
+            case 1: return p.suspensionDamping;
+            case 2: return p.frictionLongScale;
+            default: return p.frictionLatScale;
+        }
+    }
     static const char* AxisName(int idx) {
         static const char* names[4] = {"susp_frequency", "susp_damping", "friction_long", "friction_lat"};
         return names[idx >= 0 && idx < 4 ? idx : 0];
@@ -706,6 +863,50 @@ namespace kraken::fix::joltshadow {
     // ConfigValue ranges in config.cpp - kept in sync by hand, there are only 4 of them.
     static const float kAxisMin[4] = {0.3f, 0.05f, 0.2f, 0.2f};
     static const float kAxisMax[4] = {8.0f, 1.5f,  3.0f, 3.0f};
+
+    // Clamps every one of a candidate's 4 fields into kAxisMin/kAxisMax - called at EVERY one of
+    // the 5 places a new candidate point is constructed (bootstrap vertex, reflect, expand,
+    // contract, shrink vertex) so there's exactly one place to get this right instead of five.
+    static void ClampTuningParams(TuningParams& p) {
+        for (int a = 0; a < 4; ++a) {
+            float* v = AxisValue(p, a);
+            *v = std::clamp(*v, kAxisMin[a], kAxisMax[a]);
+        }
+    }
+
+    // Initial simplex edge length per axis (bootstrap vertex a+1 = baseline with axis `a` pushed
+    // out by this much) - reuses the exact step sizes the old coordinate descent probed with, so
+    // the initial simplex covers the same neighborhood the previous search started from.
+    static const float kInitialSimplexStep[4] = {0.3f, 0.1f, 0.15f, 0.15f};
+
+    // Standard Nelder-Mead coefficients - see the AutoTuneStage/AutoTunePhase comment above for
+    // why the textbook defaults are used as-is rather than something bespoke for this problem.
+    static constexpr double kNelderMeadAlpha = 1.0; // reflection
+    static constexpr double kNelderMeadGamma = 2.0; // expansion
+    static constexpr double kNelderMeadRho   = 0.5; // contraction
+    static constexpr double kNelderMeadSigma = 0.5; // shrink
+
+    // Convergence threshold for AutoTuneBeginIteration's stopping check: the max, over every pair
+    // of simplex vertices and every one of the 4 axes, of |coord_i - coord_j| / (kAxisMax-kAxisMin)
+    // for that axis - i.e. Chebyshev/max-norm distance in axis-range-normalized space, not a
+    // combined Euclidean norm across axes. Chosen because "стало ли расстояние между вершинами по
+    // всем 4 осям малым" reads naturally as a per-axis maximum, and because it's the more
+    // conservative of the two (a Chebyshev-converged simplex is also converged in the Euclidean
+    // sense, not necessarily vice versa) - so a run stopped by this check has genuinely collapsed
+    // on every axis, not just on average.
+    //
+    // 1e-3 means every axis has collapsed to within 0.1% of its FULL tunable range at once (e.g.
+    // susp_frequency's ~7.7Hz range -> a ~0.008Hz spread) - roughly 40-70x tighter than the
+    // corresponding kInitialSimplexStep started the search at, depending on the axis (each axis'
+    // initial bootstrap step is itself only a few percent of that axis' range). That's snug enough
+    // that stopping here means the search has genuinely bottomed out rather than merely slowed
+    // down, while still being loose enough that ordinary float roundoff in the simplex arithmetic
+    // can't trip it by accident. If a real run turns out to stop here well before the trial budget
+    // with a visibly non-optimal result, loosen this; if it never fires before the budget runs out
+    // even on an easy landscape, tighten it - there was no prior empirical data for THIS specific
+    // search (Nelder-Mead is new to this codebase), so this is a considered starting guess, not a
+    // measured value.
+    static constexpr double kSimplexConvergenceTol = 1e-3;
 
     // Scoring weights (docs §8.4): position drift is the metric a human actually feels ("the car
     // ended up somewhere else"), so it dominates; velocity/angle drift are smaller correction
@@ -763,6 +964,14 @@ namespace kraken::fix::joltshadow {
     }
 
     static void AutoTuneFinish(const char* reason) {
+        // The last trial evaluated before hitting the budget/convergence stop is NOT guaranteed to
+        // be the best one found - unlike old coordinate descent (where the last ACCEPTED step was
+        // usually recent, since it only ever moved when a probe improved things), Nelder-Mead's
+        // last-evaluated point is very often a rejected reflect/expand/contract. Re-apply the best
+        // vertex explicitly here rather than assuming the last SetTuningOverride call already left
+        // it live.
+        SetTuningOverride(g_autotune.current);
+
         LOG_INFO("Autotune: %s after %u trial(s). Best score=%.4f - susp_frequency=%.2f susp_damping=%.2f friction_long=%.2f friction_lat=%.2f",
             reason, g_autotune.trialIndex, g_autotune.bestScore,
             (double) g_autotune.current.suspensionFrequency, (double) g_autotune.current.suspensionDamping,
@@ -772,39 +981,88 @@ namespace kraken::fix::joltshadow {
             (double) g_autotune.current.frictionLongScale, (double) g_autotune.current.frictionLatScale);
         g_autotune.enabled     = false;
         g_autotuneAccumulating = false;
-        // Leave g_activeTuning/g_tuningGeneration at the best-found candidate (already the case:
-        // the last SetTuningOverride call was either this best candidate or is about to be
-        // superseded by nothing, since enabled is now false) - a human can keep driving with it
-        // live for the rest of the session without touching kraken.ini.
+        // g_activeTuning/g_tuningGeneration now hold the best-found candidate (forced above) - a
+        // human can keep driving with it live for the rest of the session without touching kraken.ini.
     }
 
-    // Picks the next candidate to evaluate and starts its trial (writes a fresh trigger token),
-    // or finalizes the search if the trial budget is exhausted or every axis has bottomed out.
-    static void AutoTuneStartNextTrial() {
-        if (g_autotune.trialIndex >= g_autotune.maxTrials) {
-            AutoTuneFinish("trial budget exhausted, stopping");
+    // See kSimplexConvergenceTol's comment for what this measures and why that threshold. Defined
+    // before AutoTuneBeginIteration (which calls it) since there's no header forward-declaration
+    // for these file-static helpers.
+    static bool AutoTuneSimplexConverged() {
+        double maxRelDist = 0.0;
+        for (int i = 0; i < 5; ++i) {
+            for (int j = i + 1; j < 5; ++j) {
+                for (int a = 0; a < 4; ++a) {
+                    const double range = (double) (kAxisMax[a] - kAxisMin[a]);
+                    const double d = std::fabs((double) AxisGet(g_autotune.simplex[i], a) - (double) AxisGet(g_autotune.simplex[j], a)) / range;
+                    maxRelDist = std::max(maxRelDist, d);
+                }
+            }
+        }
+        return maxRelDist < kSimplexConvergenceTol;
+    }
+
+    // Sorts the simplex ascending by score, checks for convergence (finishing the search early if
+    // so), and - if not converged - computes this iteration's centroid + reflected point and
+    // queues the reflected point as the next candidate. Called whenever a new main-loop iteration
+    // is about to start: right after the initial 5-vertex bootstrap fills in, after every accepted
+    // reflect/expand/contract, and after a completed 4-vertex shrink pass.
+    static void AutoTuneBeginIteration() {
+        // Insertion sort over 5 elements - the simplex is already "almost sorted" coming in (only
+        // the worst vertex was replaced, or all 4 non-best vertices moved together), so this is
+        // more than fast enough without pulling in a library sort for 5 elements.
+        for (int i = 1; i < 5; ++i) {
+            int j = i;
+            while (j > 0 && g_autotune.simplexScore[j] < g_autotune.simplexScore[j - 1]) {
+                const double scoreTmp = g_autotune.simplexScore[j];
+                g_autotune.simplexScore[j]     = g_autotune.simplexScore[j - 1];
+                g_autotune.simplexScore[j - 1] = scoreTmp;
+                const TuningParams paramsTmp = g_autotune.simplex[j];
+                g_autotune.simplex[j]     = g_autotune.simplex[j - 1];
+                g_autotune.simplex[j - 1] = paramsTmp;
+                --j;
+            }
+        }
+
+        if (AutoTuneSimplexConverged()) {
+            AutoTuneFinish("simplex converged (every vertex agrees to within tolerance on every axis), stopping early");
             return;
         }
 
-        if (g_autotune.bestScore < 0.0) {
-            // First trial ever: evaluate the unperturbed baseline so later probes have a real
-            // reference point to compare against.
-            g_autotune.candidate = g_autotune.current;
-        } else {
-            int checked = 0;
-            while (g_autotune.axes[g_autotune.axisIndex].step < 1e-3f && checked < 4) {
-                g_autotune.axisIndex = (g_autotune.axisIndex + 1) % 4;
-                ++checked;
-            }
-            if (checked >= 4) {
-                AutoTuneFinish("every axis' step size has bottomed out, stopping early");
-                return;
-            }
+        // Centroid of every vertex EXCEPT the worst (index 4, after the sort above).
+        TuningParams centroid = g_autotune.simplex[0];
+        for (int a = 0; a < 4; ++a) {
+            float sum = 0.0f;
+            for (int i = 0; i < 4; ++i) sum += AxisGet(g_autotune.simplex[i], a);
+            *AxisValue(centroid, a) = sum / 4.0f;
+        }
+        g_autotune.centroid = centroid;
 
-            g_autotune.candidate = g_autotune.current;
-            float* value = AxisValue(g_autotune.candidate, g_autotune.axisIndex);
-            *value = std::clamp(*value + g_autotune.axisSign * g_autotune.axes[g_autotune.axisIndex].step,
-                                 kAxisMin[g_autotune.axisIndex], kAxisMax[g_autotune.axisIndex]);
+        TuningParams reflected = centroid;
+        for (int a = 0; a < 4; ++a) {
+            const float c = AxisGet(centroid, a);
+            const float w = AxisGet(g_autotune.simplex[4], a); // worst vertex
+            *AxisValue(reflected, a) = c + (float) kNelderMeadAlpha * (c - w);
+        }
+        ClampTuningParams(reflected);
+        g_autotune.reflected = reflected;
+
+        g_autotune.stage     = AutoTuneStage::Reflect;
+        g_autotune.candidate = reflected;
+    }
+
+    // Submits whatever AutoTuneRecordResult (or AutoTuneInitialize, for the very first bootstrap
+    // vertex) already decided should be evaluated next. Unlike the old coordinate descent version,
+    // this function no longer computes the candidate itself - it only enforces the trial budget
+    // and does the trigger-file bookkeeping; ALL of "what to evaluate next" lives in
+    // AutoTuneRecordResult/AutoTuneBeginIteration now, since that decision depends on the score
+    // that just came back, not on anything available at submit time.
+    static void AutoTuneStartNextTrial() {
+        if (!g_autotune.enabled)
+            return; // AutoTuneFinish may already have fired earlier this same tick (e.g. simplex converged)
+        if (g_autotune.trialIndex >= g_autotune.maxTrials) {
+            AutoTuneFinish("trial budget exhausted, stopping");
+            return;
         }
 
         ++g_autotune.trialIndex;
@@ -812,43 +1070,158 @@ namespace kraken::fix::joltshadow {
         g_autotune.phase        = AutoTunePhase::AwaitingReset;
         AutoTuneWriteTrigger(g_autotune.currentToken);
 
-        LOG_INFO("Autotune trial %u/%u starting (%s%s): susp=%.2fHz/%.2f friction=%.2f/%.2f",
-            g_autotune.trialIndex, g_autotune.maxTrials,
-            g_autotune.bestScore < 0.0 ? "baseline" : AxisName(g_autotune.axisIndex),
-            g_autotune.bestScore < 0.0 ? "" : (g_autotune.axisSign > 0 ? "+" : "-"),
+        char stageDesc[48];
+        switch (g_autotune.stage) {
+            case AutoTuneStage::Bootstrap:
+                if (g_autotune.fillIndex == 0)
+                    std::snprintf(stageDesc, sizeof(stageDesc), "bootstrap 1/5 (baseline)");
+                else
+                    std::snprintf(stageDesc, sizeof(stageDesc), "bootstrap %d/5 (%s)", g_autotune.fillIndex + 1, AxisName(g_autotune.fillIndex - 1));
+                break;
+            case AutoTuneStage::Reflect:
+                std::snprintf(stageDesc, sizeof(stageDesc), "reflect");
+                break;
+            case AutoTuneStage::Expand:
+                std::snprintf(stageDesc, sizeof(stageDesc), "expand");
+                break;
+            case AutoTuneStage::Contract:
+                std::snprintf(stageDesc, sizeof(stageDesc), "contract");
+                break;
+            case AutoTuneStage::Shrink:
+                std::snprintf(stageDesc, sizeof(stageDesc), "shrink %d/4", g_autotune.fillIndex);
+                break;
+        }
+
+        LOG_INFO("Autotune trial %u/%u starting (%s): susp=%.2fHz/%.2f friction=%.2f/%.2f",
+            g_autotune.trialIndex, g_autotune.maxTrials, stageDesc,
             (double) g_autotune.candidate.suspensionFrequency, (double) g_autotune.candidate.suspensionDamping,
             (double) g_autotune.candidate.frictionLongScale, (double) g_autotune.candidate.frictionLatScale);
     }
 
     static void AutoTuneRecordResult(double score) {
         LOG_INFO("Autotune trial %u result: score=%.4f (best so far=%.4f)",
-            g_autotune.trialIndex, score, g_autotune.bestScore < 0.0 ? score : g_autotune.bestScore);
+            g_autotune.trialIndex, score, g_autotune.bestScore < 0.0 ? score : std::min(score, g_autotune.bestScore));
 
-        if (g_autotune.bestScore < 0.0) {
-            g_autotune.bestScore = score; // baseline becomes the first "best"
-            return;
-        }
-
-        if (score < g_autotune.bestScore) {
-            // Improvement - accept the candidate and keep probing the same axis/direction next.
+        if (g_autotune.bestScore < 0.0 || score < g_autotune.bestScore) {
+            // Best single point evaluated so far over the WHOLE run. This always ends up equal to
+            // simplex[0] once the simplex is next sorted - Nelder-Mead's own accept/reject rule
+            // can never discard a point that beats the incumbent best (a point that beats the best
+            // vertex also automatically beats "min(reflected, worst)"/"second-worst", i.e. every
+            // threshold this code ever rejects a candidate against - so it's always kept). Tracked
+            // incrementally here anyway so AutoTuneFinish always has a sane value to report even if
+            // the run stops mid-bootstrap or mid-iteration, before the next sort would happen.
             g_autotune.bestScore = score;
             g_autotune.current   = g_autotune.candidate;
-            g_autotune.axes[g_autotune.axisIndex].triedMinus = false;
-            return;
         }
 
-        if (!g_autotune.axes[g_autotune.axisIndex].triedMinus && g_autotune.axisSign > 0) {
-            // "+step" didn't help - try "-step" before giving up on this axis.
-            g_autotune.axes[g_autotune.axisIndex].triedMinus = true;
-            g_autotune.axisSign = -1;
-            return;
-        }
+        switch (g_autotune.stage) {
+            case AutoTuneStage::Bootstrap: {
+                g_autotune.simplexScore[g_autotune.fillIndex] = score;
+                ++g_autotune.fillIndex;
+                if (g_autotune.fillIndex < 5) {
+                    g_autotune.candidate = g_autotune.simplex[g_autotune.fillIndex]; // next bootstrap vertex - already clamped when built in AutoTuneInitialize
+                    return;
+                }
+                AutoTuneBeginIteration(); // all 5 vertices known - sort, check convergence, reflect
+                return;
+            }
 
-        // Neither direction improved this round - shrink this axis' step and move to the next one.
-        g_autotune.axes[g_autotune.axisIndex].step *= 0.5f;
-        g_autotune.axes[g_autotune.axisIndex].triedMinus = false;
-        g_autotune.axisSign  = +1;
-        g_autotune.axisIndex = (g_autotune.axisIndex + 1) % 4;
+            case AutoTuneStage::Reflect: {
+                g_autotune.reflectedScore = score;
+
+                if (score < g_autotune.simplexScore[0]) {
+                    // Better than the current best vertex - worth trying to push further in the
+                    // same direction.
+                    TuningParams expanded = g_autotune.centroid;
+                    for (int a = 0; a < 4; ++a) {
+                        const float c = AxisGet(g_autotune.centroid, a);
+                        const float r = AxisGet(g_autotune.reflected, a);
+                        *AxisValue(expanded, a) = c + (float) kNelderMeadGamma * (r - c);
+                    }
+                    ClampTuningParams(expanded);
+                    g_autotune.candidate = expanded;
+                    g_autotune.stage     = AutoTuneStage::Expand;
+                    return;
+                }
+
+                if (score < g_autotune.simplexScore[3]) {
+                    // Not the best, but still better than the second-worst - plain reflection is
+                    // accepted outright, no extra trial needed this iteration.
+                    g_autotune.simplex[4]      = g_autotune.reflected;
+                    g_autotune.simplexScore[4] = score;
+                    AutoTuneBeginIteration();
+                    return;
+                }
+
+                // Reflect didn't even beat the second-worst - contract toward the centroid instead.
+                // "Outside" (blend toward x_r) if x_r at least beat the worst vertex - reflecting
+                // was a step in a useful direction, just not far enough; "inside" (blend toward the
+                // worst vertex itself) if even that failed - reflecting made things worse, so pull
+                // back toward the simplex's interior rather than past the centroid.
+                const bool outside = score < g_autotune.simplexScore[4];
+                TuningParams contracted = g_autotune.centroid;
+                for (int a = 0; a < 4; ++a) {
+                    const float c     = AxisGet(g_autotune.centroid, a);
+                    const float other = outside ? AxisGet(g_autotune.reflected, a) : AxisGet(g_autotune.simplex[4], a);
+                    *AxisValue(contracted, a) = c + (float) kNelderMeadRho * (other - c);
+                }
+                ClampTuningParams(contracted);
+                g_autotune.candidate = contracted;
+                g_autotune.stage     = AutoTuneStage::Contract;
+                return;
+            }
+
+            case AutoTuneStage::Expand: {
+                // Keep whichever of {reflected, expanded} scored better - expansion is only worth
+                // committing to if it actually beat the plain reflection, not merely the vertex
+                // being replaced.
+                if (score < g_autotune.reflectedScore) {
+                    g_autotune.simplex[4]      = g_autotune.candidate; // the expanded point
+                    g_autotune.simplexScore[4] = score;
+                } else {
+                    g_autotune.simplex[4]      = g_autotune.reflected;
+                    g_autotune.simplexScore[4] = g_autotune.reflectedScore;
+                }
+                AutoTuneBeginIteration();
+                return;
+            }
+
+            case AutoTuneStage::Contract: {
+                if (score < std::min(g_autotune.reflectedScore, g_autotune.simplexScore[4])) {
+                    g_autotune.simplex[4]      = g_autotune.candidate; // the contracted point
+                    g_autotune.simplexScore[4] = score;
+                    AutoTuneBeginIteration();
+                    return;
+                }
+
+                // Contraction didn't help either - shrink every vertex but the best toward it.
+                for (int i = 1; i < 5; ++i) {
+                    TuningParams shrunk = g_autotune.simplex[i];
+                    for (int a = 0; a < 4; ++a) {
+                        const float best = AxisGet(g_autotune.simplex[0], a);
+                        const float old  = AxisGet(shrunk, a);
+                        *AxisValue(shrunk, a) = best + (float) kNelderMeadSigma * (old - best);
+                    }
+                    ClampTuningParams(shrunk);
+                    g_autotune.simplex[i] = shrunk;
+                }
+                g_autotune.fillIndex = 1;
+                g_autotune.stage     = AutoTuneStage::Shrink;
+                g_autotune.candidate = g_autotune.simplex[1];
+                return;
+            }
+
+            case AutoTuneStage::Shrink: {
+                g_autotune.simplexScore[g_autotune.fillIndex] = score;
+                ++g_autotune.fillIndex;
+                if (g_autotune.fillIndex <= 4) {
+                    g_autotune.candidate = g_autotune.simplex[g_autotune.fillIndex];
+                    return;
+                }
+                AutoTuneBeginIteration(); // all 4 shrunk vertices re-evaluated - sort, check convergence, reflect
+                return;
+            }
+        }
     }
 
     static void AutoTuneInitialize() {
@@ -885,24 +1258,34 @@ namespace kraken::fix::joltshadow {
             return;
         }
 
-        g_autotune.current   = DefaultTuningParams();
-        g_autotune.maxTrials = config.jolt_autotune_max_trials.value;
-        g_autotune.axes[0].step = 0.3f;  // susp_frequency (Hz)
-        g_autotune.axes[1].step = 0.1f;  // susp_damping (ratio)
-        g_autotune.axes[2].step = 0.15f; // friction_long (scale)
-        g_autotune.axes[3].step = 0.15f; // friction_lat (scale)
-        for (AutoTuneAxis& axis : g_autotune.axes) axis.triedMinus = false;
-        g_autotune.axisIndex    = 0;
-        g_autotune.axisSign     = +1;
-        g_autotune.trialIndex   = 0;
-        g_autotune.bestScore    = -1.0;
-        g_autotune.initialized  = true;
+        // Build the initial simplex: vertex 0 is the unperturbed baseline, vertices 1-4 are the
+        // baseline with exactly one axis pushed out by kInitialSimplexStep (the same neighborhood
+        // the old coordinate descent started its own search from) - a standard way to seed
+        // Nelder-Mead when there's no better prior than "the current default is roughly sane".
+        const TuningParams baseline = DefaultTuningParams();
+        g_autotune.simplex[0] = baseline;
+        for (int a = 0; a < 4; ++a) {
+            TuningParams vertex = baseline;
+            *AxisValue(vertex, a) += kInitialSimplexStep[a];
+            ClampTuningParams(vertex);
+            g_autotune.simplex[a + 1] = vertex;
+        }
+        for (int i = 0; i < 5; ++i) g_autotune.simplexScore[i] = 0.0; // placeholder - overwritten one at a time as bootstrap trials report in
 
-        LOG_INFO("Autotune: starting coordinate-descent search, up to %u trial(s), baseline susp=%.2fHz/%.2f friction=%.2f/%.2f, "
+        g_autotune.current     = baseline; // provisional - overwritten as soon as the first trial's score is known (see AutoTuneRecordResult)
+        g_autotune.fillIndex   = 0;
+        g_autotune.stage       = AutoTuneStage::Bootstrap;
+        g_autotune.candidate   = g_autotune.simplex[0];
+        g_autotune.maxTrials   = config.jolt_autotune_max_trials.value;
+        g_autotune.trialIndex  = 0;
+        g_autotune.bestScore   = -1.0;
+        g_autotune.initialized = true;
+
+        LOG_INFO("Autotune: starting Nelder-Mead simplex search, up to %u trial(s), baseline susp=%.2fHz/%.2f friction=%.2f/%.2f, "
                  "score = pos_rmse + %.2f*vel_rmse + %.2f*angle_rmse_deg (approximate weights, see docs section 8.4/8.5)",
             g_autotune.maxTrials,
-            (double) g_autotune.current.suspensionFrequency, (double) g_autotune.current.suspensionDamping,
-            (double) g_autotune.current.frictionLongScale, (double) g_autotune.current.frictionLatScale,
+            (double) baseline.suspensionFrequency, (double) baseline.suspensionDamping,
+            (double) baseline.frictionLongScale, (double) baseline.frictionLatScale,
             kAutotuneVelWeight, kAutotuneAngleWeight);
     }
 
@@ -923,9 +1306,12 @@ namespace kraken::fix::joltshadow {
         if (current == nullptr || current == g_autotune.initVehicle)
             return;
 
-        // The search bookkeeping (trialIndex/bestScore/current params/axes) is discarded and
+        // The search bookkeeping (trialIndex/bestScore/the whole simplex) is discarded and
         // restarted from scratch either way - whatever trial was in flight was measuring the
-        // OLD vehicle and its score is no longer comparable to trials against the new one. Only
+        // OLD vehicle and its score is no longer comparable to trials against the new one (and a
+        // partially-filled simplex from the old vehicle has no valid meaning against the new
+        // one's spawn point). AutoTuneInitialize rebuilds everything - simplex, fillIndex, stage,
+        // trialIndex, bestScore - unconditionally on the next tick, same as it always has. Only
         // the scenario.csv FILE itself is conditionally touched: if we wrote it ourselves, its
         // "spawn" line was captured from the (possibly stale/placeholder) old vehicle and must be
         // regenerated; a user/tool-provided file's spawn line is just world coordinates and stays
@@ -991,33 +1377,89 @@ namespace kraken::fix::joltshadow {
     }
     // ------------------------------------------------------------------------------------------
 
+    // Hard upper bound on the number of AI shadows ever live at once - matches [jolt_harness]
+    // ai_count's own ConfigValue range (source/config.cpp: `{"jolt_harness","ai_count", 0, true,
+    // 0, 16}`), which clamps the ini value to 0..16 before InitAiShadowsIfNeeded ever selects
+    // vehicles, so g_aiShadows/g_aiTargets never actually grow past this. Sized as a fixed stack
+    // array (not a per-frame heap allocation - this whole refactor exists to keep this hot path
+    // allocation-free) with a defensive runtime clamp below in case that config limit is ever
+    // loosened without this array being resized to match.
+    static constexpr size_t kMaxAiShadowsPerFrame = 16;
+
+    // Three-pass per-frame update (docs/jolt-integration-techanalysis.md §18.1/§18.4): the
+    // single JPH::PhysicsSystem is shared by every shadow vehicle, so it must be stepped exactly
+    // ONCE per real frame regardless of how many shadows (0..17, player + up to 16 AI) are active
+    // - not once per vehicle, which used to re-simulate the entire shared world up to 17x/frame
+    // at ai_count=16.
+    //   Pass 1 (pre-step): rebuild-on-swap + feed driver input for every candidate vehicle,
+    //     recording which ones are actually live this frame (BuildShadow succeeded, now or
+    //     previously).
+    //   Pass 2: step physics exactly once, but only if at least one vehicle is live this frame -
+    //     if none are (e.g. right after a level load, before any BuildShadow has succeeded yet),
+    //     skip the step entirely, matching the old per-vehicle code's behavior for that edge case
+    //     (it simply never called StepPhysics if BuildShadow kept failing) rather than stepping a
+    //     not-yet-ready world.
+    //   Pass 3 (post-step): apply/autotune-accumulate/periodic-log for every vehicle that was
+    //     live this frame.
     static void UpdateShadow(float elapsedTime) {
         AutoTuneTick();
 
         const kraken::Config& config = kraken::Config::Instance();
 
         hta::ai::Vehicle* playerVehicle = GetPlayerVehicle();
-        if (playerVehicle != nullptr) {
-            const bool playerAllowApply = config.jolt_apply.value != 0
-                && (config.jolt_player_only.value == 0 || playerVehicle->bIsControlledByPlayer());
-            UpdateOneVehicle(playerVehicle, g_playerShadow, elapsedTime, playerAllowApply, "player");
-        }
 
         // Stage 3 requires player_only=0 - player_only=1 (the default) means "only the
         // player, full stop", so ai_count is deliberately inert unless that's turned off too.
         // Applying (vs. shadow-only logging) additionally still requires apply=1, same as the
         // player path.
         const uint32_t aiCount = config.jolt_player_only.value == 0 ? config.jolt_ai_count.value : 0;
-        if (aiCount > 0) {
+        if (aiCount > 0)
             InitAiShadowsIfNeeded(playerVehicle, aiCount);
 
+        assert(g_aiShadows.size() <= kMaxAiShadowsPerFrame);
+        const size_t aiShadowCount = aiCount > 0 ? std::min(g_aiShadows.size(), kMaxAiShadowsPerFrame) : 0;
+
+        bool playerLive = false;
+        bool aiLive[kMaxAiShadowsPerFrame] = {};
+        char aiLabels[kMaxAiShadowsPerFrame][16]; // filled in pass 1, reused as-is (same index) in pass 3
+
+        // --- Pass 1 (pre-step) ---
+        if (playerVehicle != nullptr)
+            playerLive = UpdateOneVehiclePreStep(playerVehicle, g_playerShadow, "player");
+
+        for (size_t i = 0; i < aiShadowCount; ++i) {
+            std::snprintf(aiLabels[i], sizeof(aiLabels[i]), "ai%zu", i);
+            aiLive[i] = UpdateOneVehiclePreStep(g_aiTargets[i], g_aiShadows[i], aiLabels[i]);
+        }
+
+        // --- Pass 2: step the shared PhysicsSystem exactly once ---
+        bool anyLive = playerLive;
+        for (size_t i = 0; i < aiShadowCount; ++i)
+            anyLive = anyLive || aiLive[i];
+        if (anyLive)
+            StepPhysicsProfiled(elapsedTime);
+
+        // --- Pass 3 (post-step) ---
+        if (playerLive) {
+            const bool playerAllowApply = config.jolt_apply.value != 0
+                && (config.jolt_player_only.value == 0 || playerVehicle->bIsControlledByPlayer());
+            UpdateOneVehiclePostStep(playerVehicle, g_playerShadow, playerAllowApply, "player");
+        }
+
+        if (aiShadowCount > 0) {
             const bool aiAllowApply = config.jolt_apply.value != 0;
-            char label[16];
-            for (size_t i = 0; i < g_aiShadows.size(); ++i) {
-                std::snprintf(label, sizeof(label), "ai%zu", i);
-                UpdateOneVehicle(g_aiTargets[i], g_aiShadows[i], elapsedTime, aiAllowApply, label);
+            for (size_t i = 0; i < aiShadowCount; ++i) {
+                if (!aiLive[i])
+                    continue;
+                UpdateOneVehiclePostStep(g_aiTargets[i], g_aiShadows[i], aiAllowApply, aiLabels[i]);
             }
         }
+
+        // Every vehicle this frame (player + any AI shadows above) has already run through
+        // StepPhysicsProfiled/ApplyJoltToVehicleProfiled - this is the one place per real game
+        // frame (UpdateShadow runs exactly once per StepSceneHook) to count the frame and
+        // periodically flush the [jolt_profile] summary line (see JoltProfileFrameEnd's comment).
+        JoltProfileFrameEnd();
     }
 
     // ai::DynamicScene::StepScene's call site inside ai::CServer::Update (VA 0x5F4260) -
@@ -1057,7 +1499,7 @@ namespace kraken::fix::joltshadow {
         g_activeTuning = DefaultTuningParams();
         if (config.jolt_autotune.value != 0) {
             g_autotune.enabled = true;
-            LOG_INFO("Autotune (docs section 8.5/16) enabled - will run a coordinate-descent search over suspension/friction "
+            LOG_INFO("Autotune (docs section 8.5/16/20.3) enabled - will run a Nelder-Mead simplex search over suspension/friction "
                      "using testharness's scripted-replay protocol once a save is loaded (up to %u trials)",
                 config.jolt_autotune_max_trials.value);
         } else {
