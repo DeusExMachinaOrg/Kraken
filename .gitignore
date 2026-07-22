@@ -2,6 +2,7 @@
 build
 .vscode
 .vs
+__pycache__
 
 # Bindary files
 **/*.obj
