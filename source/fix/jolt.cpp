@@ -128,12 +128,16 @@ namespace kraken::fix::jolt {
     // pattern: cleared and rebuilt from scratch each time ExportStaticObstaclesToJolt runs.
     static std::vector<JPH::BodyID>           g_staticObstacleBodyIds;
     // Set to a small positive frame count whenever a level (re)load is detected (see
-    // ReadRoadsFromXmlFileHook below); StepPhysics ticks it down and re-runs the static-obstacle
-    // export on every one of those frames, not just the last one - level loading is synchronous
-    // on this engine's main thread, so even the earliest of those frames is already strictly
-    // after CWorld::Load has fully returned, but re-running for a few frames is a cheap,
-    // self-healing margin against any object placement this hasn't been confirmed to precede
-    // (docs §22.9) rather than betting everything on a single guessed frame offset.
+    // ReadRoadsFromXmlFileHook below); StepPhysics ticks it down and runs the static-obstacle
+    // export exactly ONCE, on the frame the count reaches zero - level loading is synchronous on
+    // this engine's main thread, so even that first post-load frame is already strictly after
+    // CWorld::Load has fully returned. A short delay margin costs nothing; re-running the export
+    // itself on every one of those frames does NOT (docs §22.9-fix) - it rebuilds every exported
+    // shape from scratch each time, including ~1600 individual trimesh shapes on a typical level,
+    // and doing that ~30x in a row on every level load was confirmed live to noticeably slow down
+    // loading. Confirmed live across multiple runs that the geom set is already stable by the
+    // first post-load frame anyway (identical counts whether checked immediately or later), so
+    // there was never a real staggered-placement case to guard against.
     static int32_t                            g_staticsExportPendingFrames = 0;
 
     static void TraceImpl(const char* fmt, ...) {
@@ -163,7 +167,8 @@ namespace kraken::fix::jolt {
             return;
         if (g_staticsExportPendingFrames > 0) {
             --g_staticsExportPendingFrames;
-            ExportStaticObstaclesToJolt();
+            if (g_staticsExportPendingFrames == 0)
+                ExportStaticObstaclesToJolt();
         }
         g_physicsSystem->Update(inDeltaTime, 1, g_tempAllocator, g_jobSystem);
     }
@@ -595,9 +600,8 @@ namespace kraken::fix::jolt {
     static int32_t __fastcall ReadRoadsFromXmlFileHook(hta::m3d::RoadManager* roadManager, void*, const char* path) {
         int32_t result = roadManager->ReadRoadsFromXmlFile(path);
         ExportRoadsToJolt(roadManager);
-        // Arms the static-obstacle export burst (see StepPhysics and
-        // ExportStaticObstaclesToJolt's own comment) - this is the last of the two known
-        // per-level-load hooks to fire, so by the time the first of these frames runs,
+        // Arms the (single-shot, see StepPhysics) static-obstacle export - this is the last of
+        // the two known per-level-load hooks to fire, so by the time this delay elapses,
         // CWorld::Load has certainly returned and ai::gGlobalSpace holds everything it's going
         // to hold for this level.
         g_staticsExportPendingFrames = 30;
