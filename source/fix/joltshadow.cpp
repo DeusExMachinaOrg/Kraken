@@ -136,6 +136,7 @@ namespace kraken::fix::joltshadow {
         JPH::BodyID             bodyId;
         JPH::VehicleConstraint* constraint = nullptr;
         std::vector<hta::ai::Wheel*> wheelOrder; // parallel to constraint's internal wheel array, index-for-index
+        std::vector<uint32_t>   wheelSourceIndex; // parallel to wheelOrder: the vehicle->m_wheels[] index each entry was captured from at build time - lets ShadowWheelsStillPresent detect a wheel that's since been detached/replaced (see its comment)
         uint64_t                frameCounter    = 0;
         uint32_t                builtGeneration = 0; // g_tuningGeneration at the time this state's shadow was (re)built
     };
@@ -239,8 +240,11 @@ namespace kraken::fix::joltshadow {
 
         JPH::VehicleConstraintSettings vehicleSettings;
         std::vector<hta::ai::Wheel*>& wheelOrder = state.wheelOrder; // parallel to vehicleSettings.mWheels; also reused by ApplyJoltToVehicle
+        std::vector<uint32_t>& wheelSourceIndex = state.wheelSourceIndex; // parallel to wheelOrder - see its field comment
         wheelOrder.clear();
         wheelOrder.reserve(numWheels);
+        wheelSourceIndex.clear();
+        wheelSourceIndex.reserve(numWheels);
 
         for (uint32_t i = 0; i < numWheels; ++i) {
             const hta::ai::Vehicle::WheelRuntimeInfo& info = vehicle->m_wheels[i];
@@ -297,6 +301,7 @@ namespace kraken::fix::joltshadow {
 
             vehicleSettings.mWheels.push_back(ws);
             wheelOrder.push_back(wheel);
+            wheelSourceIndex.push_back(i);
         }
 
         if (vehicleSettings.mWheels.empty()) {
@@ -644,6 +649,40 @@ namespace kraken::fix::joltshadow {
     }
     // ------------------------------------------------------------------------------------------
 
+    // Detects a wheel that ShadowState captured at build time (state.wheelOrder/
+    // wheelSourceIndex, filled in BuildShadow's loop over vehicle->m_wheels) having since gone
+    // away - e.g. shot off in combat - which ApplyJoltToVehicle would otherwise keep calling
+    // wheel->DisablePhysics()/SetPositionSelf()/SetRotationSelf() through every frame via a
+    // possibly-dangling hta::ai::Wheel* (use-after-free risk), or, if the object outlives
+    // detachment, silently teleport a should-be-flying wheel fragment back onto the shadow's
+    // computed Jolt position instead of letting it fly off as debris.
+    //
+    // Checks each captured (wheelOrder[k], wheelSourceIndex[k]) pair against the vehicle's
+    // CURRENT m_wheels: the source index must still be in range (the wheel count itself could
+    // have changed), the slot at that index must still hold the SAME Wheel* (not silently
+    // reused for a different wheel), and that slot must still report m_bWheelPresent. Any one
+    // pair failing means the shadow was built from stale wheel data and must be rebuilt from
+    // scratch (see the rebuild condition in UpdateOneVehiclePreStep below) - BuildShadow will
+    // re-scan vehicle->m_wheels fresh and simply compact out whatever's missing now, exactly as
+    // it already does on first build.
+    //
+    // An empty wheelOrder (shadow not yet built, or a genuinely wheelless vehicle) is NOT a
+    // failure here - it just means there's nothing to have lost, so this returns true (no
+    // rebuild needed FOR THIS REASON) rather than forcing a spurious rebuild loop.
+    static bool ShadowWheelsStillPresent(hta::ai::Vehicle* vehicle, const ShadowState& state) {
+        const uint32_t numWheelsNow = vehicle->GetNumWheels();
+        for (size_t k = 0; k < state.wheelOrder.size(); ++k) {
+            const uint32_t sourceIndex = state.wheelSourceIndex[k];
+            if (sourceIndex >= numWheelsNow)
+                return false; // wheel count shrank past where this one used to live
+
+            const hta::ai::Vehicle::WheelRuntimeInfo& info = vehicle->m_wheels[sourceIndex];
+            if (info.m_wheel != state.wheelOrder[k] || !info.m_bWheelPresent)
+                return false; // detached/destroyed, or slot reused for a different wheel
+        }
+        return true;
+    }
+
     // Shared per-vehicle per-frame tick, used identically for the player and for every Stage 3
     // AI vehicle - split into a pre-step half (rebuild-on-swap + feed inputs) and a post-step
     // half (apply/autotune/periodic log) so UpdateShadow (below) can sandwich exactly ONE shared
@@ -656,12 +695,21 @@ namespace kraken::fix::joltshadow {
     // combined function's early return: the caller simply skips this vehicle for this frame and
     // retries on the next one, no state is left half-initialized.
     static bool UpdateOneVehiclePreStep(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label) {
-        // Rebuilds on either a vehicle swap (level reload, vehicle switch) or a tuning-parameter
-        // change (g_tuningGeneration bumped by SetTuningOverride - the autotuner uses this to
-        // apply a new candidate suspension/friction set between trials without needing to
-        // recreate ShadowState itself). See BuildShadow's comment for why the previous
+        // Rebuilds on a vehicle swap (level reload, vehicle switch), a tuning-parameter change
+        // (g_tuningGeneration bumped by SetTuningOverride - the autotuner uses this to apply a
+        // new candidate suspension/friction set between trials without needing to recreate
+        // ShadowState itself), or one of the wheels captured at the shadow's last build having
+        // since been detached/destroyed/replaced (ShadowWheelsStillPresent - see its own
+        // comment; guards against ApplyJoltToVehicle chasing a stale hta::ai::Wheel* after
+        // combat damage tears a wheel off). See BuildShadow's comment for why the previous
         // constraint/body is abandoned rather than torn down either way.
-        if (vehicle != state.vehicle || state.builtGeneration != g_tuningGeneration) {
+        const bool vehicleSwapped = vehicle != state.vehicle;
+        const bool tuningChanged  = state.builtGeneration != g_tuningGeneration;
+        const bool wheelsChanged  = !vehicleSwapped && !ShadowWheelsStillPresent(vehicle, state); // only meaningful once already built for this same vehicle
+        if (vehicleSwapped || tuningChanged || wheelsChanged) {
+            if (wheelsChanged)
+                LOG_WARNING("Shadow (%s): a wheel present at build time is now gone/replaced, rebuilding", label);
+
             if (!BuildShadow(vehicle, state, label))
                 return false; // vehicle data can be not-yet-fully-initialized right after a level
                               // load - just keep retrying on later frames
