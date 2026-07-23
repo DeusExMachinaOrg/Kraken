@@ -99,6 +99,30 @@ namespace kraken {
         ConfigValue<float>                    jolt_susp_damping;
         ConfigValue<float>                    jolt_susp_reference_hz;
         ConfigValue<uint32_t>                  jolt_wheel_proxy;
+        ConfigValue<uint32_t>                 jolt_collision_cylinder;
+        ConfigValue<uint32_t>                 jolt_wheelmodel;            // docs §39: spring_wheel model on the Jolt vehicle. 0=off, 1=log-only eval, 2=apply (drive chassis, no VehicleConstraint)
+        // docs §39: wheelmodel_core (Pacejka contact) params - same [wheelmodel] names as spring_wheel so tuning transfers.
+        ConfigValue<float>                    jolt_wm_tyre_stiffness;
+        ConfigValue<float>                    jolt_wm_tyre_thickness;
+        ConfigValue<float>                    jolt_wm_tyre_damping;
+        ConfigValue<float>                    jolt_wm_hard_core_lambda;
+        ConfigValue<float>                    jolt_wm_grip;
+        ConfigValue<float>                    jolt_wm_pac_B;
+        ConfigValue<float>                    jolt_wm_pac_C;
+        ConfigValue<float>                    jolt_wm_pac_E;
+        ConfigValue<float>                    jolt_wm_slip_floor;
+        ConfigValue<float>                    jolt_wm_stick_speed;
+        ConfigValue<float>                    jolt_wm_wheel_inertia;
+        ConfigValue<float>                    jolt_wm_react_scale;
+        ConfigValue<uint32_t>                 jolt_wm_own_spin;
+        ConfigValue<float>                    jolt_wm_motor_gain;
+        ConfigValue<float>                    jolt_wm_drive_torque;
+        ConfigValue<float>                    jolt_wm_max_g;
+        // docs §39: my suspension travel DOF (spring_wheel used ODE's Hinge2 for this; the Jolt port has no wheel body so models it explicitly).
+        ConfigValue<float>                    jolt_wm_susp_stiffness;     // k_susp (N/m) soft suspension spring (gives ride travel; series with the stiff tyre)
+        ConfigValue<float>                    jolt_wm_susp_damping;       // c_susp (N.s/m) suspension damper
+        ConfigValue<float>                    jolt_wm_susp_travel;        // max suspension travel (m)
+        ConfigValue<float>                    jolt_wm_unsprung_mass;      // effective wheel-side mass for the DOF integrator (kg)
         ConfigValue<float>                    jolt_friction_long;
         ConfigValue<float>                    jolt_friction_lat;
         ConfigValue<uint32_t>                 jolt_autotune;

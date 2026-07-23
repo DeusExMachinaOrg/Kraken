@@ -9,6 +9,7 @@
 #include "fix/joltshadow.hpp"
 #include "fix/jolt.hpp"
 #include "fix/kineticfriction.hpp"
+#include "fix/wheelmodel_core.hpp" // docs §39: spring_wheel's engine-agnostic Pacejka contact-force model, being ported onto the Jolt vehicle
 #include "config.hpp"
 #include "routines.hpp"
 #include "ode/ode.hpp"
@@ -27,6 +28,8 @@
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/CollideShape.h>
+#include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 #include <Jolt/Physics/Collision/GroupFilterTable.h>
 #include <Jolt/Physics/Constraints/SliderConstraint.h>
 
@@ -229,7 +232,37 @@ namespace kraken::fix::joltshadow {
         bool     wheelProxiesBuilt      = false;
         uint32_t collisionGroupId       = 0;
         uint32_t consecutiveSlowFrames  = 0;
+
+        // docs §39: per-wheel state for the wheelmodel apply path (parallel to wheelOrder).
+        // suspLen/suspVel are the explicit suspension-travel DOF (spring_wheel got travel from
+        // ODE's Hinge2; the Jolt port has no wheel body so integrates it here). omega is the §5
+        // spin DOF. Only populated/used when [jolt_harness] wheelmodel==2 (apply). wheelModelMode
+        // records that this state was built WITHOUT a live VehicleConstraint (see BuildShadow).
+        bool               wheelModelMode = false;
+        std::vector<float> wmSuspLen;   // current suspension extension along mSuspensionDirection (m)
+        std::vector<float> wmSuspVel;   // its rate (m/s)
+        std::vector<float> wmOmega;     // wheel spin about the axle (rad/s)
+        std::vector<float> wmRestLen;   // per-wheel spring zero-force length (= raycast-init length, so comp=0 at spawn -> no launch)
     };
+
+    // docs §39: gather wheelmodel_core params from config into the plain-float WMParams the
+    // engine-agnostic core expects. Read fresh each step so live kraken.ini edits retune without
+    // a rebuild (the whole point of exposing them).
+    static kraken::fix::wheelmodel::WMParams WheelModelParamsFromConfig() {
+        const kraken::Config& c = kraken::Config::Instance();
+        kraken::fix::wheelmodel::WMParams p;
+        p.k_t         = c.jolt_wm_tyre_stiffness.value;
+        p.zeta_t      = c.jolt_wm_tyre_damping.value;
+        p.lambda      = c.jolt_wm_hard_core_lambda.value;
+        p.mu          = c.jolt_wm_grip.value;
+        p.B           = c.jolt_wm_pac_B.value;
+        p.C           = c.jolt_wm_pac_C.value;
+        p.E           = c.jolt_wm_pac_E.value;
+        p.eps         = c.jolt_wm_slip_floor.value;
+        p.stick_speed = c.jolt_wm_stick_speed.value;
+        p.inertia     = c.jolt_wm_wheel_inertia.value;
+        return p;
+    }
 
     static ShadowState              g_playerShadow;
     static std::vector<hta::ai::Vehicle*> g_aiTargets;  // which vehicle each g_aiShadows[i] tracks (fixed at selection time)
@@ -874,8 +907,17 @@ namespace kraken::fix::joltshadow {
         vehicleSettings.mController = controllerSettings;
 
         state.constraint = new JPH::VehicleConstraint(*body, vehicleSettings);
-        if (g_collisionTester == nullptr)
-            g_collisionTester = new JPH::VehicleCollisionTesterRay(kWheelQueryLayer);
+        if (g_collisionTester == nullptr) {
+            // docs §38.10: tried as a cleaner alternative to the wheel-proxy workaround for
+            // wheels missing ground on steep terrain (§32) - a real cylinder shape-cast (the
+            // wheel's own width/radius) instead of an infinitely-thin ray naturally catches a
+            // much wider range of slope/edge cases a bare ray can miss by even a hair, with no
+            // extra body/constraint of its own. Gated behind [jolt_harness] collision_cylinder
+            // (default on) so it's a one-line revert to the old ray tester if it doesn't pan out.
+            g_collisionTester = kraken::Config::Instance().jolt_collision_cylinder.value != 0
+                ? static_cast<JPH::VehicleCollisionTester*>(new JPH::VehicleCollisionTesterCastCylinder(kWheelQueryLayer))
+                : static_cast<JPH::VehicleCollisionTester*>(new JPH::VehicleCollisionTesterRay(kWheelQueryLayer));
+        }
         state.constraint->SetVehicleCollisionTester(g_collisionTester);
 
         // docs §23.8: reuse fix::kineticfriction's slip-based tire model (already the ONLY
@@ -965,8 +1007,56 @@ namespace kraken::fix::joltshadow {
                 });
         }
 
-        physics->AddConstraint(state.constraint);
-        physics->AddStepListener(state.constraint);
+        // docs §39: in wheelmodel APPLY mode the chassis is driven by the ported wheelmodel_core
+        // forces (StepWheelModel), NOT by Jolt's VehicleConstraint - so DON'T add the constraint
+        // to the simulation (no AddConstraint/AddStepListener). The constraint object still exists
+        // and is read for its static per-wheel settings (mPosition/mSuspensionDirection/mRadius/
+        // mWheelForward/Up), but it never runs OnStep, so it applies no suspension/friction of its
+        // own and can't fight the wheelmodel forces. This is NOT a teardown of a live constraint
+        // (the file's hard rule, from a real worker-thread crash) - it's simply never activating
+        // it; safe. Everything before this point (chassis body/shape/mass, wheel settings) is
+        // shared with the normal path.
+        state.wheelModelMode = (kraken::Config::Instance().jolt_wheelmodel.value == 2);
+        if (!state.wheelModelMode) {
+            physics->AddConstraint(state.constraint);
+            physics->AddStepListener(state.constraint);
+        } else {
+            const size_t nw = state.wheelOrder.size();
+            state.wmSuspLen.assign(nw, 0.0f);
+            state.wmSuspVel.assign(nw, 0.0f);
+            state.wmOmega.assign(nw, 0.0f);
+            state.wmRestLen.assign(nw, 0.0f);
+            // docs §39.2: init suspLen so each wheel starts exactly ON the ground (raycast down
+            // from the attachment). Full-droop init (=maxLen) put the wheels ~2.7m below the COM,
+            // BELOW the one-sided heightfield surface where CollideShape can't see them - the
+            // vehicle then fell through with zero wheel support. Starting the wheels at the
+            // surface gives support from frame ~1, before the chassis can drop onto its belly.
+            const JPH::RMat44 bxform = JPH::RMat44::sRotationTranslation(
+                JPH::Quat(rot.x, rot.y, rot.z, rot.w), JPH::RVec3(pos.x, pos.y, pos.z));
+            const JPH::BroadPhaseLayerFilter& bpF = physics->GetDefaultBroadPhaseLayerFilter(kWheelQueryLayer);
+            const JPH::DefaultObjectLayerFilter olF = physics->GetDefaultLayerFilter(kWheelQueryLayer);
+            for (size_t i = 0; i < nw; ++i) {
+                const JPH::WheelSettings* s = state.constraint->GetWheel((JPH::uint) i)->GetSettings();
+                const float maxLen = s ? s->mSuspensionMaxLength : 0.5f;
+                const float R = s ? s->mRadius : 0.3f;
+                float suspLen = maxLen; // airborne fallback
+                if (s != nullptr) {
+                    const JPH::RVec3 attachW  = bxform * s->mPosition;
+                    const JPH::Vec3  suspDirW = bxform.Multiply3x3(s->mSuspensionDirection).Normalized();
+                    const float rayLen = maxLen + R + 1.0f;
+                    JPH::RRayCast ray{ attachW, suspDirW * rayLen };
+                    JPH::RayCastResult hitR;
+                    if (physics->GetNarrowPhaseQuery().CastRay(ray, hitR, bpF, olF)) {
+                        const float d = rayLen * hitR.mFraction; // attachment -> ground distance
+                        suspLen = std::clamp(d - R, s->mSuspensionMinLength, maxLen); // wheel bottom at ground
+                    }
+                }
+                state.wmSuspLen[i] = suspLen;
+                state.wmRestLen[i] = suspLen; // spring zero-force point = where the wheel starts on the ground
+            }
+            LOG_INFO("Shadow (%s): wheelmodel APPLY mode - VehicleConstraint built but NOT simulated; chassis driven by wheelmodel_core (%zu wheels)",
+                label, nw);
+        }
 
         bodyInterface.AddBody(state.bodyId, JPH::EActivation::Activate);
 
@@ -1129,9 +1219,341 @@ namespace kraken::fix::joltshadow {
         }
     }
 
+    // docs §39: log-only evaluation of the ported wheelmodel_core on the LIVE Jolt world. For
+    // each wheel it generates the SAME kind of contact manifold spring_wheel's OnWheelContacts
+    // gets from ODE - here via a Jolt CollideShape of the wheel's sphere (HTA wheels are real
+    // ODE sphere geoms, per wheelmodel_core's own note) against the static world - then runs
+    // wheelmodel_core Classify + GeneralizedContactForce and LOGS the force it WOULD apply.
+    // Applies nothing (read-only): this validates manifold generation + force sanity in the Jolt
+    // context before the apply path (docs §39.2) drives the chassis with it. Uses WMParams
+    // defaults for now; config wiring comes with the apply path.
+    static void LogWheelModelEval(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label) {
+        namespace wm = kraken::fix::wheelmodel;
+        JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+        if (physics == nullptr || state.constraint == nullptr || vehicle == nullptr)
+            return;
+
+        JPH::BodyInterface& bi = physics->GetBodyInterface();
+        const JPH::Quat  chassisRot = bi.GetRotation(state.bodyId);
+        const JPH::RVec3 comW       = bi.GetCenterOfMassPosition(state.bodyId);
+        const JPH::Vec3  vLin       = bi.GetLinearVelocity(state.bodyId);
+        const JPH::Vec3  vAng       = bi.GetAngularVelocity(state.bodyId);
+
+        const wm::vec3 U{0.0f, 1.0f, 0.0f}; // world up (+Y), same convention as spring_wheel
+        const wm::WMParams P;               // defaults for now
+        const float dt = 1.0f / std::max(kraken::Config::Instance().jolt_susp_reference_hz.value, 1.0f);
+        const uint32_t numWheels = std::max<uint32_t>(vehicle->GetNumWheels(), 1);
+        const float m = vehicle->GetMass() / (float) numWheels;
+
+        const JPH::BroadPhaseLayerFilter& bpFilter  = physics->GetDefaultBroadPhaseLayerFilter(kWheelQueryLayer);
+        const JPH::DefaultObjectLayerFilter objFilter = physics->GetDefaultLayerFilter(kWheelQueryLayer);
+
+        const JPH::Wheels& wheels = state.constraint->GetWheels();
+        for (size_t i = 0; i < wheels.size(); ++i) {
+            const JPH::Wheel* wheel = wheels[i];
+            const JPH::WheelSettings* settings = wheel ? wheel->GetSettings() : nullptr;
+            if (settings == nullptr)
+                continue;
+
+            const float R   = settings->mRadius;
+            const float tau = std::min(0.15f, R * 0.9f); // tyre thickness placeholder (config later)
+
+            // Wheel world centre: use the constraint's current wheel transform (includes live
+            // suspension compression) - convenient and accurate for this read-only pass. The
+            // apply path will instead own the wheel position (no VehicleConstraint there).
+            const JPH::RMat44 wheelXform = state.constraint->GetWheelWorldTransform((JPH::uint) i, JPH::Vec3::sAxisY(), JPH::Vec3::sAxisX());
+            const JPH::RVec3  wheelC     = wheelXform.GetTranslation();
+            const wm::vec3    c{ (float) wheelC.GetX(), (float) wheelC.GetY(), (float) wheelC.GetZ() };
+
+            // Axle in world = chassisRot * (forward x up), per GetWheelLocalBasis.
+            const JPH::Vec3 localAxle = settings->mWheelForward.Cross(settings->mWheelUp).Normalized();
+            const JPH::Vec3 wAxle     = (chassisRot * localAxle).Normalized();
+            const wm::vec3  a{ wAxle.GetX(), wAxle.GetY(), wAxle.GetZ() };
+
+            // Spin about the axle from the constraint's own wheel state (log-only).
+            const float omega = wheel->GetAngularVelocity();
+
+            // --- Jolt manifold: sphere of the wheel vs the static world (matches ODE geom) ---
+            JPH::SphereShape sphere(R);
+            sphere.SetEmbedded();
+            JPH::CollideShapeSettings csSettings;
+            csSettings.mMaxSeparationDistance = tau; // collect near-contacts too, like a soft tyre band
+            JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
+            physics->GetNarrowPhaseQuery().CollideShape(
+                &sphere, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sTranslation(wheelC),
+                csSettings, JPH::RVec3::sZero(), collector, bpFilter, objFilter);
+
+            const int nHits = (int) collector.mHits.size();
+            if (nHits == 0) {
+                if ((state.frameCounter % 120) == 0)
+                    LOG_INFO("docs §39.1: wheelmodel eval (%s) wheel=%zu - no manifold contacts", label, i);
+                continue;
+            }
+
+            constexpr int kMaxC = 16;
+            wm::WMContact cts[kMaxC];
+            wm::WMGeom    gm[kMaxC];
+            const int n = std::min(nHits, kMaxC);
+            for (int h = 0; h < n; ++h) {
+                const JPH::CollideShapeResult& r = collector.mHits[(size_t) h];
+                const JPH::Vec3 nrm = (-r.mPenetrationAxis).Normalized(); // out of the surface toward the wheel
+                cts[h].p = { (float) r.mContactPointOn2.GetX(), (float) r.mContactPointOn2.GetY(), (float) r.mContactPointOn2.GetZ() };
+                cts[h].n = { nrm.GetX(), nrm.GetY(), nrm.GetZ() };
+                cts[h].depth = r.mPenetrationDepth;
+                gm[h] = wm::ComputeGeom(cts[h], c, U, a, R, settings->mRadius);
+            }
+            wm::WMSlots slots = wm::Classify(gm, n);
+
+            auto vpAt = [&](const wm::vec3& p) {
+                const JPH::Vec3 rr(p.x - (float) comW.GetX(), p.y - (float) comW.GetY(), p.z - (float) comW.GetZ());
+                const JPH::Vec3 v = vLin + vAng.Cross(rr);
+                return wm::vec3{ v.GetX(), v.GetY(), v.GetZ() };
+            };
+            auto evalSlot = [&](int idx, bool side) -> wm::WMForce {
+                if (idx < 0) return {};
+                const wm::WMGeom& g = gm[idx];
+                const float w = side ? g.wl : g.wr;
+                return wm::GeneralizedContactForce(cts[idx].p, cts[idx].n, g.pen, w, c, a,
+                    vpAt(cts[idx].p), omega, R, tau, m, dt, P);
+            };
+            const wm::WMForce fG = evalSlot(slots.ground, false);
+
+            if ((state.frameCounter % 30) == 0) {
+                const float penG = slots.ground >= 0 ? gm[slots.ground].pen : 0.0f;
+                LOG_INFO("docs §39.1: wheelmodel eval (%s) wheel=%zu hits=%d groundSlot=%d pen=%.3f "
+                    "F_ground=(%.0f,%.0f,%.0f) |F|=%.0f fpar=%.0f (m=%.1f dt=%.4f)",
+                    label, i, nHits, slots.ground, (double) penG,
+                    (double) fG.F.x, (double) fG.F.y, (double) fG.F.z,
+                    (double) wm::Len(fG.F), (double) fG.fpar_w, (double) m, (double) dt);
+            }
+        }
+    }
+
+    // docs §39.2: the APPLY path. Drives the Jolt chassis body with the ported wheelmodel_core
+    // forces + an explicit suspension-travel DOF, instead of a JPH::VehicleConstraint (which was
+    // NOT added to the simulation for this state - see BuildShadow). Called once per physics step
+    // (pre-step) for the player's wheelmodel shadow. Structure mirrors spring_wheel's ODE
+    // OnWheelContacts, with Jolt CollideShape providing the manifold and an added suspension DOF
+    // (spring_wheel got travel from ODE's Hinge2; here there's no wheel body so it's explicit):
+    //   chassis --[soft suspension spring k_susp]-- wheel --[stiff tyre spring k_t]-- ground
+    // The chassis feels the SOFT suspension force (normal) + the wheelmodel FRICTION (perp); the
+    // stiff tyre force drives the wheel DOF. So ride height/travel is governed by the soft spring
+    // (nice travel) while the tyre/Pacejka model still owns grip, obstacles and climb.
+    static void StepWheelModel(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label, float dt) {
+        namespace wm = kraken::fix::wheelmodel;
+        JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+        if (physics == nullptr || state.constraint == nullptr || vehicle == nullptr || dt <= 1e-6f)
+            return;
+
+        const kraken::Config& cfg = kraken::Config::Instance();
+        const wm::WMParams P = WheelModelParamsFromConfig();
+        JPH::BodyInterface& bi = physics->GetBodyInterface();
+
+        const JPH::RMat44 chassisXform = bi.GetWorldTransform(state.bodyId);
+        const JPH::Quat   chassisRot   = bi.GetRotation(state.bodyId);
+        const JPH::RVec3  comW         = bi.GetCenterOfMassPosition(state.bodyId);
+        const JPH::Vec3   vLin         = bi.GetLinearVelocity(state.bodyId);
+        const JPH::Vec3   vAng         = bi.GetAngularVelocity(state.bodyId);
+
+        const wm::vec3 UP{0.0f, 1.0f, 0.0f};
+        const uint32_t numWheels = std::max<uint32_t>(vehicle->GetNumWheels(), 1);
+        const float m       = vehicle->GetMass() / (float) numWheels; // per-corner sprung mass
+        const float gAbs    = std::max(std::fabs(kraken::Config::Instance().gravity.value), 0.1f);
+        const float maxForce = cfg.jolt_wm_max_g.value * m * gAbs;
+        const float kSusp   = cfg.jolt_wm_susp_stiffness.value;
+        const float cSusp   = cfg.jolt_wm_susp_damping.value;
+        const float travel  = cfg.jolt_wm_susp_travel.value;
+        const float mUnsprung = std::max(cfg.jolt_wm_unsprung_mass.value, 0.5f);
+        const bool  ownSpin = cfg.jolt_wm_own_spin.value != 0;
+        const float driveTq = cfg.jolt_wm_drive_torque.value;
+        const float reactScale = cfg.jolt_wm_react_scale.value;
+
+        // Drive intent: m_realThrottle, the SAME field the working VehicleConstraint path feeds
+        // to Jolt (UpdateShadowInputs) - it's what the game's _KeepThrottle actually populates
+        // each frame (raw m_throttle reads 0 at this pre-step point, so the wheels never got
+        // drive torque - the vehicle only coasted). It folds braking in as a large negative
+        // (throttle - sign(rpm)*brake*10), but that's harmless here: at rest the handbrake locks
+        // omega=0 outright, and the separate brake-decay below dominates during service braking.
+        const float throttle = std::clamp(vehicle->m_realThrottle, -1.0f, 1.0f);
+        const float brake    = std::clamp(vehicle->m_brake, 0.0f, 1.0f);
+        const bool  handBrake = vehicle->m_bHandBrake;
+        const float steer    = std::clamp(vehicle->m_steerRadians, -kApproxMaxSteerAngleRadians, kApproxMaxSteerAngleRadians);
+
+        const JPH::BroadPhaseLayerFilter& bpFilter   = physics->GetDefaultBroadPhaseLayerFilter(kWheelQueryLayer);
+        const JPH::DefaultObjectLayerFilter objFilter = physics->GetDefaultLayerFilter(kWheelQueryLayer);
+
+        const JPH::Wheels& wheels = state.constraint->GetWheels();
+        const size_t nw = std::min(wheels.size(), state.wmSuspLen.size());
+        for (size_t i = 0; i < nw; ++i) {
+            const JPH::Wheel* jwheel = wheels[i];
+            const JPH::WheelSettings* s = jwheel ? jwheel->GetSettings() : nullptr;
+            if (s == nullptr) continue;
+            hta::ai::Wheel* hw = (i < state.wheelOrder.size()) ? state.wheelOrder[i] : nullptr;
+            const bool driven   = hw && hw->m_driven;
+            const bool steerable = hw && (hw->m_steering != hta::ai::Wheel::STEERING_NO);
+
+            const float R   = s->mRadius;
+            const float tau = std::min(cfg.jolt_wm_tyre_thickness.value, R * 0.9f);
+
+            // --- wheel frame (world) ---
+            const JPH::RVec3 attach   = chassisXform * s->mPosition;
+            const JPH::Vec3  suspDir  = chassisXform.Multiply3x3(s->mSuspensionDirection).Normalized(); // down
+            const JPH::RVec3 wheelC   = attach + suspDir * state.wmSuspLen[i];
+            const wm::vec3   c{ (float) wheelC.GetX(), (float) wheelC.GetY(), (float) wheelC.GetZ() };
+
+            // axle â for wheelmodel_core's convention: the rolling tangent is t=â×n, which must
+            // point in the wheel's FORWARD direction. up x forward gives +X (for +Z fwd/+Y up),
+            // and (+X) x (+Y up) = +Z = forward - matching wheelmodel_core's own SelfTest case 3.
+            // (Jolt's GetWheelLocalBasis "right" = forward x up = -X gives t=-Z, which drove the
+            // vehicle backwards in the first bring-up.)
+            JPH::Vec3 localAxle = s->mWheelUp.Cross(s->mWheelForward).Normalized();
+            if (steerable && std::fabs(steer) > 1e-4f)
+                localAxle = JPH::Quat::sRotation(s->mSteeringAxis, steer) * localAxle;
+            const JPH::Vec3 wAxleV = (chassisRot * localAxle).Normalized();
+            const wm::vec3  a{ wAxleV.GetX(), wAxleV.GetY(), wAxleV.GetZ() };
+
+            // --- spin DOF (§5). own_spin: throttle drive torque - friction reaction, torque-limited ---
+            float& omega = state.wmOmega[i];
+
+            // --- manifold: wheel sphere vs static world ---
+            JPH::SphereShape sphere(R);
+            sphere.SetEmbedded();
+            JPH::CollideShapeSettings csSettings;
+            csSettings.mMaxSeparationDistance = tau;
+            JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
+            physics->GetNarrowPhaseQuery().CollideShape(&sphere, JPH::Vec3::sReplicate(1.0f),
+                JPH::RMat44::sTranslation(wheelC), csSettings, JPH::RVec3::sZero(), collector, bpFilter, objFilter);
+
+            constexpr int kMaxC = 16;
+            wm::WMContact cts[kMaxC];
+            wm::WMGeom    gm[kMaxC];
+            const int n = std::min((int) collector.mHits.size(), kMaxC);
+            for (int h = 0; h < n; ++h) {
+                const JPH::CollideShapeResult& r = collector.mHits[(size_t) h];
+                const JPH::Vec3 nrm = (-r.mPenetrationAxis).Normalized();
+                cts[h].p = { (float) r.mContactPointOn2.GetX(), (float) r.mContactPointOn2.GetY(), (float) r.mContactPointOn2.GetZ() };
+                cts[h].n = { nrm.GetX(), nrm.GetY(), nrm.GetZ() };
+                cts[h].depth = r.mPenetrationDepth;
+                gm[h] = wm::ComputeGeom(cts[h], c, UP, a, R, R);
+            }
+            wm::WMSlots slots = wm::Classify(gm, n);
+
+            auto vpAt = [&](const wm::vec3& p) {
+                const JPH::Vec3 rr(p.x - (float) comW.GetX(), p.y - (float) comW.GetY(), p.z - (float) comW.GetZ());
+                const JPH::Vec3 v = vLin + vAng.Cross(rr);
+                return wm::vec3{ v.GetX(), v.GetY(), v.GetZ() };
+            };
+            auto finite3 = [](const wm::vec3& v) { return v.x==v.x && v.y==v.y && v.z==v.z && wm::Len(v) < 1e18f; };
+
+            // spin: integrate BEFORE the force eval so friction sees this frame's omega.
+            // Drive torque spins up; brake decays toward 0 (never reverses); clamp to a sane
+            // range so a transient can't run it away (the first bring-up hit omega=817 from a
+            // sign bug here). Friction reaction is added AFTER the force eval below.
+            constexpr float kMaxOmega = 250.0f; // rad/s; ~200 m/s at R=0.8, generously above any real wheel
+            // handbrake (or a fully-locked service brake) pins the wheel: omega=0 so the tyre
+            // patch is fully sliding vs the ground = maximum Pacejka resisting friction, which is
+            // what actually holds a parked car on a slope. Without this the wheel rolls free and
+            // the vehicle coasts downhill even "parked" (the first bring-up slid 8m at rest).
+            if (handBrake) {
+                omega = 0.0f;
+            } else if (ownSpin) {
+                const float I = std::max(P.inertia, 1e-3f);
+                const float tauDrive = driven ? throttle * driveTq : 0.0f;
+                omega += tauDrive / I * dt;
+                if (brake > 0.0f)
+                    omega -= omega * std::min(1.0f, brake * 4.0f * dt); // brake as decay toward 0
+                omega = std::clamp(omega, -kMaxOmega, kMaxOmega);
+            }
+
+            wm::WMForce fG = (slots.ground   >= 0) ? wm::GeneralizedContactForce(cts[slots.ground].p,   cts[slots.ground].n,   gm[slots.ground].pen,   gm[slots.ground].wr, c, a, vpAt(cts[slots.ground].p),   omega, R, tau, m, dt, P) : wm::WMForce();
+            wm::WMForce fO = (slots.obstacle >= 0) ? wm::GeneralizedContactForce(cts[slots.obstacle].p, cts[slots.obstacle].n, gm[slots.obstacle].pen, gm[slots.obstacle].wr, c, a, vpAt(cts[slots.obstacle].p), omega, R, tau, m, dt, P) : wm::WMForce();
+            wm::WMForce fS = (slots.side     >= 0) ? wm::GeneralizedContactForce(cts[slots.side].p,     cts[slots.side].n,     gm[slots.side].pen,     gm[slots.side].wl, c, a, vpAt(cts[slots.side].p),     omega, R, tau, m, dt, P) : wm::WMForce();
+
+            // --- suspension travel DOF: the ground tyre force (stiff) drives the wheel; a soft
+            // spring transmits to the chassis, so ride height is governed by k_susp (travel). ---
+            const wm::vec3 downW{ suspDir.GetX(), suspDir.GetY(), suspDir.GetZ() };
+            const float normalLoad = std::max(0.0f, -wm::Dot(fG.F, downW)); // tyre force component pushing the wheel UP
+            // Compression measured from the per-wheel REST length (raycast-init, wheel on ground),
+            // NOT from full droop - so comp=0 at spawn (no launch) and settles to the tiny static
+            // value weight/kSusp under load. comp<0 = drooped (wheel reaching below rest, airborne).
+            const float restLen = state.wmRestLen[i];
+            const float maxLen  = s->mSuspensionMaxLength;
+            float comp    = restLen - state.wmSuspLen[i];
+            float compVel = state.wmSuspVel[i];
+            // chassis support: only the compressed spring pushes up (a drooped strut just hangs)
+            const float suspForce = std::max(0.0f, kSusp * std::max(comp, 0.0f) + cSusp * compVel);
+            // wheel DOF: tyre pushes wheel up (increase comp), spring resists; integrate (semi-implicit)
+            const float accel = (normalLoad - (kSusp * comp + cSusp * compVel)) / mUnsprung;
+            compVel += accel * dt;
+            comp    += compVel * dt;
+            const float compMin = restLen - maxLen; // most-drooped (negative)
+            const float compMax = travel;           // most-compressed
+            if (comp < compMin) { comp = compMin; if (compVel < 0.0f) compVel = 0.0f; }
+            if (comp > compMax) { comp = compMax; if (compVel > 0.0f) compVel = 0.0f; }
+            state.wmSuspVel[i] = compVel;
+            state.wmSuspLen[i] = restLen - comp;
+
+            // spin reaction from ground friction (couples traction<->spin) for next step
+            if (ownSpin && !handBrake && reactScale > 0.0f && slots.ground >= 0) {
+                const wm::vec3 nG = cts[slots.ground].n;
+                const wm::vec3 Ft = fG.F - nG * wm::Dot(fG.F, nG); // friction (tangential) part
+                const wm::vec3 rC = cts[slots.ground].p - c;
+                const float tSpin = wm::Dot(wm::Cross(rC, Ft), a) * reactScale;
+                const float I = std::max(P.inertia, 1e-3f);
+                omega += tSpin / I * dt; // τ_react
+                omega = std::clamp(omega, -kMaxOmega, kMaxOmega);
+            }
+
+            // --- apply to chassis ---
+            const JPH::Vec3 upW = -suspDir;
+            // ground: soft suspension normal (up) + wheelmodel friction (perp to suspension axis)
+            if (slots.ground >= 0 && finite3(fG.F)) {
+                const wm::vec3 Fperp = fG.F - downW * wm::Dot(fG.F, downW); // remove along-suspension part
+                JPH::Vec3 fApply = upW * suspForce
+                    + JPH::Vec3(Fperp.x, Fperp.y, Fperp.z);
+                const float fl = fApply.Length();
+                if (fl > maxForce && fl > 1e-3f) fApply = fApply * (maxForce / fl);
+                const JPH::RVec3 at(cts[slots.ground].p.x, cts[slots.ground].p.y, cts[slots.ground].p.z);
+                bi.AddForce(state.bodyId, fApply, at);
+            }
+            // obstacle & side: apply the full wheelmodel force (climb/wall bracing) directly
+            auto applyDirect = [&](int idx, const wm::WMForce& fr) {
+                if (idx < 0 || !finite3(fr.F)) return;
+                JPH::Vec3 fApply(fr.F.x, fr.F.y, fr.F.z);
+                const float fl = fApply.Length();
+                if (fl > maxForce && fl > 1e-3f) fApply = fApply * (maxForce / fl);
+                const JPH::RVec3 at(cts[idx].p.x, cts[idx].p.y, cts[idx].p.z);
+                bi.AddForce(state.bodyId, fApply, at);
+            };
+            applyDirect(slots.obstacle, fO);
+            applyDirect(slots.side, fS);
+
+            if ((state.frameCounter % 30) == 0 && vehicle->m_bIsControlledByPlayer) {
+                // diagnostic: how far is real ground straight below the wheel centre? tells us
+                // whether the wheel sphere is above the terrain (chassis resting on its own shape)
+                // or buried. Also log wheelC.Y and chassis COM Y.
+                JPH::RRayCast downRay{ wheelC, JPH::Vec3(0, -20.0f, 0) };
+                JPH::RayCastResult hit;
+                const bool gHit = physics->GetNarrowPhaseQuery().CastRay(downRay, hit);
+                const float groundBelow = gHit ? 20.0f * hit.mFraction : -1.0f;
+                const JPH::Vec3 fwdW = chassisRot * JPH::Vec3(0, 0, 1); // vehicle forward in world
+                LOG_INFO("docs §39.2: wm apply (%s) w=%zu drv=%d n=%d gSlot=%d pen=%.3f comp=%.3f suspF=%.0f omega=%.1f thr=%.2f fwd=(%.2f,%.2f,%.2f) Fg=(%.0f,%.0f,%.0f) fpar=%.0f",
+                    label, i, driven?1:0, n, slots.ground, (double)(slots.ground>=0?gm[slots.ground].pen:0.0f), (double) comp, (double) suspForce,
+                    (double) omega, (double) throttle, (double) fwdW.GetX(), (double) fwdW.GetY(), (double) fwdW.GetZ(),
+                    (double) fG.F.x, (double) fG.F.y, (double) fG.F.z, (double) fG.fpar_w);
+            }
+        }
+    }
+
     static void LogWheelState(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label) {
         if (state.constraint == nullptr)
             return;
+
+        // docs §39.1: read-only wheelmodel_core evaluation on the live Jolt world (see its
+        // comment). Only in log-only mode (jolt_wheelmodel==1); in apply mode (==2) StepWheelModel
+        // does its own §39.2 logging and there's no live VehicleConstraint pose to read here.
+        if (kraken::Config::Instance().jolt_wheelmodel.value == 1)
+            LogWheelModelEval(vehicle, state, label);
 
         // docs §23.6: the exact same fields UpdateShadowInputs feeds into SetDriverInput -
         // logged once here so a frozen-wheel report can be checked against real input state
@@ -1210,6 +1632,45 @@ namespace kraken::fix::joltshadow {
             LOG_INFO("docs §23.5: wheel state (%s) wheel=%zu contact=%d suspLen=%.3f (range %.3f-%.3f, %.0f%% compressed) angVel=%.2f",
                 label, i, wheel->HasContact() ? 1 : 0, (double) len, (double) minLen, (double) maxLen,
                 (double) compressionPct, (double) wheel->GetAngularVelocity());
+
+            // docs §38.11: validating WHY cylinder-cast underperformed vs ray. Three competing
+            // hypotheses, distinguished here in one shot (this runs on whatever tester is active,
+            // but the two decisive signals - what surface the wheel sits on, and the wheel's
+            // world axle orientation - are tester-independent):
+            //  (1) trimesh: is the contact body a Mesh (road) or HeightField (terrain)? shape
+            //      sub-type answers directly. Cylinder shape-casts are known to be flakier vs
+            //      arbitrary Mesh than vs a HeightField.
+            //  (2) wrong wheel axes: cylinder uses mWheelUp/mWheelForward (set by an unverified
+            //      Y-up/Z-forward convention); ray ignores them. If the axle isn't ~horizontal on
+            //      a level chassis, or the contact normal is wild, the wheel basis is off.
+            //  (3) over-tip feedback loop: contact fine at rest, degrades as pitch grows.
+            if (settings != nullptr) {
+                JPH::PhysicsSystem* diagPhysics = kraken::fix::jolt::GetPhysicsSystem();
+                if (diagPhysics != nullptr) {
+                    const JPH::Quat chassisRot = diagPhysics->GetBodyInterface().GetRotation(state.bodyId);
+                    // axle (wheel rotation axis) in chassis-local space, per GetWheelLocalBasis:
+                    // right = forward x up, normalized. Transform to world.
+                    const JPH::Vec3 localAxle = settings->mWheelForward.Cross(settings->mWheelUp).Normalized();
+                    const JPH::Vec3 worldAxle = (chassisRot * localAxle).Normalized();
+                    if (wheel->HasContact()) {
+                        const JPH::Vec3 n = wheel->GetContactNormal();
+                        const char* surf = "other";
+                        JPH::Body* cb = diagPhysics->GetBodyLockInterfaceNoLock().TryGetBody(wheel->GetContactBodyID());
+                        if (cb != nullptr && cb->GetShape() != nullptr) {
+                            const JPH::EShapeSubType st = cb->GetShape()->GetSubType();
+                            surf = (st == JPH::EShapeSubType::HeightField) ? "HeightField"
+                                 : (st == JPH::EShapeSubType::Mesh)        ? "Mesh"
+                                 : "other";
+                        }
+                        LOG_INFO("docs §38.11: wheel=%zu ON surface=%s contactNormal=(%.3f,%.3f,%.3f) worldAxle=(%.3f,%.3f,%.3f)",
+                            i, surf, (double) n.GetX(), (double) n.GetY(), (double) n.GetZ(),
+                            (double) worldAxle.GetX(), (double) worldAxle.GetY(), (double) worldAxle.GetZ());
+                    } else {
+                        LOG_INFO("docs §38.11: wheel=%zu NO contact, worldAxle=(%.3f,%.3f,%.3f)",
+                            i, (double) worldAxle.GetX(), (double) worldAxle.GetY(), (double) worldAxle.GetZ());
+                    }
+                }
+            }
 
             if (!wheel->HasContact())
                 LogNoContactRaycastDiagnostic(kraken::fix::jolt::GetPhysicsSystem(), state.bodyId, wheel, label, i);
@@ -1726,7 +2187,7 @@ namespace kraken::fix::joltshadow {
     // after a level load before the vehicle's data is fully ready) - same semantics as the old
     // combined function's early return: the caller simply skips this vehicle for this frame and
     // retries on the next one, no state is left half-initialized.
-    static bool UpdateOneVehiclePreStep(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label, uint32_t collisionGroupId) {
+    static bool UpdateOneVehiclePreStep(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label, uint32_t collisionGroupId, float dt) {
         // Rebuilds on a vehicle swap (level reload, vehicle switch), a tuning-parameter change
         // (g_tuningGeneration bumped by SetTuningOverride - the autotuner uses this to apply a
         // new candidate suspension/friction set between trials without needing to recreate
@@ -1749,6 +2210,14 @@ namespace kraken::fix::joltshadow {
             state.frameCounter = 0;
         }
 
+        // docs §39.2: wheelmodel APPLY path drives the chassis itself (no VehicleConstraint,
+        // no proxy, no constraint driver input) - the forces must be applied BEFORE this frame's
+        // single StepPhysicsProfiled (pass 2), so it happens here in the pre-step.
+        if (state.wheelModelMode) {
+            StepWheelModel(vehicle, state, label, dt);
+            return true;
+        }
+
         TryBuildWheelProxiesOnceSettled(kraken::fix::jolt::GetPhysicsSystem(), state, label);
         UpdateShadowInputs(vehicle, state);
         return true;
@@ -1758,7 +2227,10 @@ namespace kraken::fix::joltshadow {
     // UpdateShadow's single shared StepPhysicsProfiled call for this frame. Only called for
     // vehicles whose pre-step returned true.
     static void UpdateOneVehiclePostStep(hta::ai::Vehicle* vehicle, ShadowState& state, bool allowApply, const char* label) {
-        if (allowApply)
+        // docs §39.2: wheelmodel mode has no VehicleConstraint, so the constraint-driven
+        // Jolt->ODE writeback (ApplyJoltToVehicle) can't run - it's a pure shadow for now
+        // (evaluate the model's own behaviour vs ODE; writeback is a later step).
+        if (allowApply && !state.wheelModelMode)
             ApplyJoltToVehicleProfiled(vehicle, state, label);
         AccumulateForAutotune(vehicle, state);
 
@@ -2613,7 +3085,7 @@ namespace kraken::fix::joltshadow {
 
         // --- Pass 1 (pre-step) ---
         if (playerVehicle != nullptr)
-            playerLive = UpdateOneVehiclePreStep(playerVehicle, g_playerShadow, "player", 0);
+            playerLive = UpdateOneVehiclePreStep(playerVehicle, g_playerShadow, "player", 0, elapsedTime);
 
         for (size_t i = 0; i < aiShadowCount; ++i) {
             std::snprintf(aiLabels[i], sizeof(aiLabels[i]), "ai%zu", i);
@@ -2621,7 +3093,7 @@ namespace kraken::fix::joltshadow {
             // a stable, distinct GroupID per vehicle so GetWheelProxyGroupFilter's shared table
             // only ever suppresses a vehicle's own chassis-vs-own-proxy pairs, never cross-
             // vehicle ones (see its comment).
-            aiLive[i] = UpdateOneVehiclePreStep(g_aiTargets[i], g_aiShadows[i], aiLabels[i], static_cast<uint32_t>(i) + 1);
+            aiLive[i] = UpdateOneVehiclePreStep(g_aiTargets[i], g_aiShadows[i], aiLabels[i], static_cast<uint32_t>(i) + 1, elapsedTime);
         }
 
         // --- Pass 2: step the shared PhysicsSystem exactly once ---
@@ -2937,10 +3409,56 @@ namespace kraken::fix::joltshadow {
         LOG_INFO("docs §23.4: ram-damage diagnostic installed (ai::CalcDamageToVehicles @ 0x0088F700)");
     }
 
+    // docs §39: sanity-check the ported wheelmodel_core math in this build - a subset of
+    // spring_wheel's own wheelmodel::SelfTest, using ONLY the engine-agnostic core (no ODE, no
+    // Jolt). Confirms the pure force routine compiles and behaves before it's wired into the
+    // Jolt vehicle. Cases mirror wheel_model.md §6: flat ground -> vertical normal force only;
+    // degenerate side (n parallel to axle) -> normal push only; wall/step -> vertical rolling
+    // tangent so a spinning wheel produces climb; classify -> ground vs obstacle land in
+    // distinct slots.
+    static void WheelModelSelfTest() {
+        using namespace kraken::fix::wheelmodel;
+        WMParams P;
+        const float dt = 1.0f / 120.0f, R = 0.5f, tau = 0.1f, m = 500.0f;
+        auto az = [](float v, float tol) { return std::fabs(v) < tol; };
+        bool ok = true;
+
+        { // Case 1 - flat ground: vertical F only, F_n = k_t*pen
+            const vec3 c{0,0,0}, a{1,0,0}, n{0,1,0}, p{0,-R,0};
+            WMForce f = GeneralizedContactForce(p, n, 0.02f, 1.0f, c, a, vec3{}, 0.0f, R, tau, m, dt, P);
+            const bool pass = f.F.y > 0.0f && az(f.F.x,1.0f) && az(f.F.z,1.0f) && az(f.fpar_w,1e-3f)
+                && std::fabs(f.F.y - P.k_t*0.02f) < 1.0f;
+            LOG_INFO("docs §39 SelfTest[1] flat: F=(%.1f,%.1f,%.1f) -> %s", f.F.x, f.F.y, f.F.z, pass?"PASS":"FAIL");
+            ok = ok && pass;
+        }
+        { // Case 3 - wall/step: rolling tangent vertical, spinning wheel climbs
+            const vec3 c{0,0,0}, a{1,0,0}, n{0,0,1}, p{0,0,0.5f};
+            WMForce f = GeneralizedContactForce(p, n, 0.03f, 1.0f, c, a, vec3{}, 40.0f, R, tau, m, dt, P);
+            const bool pass = std::fabs(f.fpar_w) > 1e-3f && std::fabs(f.F.y) > 1.0f;
+            LOG_INFO("docs §39 SelfTest[3] wall-climb: F=(%.1f,%.1f,%.1f) fpar=%.2f -> %s", f.F.x, f.F.y, f.F.z, f.fpar_w, pass?"PASS":"FAIL");
+            ok = ok && pass;
+        }
+        { // Case 4 - classify ground vs wall into distinct slots
+            WMContact cts[2];
+            cts[0].p = vec3{0,-R,0}; cts[0].n = vec3{0,1,0}; cts[0].depth = 0.02f;
+            cts[1].p = vec3{0,0,R};  cts[1].n = vec3{0,0,1}; cts[1].depth = 0.03f;
+            const vec3 c{0,0,0}, u{0,1,0}, a{1,0,0};
+            WMGeom gm[2];
+            for (int i = 0; i < 2; ++i) gm[i] = ComputeGeom(cts[i], c, u, a, R, 0.15f);
+            WMSlots s = Classify(gm, 2);
+            const bool pass = s.ground == 0 && s.obstacle == 1;
+            LOG_INFO("docs §39 SelfTest[4] classify: ground=%d obstacle=%d -> %s", s.ground, s.obstacle, pass?"PASS":"FAIL");
+            ok = ok && pass;
+        }
+        LOG_INFO("docs §39 wheelmodel_core SelfTest overall: %s", ok ? "PASS" : "FAIL");
+    }
+
     void Apply() {
         const kraken::Config& config = kraken::Config::Instance();
         if (config.jolt.value == 0 || config.jolt_shadow.value == 0)
             return;
+
+        WheelModelSelfTest();
 
         if (kraken::fix::jolt::GetPhysicsSystem() == nullptr) {
             LOG_ERROR("Feature enabled but Jolt PhysicsSystem is not initialized ([jolt] enabled=1 is required) - skipping");
