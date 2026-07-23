@@ -1489,8 +1489,6 @@ namespace kraken::fix::joltshadow {
         const float m       = vehicle->GetMass() / (float) numWheels; // per-corner sprung mass
         const float gAbs    = std::max(std::fabs(kraken::Config::Instance().gravity.value), 0.1f);
         const float maxForce = cfg.jolt_wm_max_g.value * m * gAbs;
-        const float kSusp   = cfg.jolt_wm_susp_stiffness.value;
-        const float cSusp   = cfg.jolt_wm_susp_damping.value;
         const float travel  = cfg.jolt_wm_susp_travel.value;
         const float mUnsprung = std::max(cfg.jolt_wm_unsprung_mass.value, 0.5f);
         const bool  ownSpin = cfg.jolt_wm_own_spin.value != 0;
@@ -1609,6 +1607,19 @@ namespace kraken::fix::joltshadow {
 
             // --- suspension travel DOF: the ground tyre force (stiff) drives the wheel; a soft
             // spring transmits to the chassis, so ride height is governed by k_susp (travel). ---
+            // docs §42.5: kSusp/cSusp now read PER-WHEEL from s->mSuspensionSpring - the REAL
+            // ODE CFM/ERP-derived stiffness/damping (docs §31's derivation, computed earlier in
+            // BuildShadow for the VehicleConstraint that's built-but-not-simulated in wheelmodel
+            // mode - see the big comment there) - instead of one flat jolt_wm_susp_stiffness/
+            // damping constant shared by all 4 wheels. Found while chasing a real (if less
+            // dramatic than first thought - see docs §42.5) difference from ODE: Jolt's own
+            // absolute chassis pitch swung -24..+53deg over rough terrain vs real ODE's 6-40deg
+            // over the same window - noticeably more violent, never previously explained. An
+            // arbitrary one-size-fits-all spring can't reproduce how a real vehicle's front/rear
+            // (often differently-tuned) suspensions jointly damp pitch impulses from bumps; the
+            // per-wheel real data can, since it already varies wheel-to-wheel same as real ODE.
+            const float kSusp = s->mSuspensionSpring.mStiffness;
+            const float cSusp = s->mSuspensionSpring.mDamping;
             const wm::vec3 downW{ suspDir.GetX(), suspDir.GetY(), suspDir.GetZ() };
             const float normalLoad = std::max(0.0f, -wm::Dot(fG.F, downW)); // tyre force component pushing the wheel UP
             // Compression measured from the per-wheel REST length (raycast-init, wheel on ground),

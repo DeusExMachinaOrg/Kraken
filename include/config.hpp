@@ -128,8 +128,10 @@ namespace kraken {
         // design that was never built), all removed rather than left as dead/unused knobs.
         ConfigValue<float>                    jolt_wm_max_g;
         // docs §39: my suspension travel DOF (spring_wheel used ODE's Hinge2 for this; the Jolt port has no wheel body so models it explicitly).
-        ConfigValue<float>                    jolt_wm_susp_stiffness;     // k_susp (N/m) soft suspension spring (gives ride travel; series with the stiff tyre)
-        ConfigValue<float>                    jolt_wm_susp_damping;       // c_susp (N.s/m) suspension damper
+        // docs §42.5: stiffness/damping are no longer flat config knobs - read PER-WHEEL from
+        // the real CFM/ERP-derived s->mSuspensionSpring (see StepWheelModel), same real data
+        // §31 already computes for the VehicleConstraint built (but not simulated) in wheelmodel
+        // mode. jolt_wm_susp_stiffness/damping removed rather than left as dead/unused knobs.
         ConfigValue<float>                    jolt_wm_susp_travel;        // max suspension travel (m)
         ConfigValue<float>                    jolt_wm_unsprung_mass;      // effective wheel-side mass for the DOF integrator (kg)
         ConfigValue<float>                    jolt_friction_long;
