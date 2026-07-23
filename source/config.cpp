@@ -78,9 +78,6 @@ namespace kraken {
         this->jolt_wm_wheel_inertia              = { "wheelmodel","wheel_inertia",    30.0f,     true, 0.001f,   10000.0f};
         this->jolt_wm_react_scale                = { "wheelmodel","react_scale",      1.0f,      true, 0.0f,     10.0f   };
         this->jolt_wm_own_spin                   = { "wheelmodel","own_spin",         1,         true, 0,        1       };
-        this->jolt_wm_motor_gain                 = { "wheelmodel","motor_gain",       200.0f,    true, 0.0f,     1e6f    };
-        this->jolt_wm_drive_torque               = { "wheelmodel","drive_torque",     250.0f,    true, 0.0f,     1e7f    };
-        this->jolt_wm_torque_falloff_omega       = { "wheelmodel","torque_falloff_omega", 60.0f,  true, 1.0f,     1000.0f };
         this->jolt_wm_max_g                      = { "wheelmodel","max_g",            6.0f,      true, 1.0f,     100.0f  };
         this->jolt_wm_susp_stiffness             = { "wheelmodel","susp_stiffness",   30000.0f,  true, 1.0f,     1e8f    };
         this->jolt_wm_susp_damping               = { "wheelmodel","susp_damping",     3000.0f,   true, 0.0f,     1e7f    };
@@ -187,9 +184,6 @@ namespace kraken {
         this->LoadValue(&this->jolt_wm_wheel_inertia);
         this->LoadValue(&this->jolt_wm_react_scale);
         this->LoadValue(&this->jolt_wm_own_spin);
-        this->LoadValue(&this->jolt_wm_motor_gain);
-        this->LoadValue(&this->jolt_wm_drive_torque);
-        this->LoadValue(&this->jolt_wm_torque_falloff_omega);
         this->LoadValue(&this->jolt_wm_max_g);
         this->LoadValue(&this->jolt_wm_susp_stiffness);
         this->LoadValue(&this->jolt_wm_susp_damping);
@@ -274,9 +268,6 @@ namespace kraken {
         this->DumpValue(&this->jolt_wm_wheel_inertia);
         this->DumpValue(&this->jolt_wm_react_scale);
         this->DumpValue(&this->jolt_wm_own_spin);
-        this->DumpValue(&this->jolt_wm_motor_gain);
-        this->DumpValue(&this->jolt_wm_drive_torque);
-        this->DumpValue(&this->jolt_wm_torque_falloff_omega);
         this->DumpValue(&this->jolt_wm_max_g);
         this->DumpValue(&this->jolt_wm_susp_stiffness);
         this->DumpValue(&this->jolt_wm_susp_damping);
