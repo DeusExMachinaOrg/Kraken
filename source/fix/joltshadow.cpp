@@ -1524,6 +1524,20 @@ namespace kraken::fix::joltshadow {
             const bool driven   = hw && hw->m_driven;
             const bool steerable = hw && (hw->m_steering != hta::ai::Wheel::STEERING_NO);
 
+            // docs §42.9: real per-wheel-type friction multiplier (WheelPrototypeInfo::m_mU,
+            // vehicleparts.xml) - the SAME field the other (VehicleConstraint-based) Jolt path
+            // already reads (see SetTireMaxImpulseCallback above) to scale ODE's real
+            // mu_from_kappa curve, but wheelmodel's own Pacejka grip (P.mu, "grip" in
+            // kraken.ini) was a single flat value shared by every wheel of every vehicle -
+            // never varying per wheel type like the real game does. Scale a per-wheel COPY of
+            // WMParams rather than touching the shared P (grip stays the base/reference value;
+            // m_mU=1.0 for most wheels, so this is a no-op for the common case, matching how
+            // the other path already behaves).
+            const hta::ai::WheelPrototypeInfo* wheelProto = hw ? hw->GetPrototypeInfo() : nullptr;
+            const float wheelMuReal = wheelProto ? wheelProto->m_mU : 1.0f;
+            wm::WMParams Pw = P;
+            Pw.mu = P.mu * wheelMuReal;
+
             const float R   = s->mRadius;
             const float tau = std::min(cfg.jolt_wm_tyre_thickness.value, R * 0.9f);
 
@@ -1601,9 +1615,9 @@ namespace kraken::fix::joltshadow {
                 omega = std::clamp(omega, -kMaxOmega, kMaxOmega);
             }
 
-            wm::WMForce fG = (slots.ground   >= 0) ? wm::GeneralizedContactForce(cts[slots.ground].p,   cts[slots.ground].n,   gm[slots.ground].pen,   gm[slots.ground].wr, c, a, vpAt(cts[slots.ground].p),   omega, R, tau, m, dt, P) : wm::WMForce();
-            wm::WMForce fO = (slots.obstacle >= 0) ? wm::GeneralizedContactForce(cts[slots.obstacle].p, cts[slots.obstacle].n, gm[slots.obstacle].pen, gm[slots.obstacle].wr, c, a, vpAt(cts[slots.obstacle].p), omega, R, tau, m, dt, P) : wm::WMForce();
-            wm::WMForce fS = (slots.side     >= 0) ? wm::GeneralizedContactForce(cts[slots.side].p,     cts[slots.side].n,     gm[slots.side].pen,     gm[slots.side].wl, c, a, vpAt(cts[slots.side].p),     omega, R, tau, m, dt, P) : wm::WMForce();
+            wm::WMForce fG = (slots.ground   >= 0) ? wm::GeneralizedContactForce(cts[slots.ground].p,   cts[slots.ground].n,   gm[slots.ground].pen,   gm[slots.ground].wr, c, a, vpAt(cts[slots.ground].p),   omega, R, tau, m, dt, Pw) : wm::WMForce();
+            wm::WMForce fO = (slots.obstacle >= 0) ? wm::GeneralizedContactForce(cts[slots.obstacle].p, cts[slots.obstacle].n, gm[slots.obstacle].pen, gm[slots.obstacle].wr, c, a, vpAt(cts[slots.obstacle].p), omega, R, tau, m, dt, Pw) : wm::WMForce();
+            wm::WMForce fS = (slots.side     >= 0) ? wm::GeneralizedContactForce(cts[slots.side].p,     cts[slots.side].n,     gm[slots.side].pen,     gm[slots.side].wl, c, a, vpAt(cts[slots.side].p),     omega, R, tau, m, dt, Pw) : wm::WMForce();
 
             // --- suspension travel DOF: the ground tyre force (stiff) drives the wheel; a soft
             // spring transmits to the chassis, so ride height is governed by k_susp (travel). ---
@@ -1693,11 +1707,11 @@ namespace kraken::fix::joltshadow {
                 const bool gHit = physics->GetNarrowPhaseQuery().CastRay(downRay, hit);
                 const float groundBelow = gHit ? 20.0f * hit.mFraction : -1.0f;
                 const JPH::Vec3 fwdW = chassisRot * JPH::Vec3(0, 0, 1); // vehicle forward in world
-                LOG_INFO("docs §41: wm apply (%s) w=%zu drv=%d n=%d gSlot=%d pen=%.3f comp=%.3f suspF=%.0f omega=%.1f thr=%.2f fwd=(%.2f,%.2f,%.2f) Fg=(%.0f,%.0f,%.0f) fpar=%.0f gear=%d rpm=%.0f maxTq=%.0f",
+                LOG_INFO("docs §42.9: wm apply (%s) w=%zu drv=%d n=%d gSlot=%d pen=%.3f comp=%.3f suspF=%.0f omega=%.1f thr=%.2f fwd=(%.2f,%.2f,%.2f) Fg=(%.0f,%.0f,%.0f) fpar=%.0f gear=%d rpm=%.0f maxTq=%.0f muReal=%.3f",
                     label, i, driven?1:0, n, slots.ground, (double)(slots.ground>=0?gm[slots.ground].pen:0.0f), (double) comp, (double) suspForce,
                     (double) omega, (double) throttle, (double) fwdW.GetX(), (double) fwdW.GetY(), (double) fwdW.GetZ(),
                     (double) fG.F.x, (double) fG.F.y, (double) fG.F.z, (double) fG.fpar_w,
-                    state.wmGear, (double) state.wmEngineRpm, (double) maxWheelTorque);
+                    state.wmGear, (double) state.wmEngineRpm, (double) maxWheelTorque, (double) wheelMuReal);
             }
         }
     }
