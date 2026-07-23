@@ -1772,8 +1772,25 @@ namespace kraken::fix::joltshadow {
                     // ~0.4-0.5 over 5 repeats vs the established 1.12-1.20 baseline) - applying it
                     // on literally every single-frame bottom-out was fighting normal bumps, not
                     // just the pathological case.
-                    if (bottomedFrames >= 2)
-                        hardStopForce = mUnsprung * compVel / dt;
+                    if (bottomedFrames >= 2) {
+                        // docs §48: found testing a second, much lighter vehicle (Bug01, ~132kg
+                        // vs Molokovoz's 167kg but with a proportionally different real kSusp/
+                        // cSusp/mUnsprung combination) that this impulse formula, left completely
+                        // uncapped, can reach genuinely pathological values - live-caught at
+                        // 87,498N (~45x that vehicle's own maxForce of 1942N) on a single wheel,
+                        // spinning the chassis through roughly 90+ degrees of yaw in about 3
+                        // seconds (fwd.x swept from -0.02 to 1.00) from one asymmetric one-wheel
+                        // impulse - not a rollover (fwd.y, the pitch component, stayed under 0.42
+                        // throughout) but still a clearly excessive, real-vehicle-implausible
+                        // kick. maxForce itself can't be reused as the cap here (that was already
+                        // shown in §44.1 to be too small to arrest a genuine hard impact - the
+                        // whole reason this impulse term exists uncapped in the first place), so
+                        // bound it at a generous multiple instead: enough headroom for any
+                        // realistic impact (10x maxForce is already a ~60g-equivalent ceiling,
+                        // vs maxForce's own 6g) while catching the actual runaway case.
+                        constexpr float kHardStopMaxForceMult = 10.0f;
+                        hardStopForce = std::min(mUnsprung * compVel / dt, maxForce * kHardStopMaxForceMult);
+                    }
                     compVel = 0.0f;
                 }
             }
