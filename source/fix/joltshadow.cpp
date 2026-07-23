@@ -216,6 +216,19 @@ namespace kraken::fix::joltshadow {
         // question: does CollideWheelAndLandscape/CollideWheelAndAsphalt use a separate path?).
         std::vector<int>  wheelBaselineJointCount;
         std::vector<bool> wheelHadExtraJointLastFrame;
+
+        // docs §38.9: wheel-proxy construction is deferred until the chassis has actually
+        // settled (see TryBuildWheelProxiesOnceSettled) rather than happening synchronously in
+        // BuildShadow - false whenever a (re)build just happened, so the deferred check knows to
+        // run again for the new chassis. collisionGroupId is stashed here so the deferred check
+        // (which runs well after BuildShadow returns) still has it on hand. consecutiveSlowFrames
+        // counts how many ticks in a row the chassis has read below the settled-speed threshold -
+        // live-measured that a single-frame check is noisy enough (a big vehicle rocking on
+        // impact can dip under the threshold for one tick, then spike back up) to occasionally
+        // call it "settled" mid-tumble, so several ticks in a row are required instead.
+        bool     wheelProxiesBuilt      = false;
+        uint32_t collisionGroupId       = 0;
+        uint32_t consecutiveSlowFrames  = 0;
     };
 
     static ShadowState              g_playerShadow;
@@ -442,13 +455,15 @@ namespace kraken::fix::joltshadow {
     // bodies/constraints on a vehicle swap caused a real, repeatable worker-thread crash
     // earlier this session).
     //
-    // Known simplification: relies on mLimitsMin keeping the proxy geometrically clear of the
-    // chassis shape rather than an explicit JPH::GroupFilterTable exclusion - not proven
-    // watertight in every possible extreme rotation; revisit if self-collision artifacts are
-    // ever observed live. Gated behind [jolt_harness] wheel_proxy (default on) so it can be
-    // disabled without a rebuild if it ever needs to be ruled out live.
+    // Self-collision against the chassis is excluded explicitly via GetWheelProxyGroupFilter
+    // (docs §38.1/§37 item 3), not just geometric separation. Gated behind [jolt_harness]
+    // wheel_proxy (default on) so it can be disabled without a rebuild if it ever needs to be
+    // ruled out live. Takes the base JPH::WheelSettings (not the WV-derived type) since it's
+    // called from TryBuildWheelProxiesOnceSettled with whatever wheel->GetSettings() returns,
+    // and every field used below (mPosition/mSuspensionDirection/mSuspensionMaxLength/mRadius)
+    // already lives on the base class.
     static void BuildWheelProxy(JPH::PhysicsSystem* physics, JPH::Body* chassisBody,
-            const JPH::WheelSettingsWV* ws, const char* label, uint32_t wheelIndex, uint32_t collisionGroupId) {
+            const JPH::WheelSettings* ws, const char* label, uint32_t wheelIndex, uint32_t collisionGroupId) {
         if (kraken::Config::Instance().jolt_wheel_proxy.value == 0)
             return;
 
@@ -519,6 +534,74 @@ namespace kraken::fix::joltshadow {
 
         LOG_INFO("Shadow (%s): wheel proxy built for wheel=%u - engages only beyond %.3fm from attachment (wheel's own raycast already covers up to there), extra reach margin %.1fm",
             label, wheelIndex, (double) reachLimit, (double) kExtraReachMargin);
+    }
+
+    // docs §38.9: BuildWheelProxy used to be called synchronously inside BuildShadow, snapshotting
+    // worldAttachPoint - and therefore the proxy's entire geometric relationship to the chassis -
+    // at whatever transform the chassis happened to have at that exact instant. Fine for a
+    // vehicle already resting on a save's terrain (every prior Scout/Molokovoz test), wrong for
+    // one that still has to fall from a mid-air spawn - confirmed live via docs §38.8's hit-body
+    // logging: a chassis that free-falls and tumbles several meters before landing (e.g. a
+    // same-session vehicle swap via ai::Player::ChangeVehicleByNew - spawning in the air and
+    // needing time to land is itself correct, existing behavior, not something to change) built
+    // its wheel-proxy geometry against a stale, airborne snapshot, and ended up permanently
+    // resting on its OWN wheel-proxy spheres instead of real terrain - wheels forever reporting
+    // no contact, throttle forever ignored. Deferring proxy construction until the chassis has
+    // actually stopped moving (checked every tick here, cheap) fixes this at the source without
+    // needing to tear down or rebuild an already-built proxy - this file's hard rule (see
+    // BuildShadow's comment below) is to never tear down a live Jolt body/constraint; delaying
+    // FIRST construction sidesteps that rule entirely instead of bending it.
+    static void TryBuildWheelProxiesOnceSettled(JPH::PhysicsSystem* physics, ShadowState& state, const char* label) {
+        if (state.wheelProxiesBuilt || state.constraint == nullptr)
+            return;
+
+        JPH::BodyInterface& bodyInterface = physics->GetBodyInterface();
+
+        // A brand new dynamic body reads a real velocity of exactly 0 before its very first
+        // physics step - gravity only gets integrated once StepPhysicsProfiled actually runs -
+        // so checking speed on frame 0 always looks "already settled" whether or not the body is
+        // about to fall. kMinFramesBeforeCheck gives it a real chance to start moving first
+        // (live-confirmed this was needed: without it, proxies built at frame=0/speed=0.000 every
+        // time, same bug as the old synchronous build just moved one tick later).
+        //
+        // docs §38.9: a single-frame speed check is noisy - live-measured a big vehicle (Ural01,
+        // falling from its mid-air swap spawn point, a real impact spike to 12.3m/s before
+        // decaying) rocking on impact and dipping under the threshold for one tick before
+        // spiking back up, which was enough to call it "settled" mid-tumble and reproduce the
+        // exact frozen-shadow bug this whole mechanism exists to avoid. Requiring several
+        // consecutive under-threshold ticks (not just one) fixed that. Run-to-run variance in
+        // how long the SAME fall actually takes to settle was also larger than expected (453
+        // frames one run, still >900 and 1.4m/s on a later run) - kSettleTimeoutFrames is
+        // generous specifically so the real (consecutive-ticks) condition is what fires in
+        // practice; the timeout is a last-resort backstop, not the common path.
+        constexpr uint64_t kMinFramesBeforeCheck    = 15;   // ~0.25s at this level's observed ~90-100Hz tick rate
+        constexpr float    kSettledSpeedMps         = 0.5f;
+        constexpr uint32_t kRequiredConsecutiveSlow = 30;   // ~0.3-0.5s of sustained low speed, not just one lucky tick
+        constexpr uint64_t kSettleTimeoutFrames     = 3600; // ~40-60s - backstop, should rarely if ever actually fire
+        if (state.frameCounter < kMinFramesBeforeCheck)
+            return;
+
+        const float speed = bodyInterface.GetLinearVelocity(state.bodyId).Length();
+        state.consecutiveSlowFrames = (speed < kSettledSpeedMps) ? (state.consecutiveSlowFrames + 1) : 0;
+        if (state.frameCounter % 60 == 0)
+            LOG_INFO("Shadow (%s): waiting to settle before building wheel proxies - frame=%llu speed=%.3fm/s consecutiveSlow=%u",
+                label, (unsigned long long) state.frameCounter, (double) speed, state.consecutiveSlowFrames);
+        const bool settled = state.consecutiveSlowFrames >= kRequiredConsecutiveSlow;
+        if (!settled && state.frameCounter < kSettleTimeoutFrames)
+            return;
+
+        JPH::Body* chassisBody = physics->GetBodyLockInterfaceNoLock().TryGetBody(state.bodyId);
+        if (chassisBody == nullptr)
+            return;
+
+        uint32_t wheelIndex = 0;
+        for (JPH::Wheel* wheel : state.constraint->GetWheels())
+            BuildWheelProxy(physics, chassisBody, wheel->GetSettings(), label, wheelIndex++, state.collisionGroupId);
+
+        state.wheelProxiesBuilt = true;
+        LOG_INFO("Shadow (%s): wheel proxies built post-settle (speed=%.3fm/s, frame=%llu, settled=%d, viaTimeout=%d)",
+            label, (double) speed, (unsigned long long) state.frameCounter, settled ? 1 : 0,
+            (!settled && state.frameCounter >= kSettleTimeoutFrames) ? 1 : 0);
     }
 
     // Builds a fresh shadow chassis+wheel body/constraint mirroring `vehicle`'s prototype
@@ -632,6 +715,9 @@ namespace kraken::fix::joltshadow {
         wheelSourceIndex.reserve(numWheels);
         state.wheelBaselineJointCount.clear();      // re-captured lazily in ApplyJoltToVehicle (docs §22.3)
         state.wheelHadExtraJointLastFrame.clear();
+        state.wheelProxiesBuilt     = false; // docs §38.9: (re)built lazily once this new chassis settles
+        state.collisionGroupId      = collisionGroupId;
+        state.consecutiveSlowFrames = 0;
 
         // docs §31: suspension stiffness/damping are now read directly from real ODE data per
         // wheel (see the per-wheel derivation below) - superseding §29's front/rear axle weight-
@@ -747,8 +833,6 @@ namespace kraken::fix::joltshadow {
             vehicleSettings.mWheels.push_back(ws);
             wheelOrder.push_back(wheel);
             wheelSourceIndex.push_back(i);
-
-            BuildWheelProxy(physics, body, ws, label, i, collisionGroupId);
         }
 
         if (vehicleSettings.mWheels.empty()) {
@@ -903,6 +987,19 @@ namespace kraken::fix::joltshadow {
         if (state.constraint == nullptr)
             return;
 
+        // docs §38.7: a resting chassis falls asleep like any other Jolt body (correct,
+        // expected behavior) - but nothing else here ever re-activates it, so once asleep it
+        // silently ignores every future SetDriverInput call below forever, even under fresh
+        // full-throttle input (the body's own step-listener/constraint processing is skipped
+        // entirely while asleep - a Jolt-wide optimization, not vehicle-specific). Never
+        // surfaced before this session's vehicle-switch testing because every prior test always
+        // started driving within a couple seconds of the shadow settling; this is the first
+        // time a real idle gap (queued the drive scenario ~40s after a mid-session vehicle
+        // swap) was long enough for it to actually fall asleep first. ActivateBody is a cheap
+        // no-op if already active, so it's simplest to just call it unconditionally here rather
+        // than track sleep state ourselves.
+        kraken::fix::jolt::GetPhysicsSystem()->GetBodyInterface().ActivateBody(state.bodyId);
+
         JPH::WheeledVehicleController* controller =
             static_cast<JPH::WheeledVehicleController*>(state.constraint->GetController());
 
@@ -1005,13 +1102,24 @@ namespace kraken::fix::joltshadow {
 
         if (foundGround) {
             const float hitDistance = kExtendedLength * hit.mFraction;
+            // docs §38.8: this cast has no layer/broadphase filter (unlike the wheel's own
+            // NON_MOVING-restricted VehicleCollisionTesterRay), so "ground found" here could
+            // actually be hitting something the real wheel raycast deliberately ignores -
+            // another vehicle's leaked shadow chassis (kMovingLayer, never torn down on
+            // rebuild - see BuildShadow's own comment), a wheel-proxy sphere, etc. Log exactly
+            // what was hit so a plausible-looking distance doesn't get mistaken for real ground.
+            const JPH::ObjectLayer hitLayer  = bodyInterface.GetObjectLayer(hit.mBodyID);
+            const JPH::EMotionType hitMotion = bodyInterface.GetMotionType(hit.mBodyID);
+            const bool             isSelf    = hit.mBodyID == chassisBodyId;
             LOG_INFO("docs §32: no-contact raycast (%s) wheel=%zu bodyPos=(%.2f,%.2f,%.2f) localMPos=(%.3f,%.3f,%.3f) "
-                "origin=(%.2f,%.2f,%.2f) dir=(%.3f,%.3f,%.3f) normalRayLen=%.3f groundFoundAt=%.3f shortfallBeyondTravel=%.3f",
+                "origin=(%.2f,%.2f,%.2f) dir=(%.3f,%.3f,%.3f) normalRayLen=%.3f groundFoundAt=%.3f shortfallBeyondTravel=%.3f "
+                "hitBody=%u hitLayer=%u hitMotion=%d hitIsSelfChassis=%d",
                 label, wheelIndex, (double) bodyPos.GetX(), (double) bodyPos.GetY(), (double) bodyPos.GetZ(),
                 (double) settings->mPosition.GetX(), (double) settings->mPosition.GetY(), (double) settings->mPosition.GetZ(),
                 (double) wsOrigin.GetX(), (double) wsOrigin.GetY(), (double) wsOrigin.GetZ(),
                 (double) wsDirection.GetX(), (double) wsDirection.GetY(), (double) wsDirection.GetZ(),
-                (double) normalRayLength, (double) hitDistance, (double) (hitDistance - normalRayLength));
+                (double) normalRayLength, (double) hitDistance, (double) (hitDistance - normalRayLength),
+                hit.mBodyID.GetIndexAndSequenceNumber(), (unsigned) hitLayer, (int) hitMotion, isSelf ? 1 : 0);
         } else {
             LOG_INFO("docs §32: no-contact raycast (%s) wheel=%zu origin=(%.2f,%.2f,%.2f) dir=(%.3f,%.3f,%.3f) "
                 "normalRayLen=%.3f - NO GROUND FOUND within %.1fm along this ray at all",
@@ -1641,6 +1749,7 @@ namespace kraken::fix::joltshadow {
             state.frameCounter = 0;
         }
 
+        TryBuildWheelProxiesOnceSettled(kraken::fix::jolt::GetPhysicsSystem(), state, label);
         UpdateShadowInputs(vehicle, state);
         return true;
     }

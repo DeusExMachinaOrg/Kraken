@@ -20,6 +20,7 @@
 #include "hta/ai/DynamicScene.hpp"
 #include "hta/ai/CServer.hpp"
 #include "hta/ai/ObjContainer.hpp"
+#include "hta/ai/Player.hpp"
 
 #include "fix/testharness.hpp"
 #include "fix/joltshadow.hpp"
@@ -59,6 +60,7 @@ namespace kraken::fix::testharness {
         float               clock    = 0.0f;
         std::ofstream       telemetry;
         bool                tornWheel = false; // one-shot latch for testharness_tear_wheel_at_t
+        std::string        lastVehicleSwitch; // debounce for switch_vehicle.txt, same pattern as lastTrigger
     };
 
     static State g_state;
@@ -343,8 +345,68 @@ namespace kraken::fix::testharness {
         }
     }
 
+    // docs §38.6: lets an external driver swap the player's vehicle without a save reload - much
+    // cheaper than restarting hta.exe per vehicle when cycling through many prototypes (the
+    // approach used up to now for Scout/Molokovoz, one dedicated save each).
+    //
+    // First attempt (docs §38.5) drove cheats.lua's car(N) (GiveVehicle -> AddPlayerVehicle) via
+    // the engine console - LIVE-DISPROVEN: across all 24 prototypes cycled, the real ODE body
+    // pointer (confirmed via the docs §30 "REAL ODE chassis COM" log line) and every wheel's
+    // CFM/ERP never changed even once - car(N) never actually re-seats the player. Disassembly
+    // (help::CreateVehicleFromPrototype, game.pdb via tools/lora) showed it creates the new
+    // vehicle owned by "VehicleToSell" - a garage/shop-inventory object, not the driven one -
+    // consistent with GarageWnd/RepositoryWnd existing as separate UI classes for actually
+    // entering a purchased vehicle. Likely explains the run's progressively shrinking distances
+    // too: 24 uncontrolled "for sale" vehicles piling up near the real (unchanged) Molokovoz.
+    //
+    // Root-caused via game.pdb: ai::DynamicScene::GetVehicleControlledByPlayer (what
+    // GetTargetVehicle/testharness's whole vehicle lookup ultimately calls) just reads the
+    // global ai::Player instance and tail-calls Player::GetVehicle() - so the real "current
+    // vehicle" lives on ai::Player, not anywhere car()'s created object touches. Player::
+    // ChangeVehicleByNew(prototypeId, bDeleteOldVehicle) - already ported, Player.hpp - is the
+    // actual direct swap: internally creates the new vehicle owned by "Player1" (not
+    // "VehicleToSell") via ObjContainer::CreateNewObject, then calls ChangeVehicleByExisting on
+    // it. Passing bDeleteOldVehicle=true also removes the previous vehicle outright, avoiding
+    // the debris-pile-up failure mode entirely instead of just working around it.
+    //
+    // File protocol matches trigger.txt: a single token - the vehicle's prototype NAME (e.g.
+    // "Ural01", "Molokovoz01" - see data/scripts/cheats.lua's GiveVehicle for the known list) -
+    // in switch_vehicle.txt; changing it resolves the name via CServer::GetPrototypeId and
+    // swaps exactly once.
+    static void CheckVehicleSwitch(State& state) {
+        std::ifstream switchFile(state.baseDir / "switch_vehicle.txt");
+        if (!switchFile.is_open()) return;
+
+        std::string token;
+        std::getline(switchFile, token);
+        if (token.empty() || token == state.lastVehicleSwitch) return;
+        state.lastVehicleSwitch = token;
+
+        hta::ai::Player* player = hta::ai::Player::Instance();
+        if (player == nullptr) {
+            LOG_WARNING("Vehicle switch: no ai::Player instance yet, ignoring '%s'", token.c_str());
+            return;
+        }
+        hta::ai::CServer* server = hta::ai::CServer::Instance();
+        if (server == nullptr) {
+            LOG_WARNING("Vehicle switch: no ai::CServer instance yet, ignoring '%s'", token.c_str());
+            return;
+        }
+
+        const int32_t prototypeId = server->GetPrototypeId(hta::CStr(token.c_str()));
+        if (prototypeId == -1) {
+            LOG_WARNING("Vehicle switch: unknown vehicle prototype '%s'", token.c_str());
+            return;
+        }
+
+        player->ChangeVehicleByNew(prototypeId, true);
+        LOG_INFO("Vehicle switch: changed player vehicle to prototype '%s' (id=%d)", token.c_str(), prototypeId);
+    }
+
     static void Tick(float dt) {
         State& state = g_state;
+
+        CheckVehicleSwitch(state);
 
         std::ifstream trigger(state.baseDir / "trigger.txt");
         if (trigger.is_open()) {
