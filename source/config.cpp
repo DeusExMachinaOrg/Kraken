@@ -80,8 +80,6 @@ namespace kraken {
         this->jolt_wm_react_scale                = { "wheelmodel","react_scale",      1.0f,      true, 0.0f,     10.0f   };
         this->jolt_wm_own_spin                   = { "wheelmodel","own_spin",         1,         true, 0,        1       };
         this->jolt_wm_max_g                      = { "wheelmodel","max_g",            6.0f,      true, 1.0f,     100.0f  };
-        this->jolt_wm_susp_travel                = { "wheelmodel","susp_travel",      0.35f,     true, 0.02f,    2.0f    };
-        this->jolt_wm_unsprung_mass              = { "wheelmodel","unsprung_mass",    20.0f,     true, 0.5f,     2000.0f };
         this->jolt_friction_long                = { "jolt_harness","friction_long",                  1.0,   true,  0.2,   3.0         };
         this->jolt_friction_lat                 = { "jolt_harness","friction_lat",                   1.0,   true,  0.2,   3.0         };
         this->jolt_autotune                     = { "jolt_harness","autotune",                       0,     true,  0,     1           };
@@ -185,8 +183,6 @@ namespace kraken {
         this->LoadValue(&this->jolt_wm_react_scale);
         this->LoadValue(&this->jolt_wm_own_spin);
         this->LoadValue(&this->jolt_wm_max_g);
-        this->LoadValue(&this->jolt_wm_susp_travel);
-        this->LoadValue(&this->jolt_wm_unsprung_mass);
         this->LoadValue(&this->jolt_friction_long);
         this->LoadValue(&this->jolt_friction_lat);
         this->LoadValue(&this->jolt_autotune);
@@ -268,8 +264,6 @@ namespace kraken {
         this->DumpValue(&this->jolt_wm_react_scale);
         this->DumpValue(&this->jolt_wm_own_spin);
         this->DumpValue(&this->jolt_wm_max_g);
-        this->DumpValue(&this->jolt_wm_susp_travel);
-        this->DumpValue(&this->jolt_wm_unsprung_mass);
         this->DumpValue(&this->jolt_friction_long);
         this->DumpValue(&this->jolt_friction_lat);
         this->DumpValue(&this->jolt_autotune);

@@ -1489,8 +1489,6 @@ namespace kraken::fix::joltshadow {
         const float m       = vehicle->GetMass() / (float) numWheels; // per-corner sprung mass
         const float gAbs    = std::max(std::fabs(kraken::Config::Instance().gravity.value), 0.1f);
         const float maxForce = cfg.jolt_wm_max_g.value * m * gAbs;
-        const float travel  = cfg.jolt_wm_susp_travel.value;
-        const float mUnsprung = std::max(cfg.jolt_wm_unsprung_mass.value, 0.5f);
         const bool  ownSpin = cfg.jolt_wm_own_spin.value != 0;
         const float reactScale = cfg.jolt_wm_react_scale.value;
 
@@ -1513,6 +1511,14 @@ namespace kraken::fix::joltshadow {
 
         const JPH::BroadPhaseLayerFilter& bpFilter   = physics->GetDefaultBroadPhaseLayerFilter(kWheelQueryLayer);
         const JPH::DefaultObjectLayerFilter objFilter = physics->GetDefaultLayerFilter(kWheelQueryLayer);
+
+        // docs §43: per-soil-type friction for wheelmodel's ground contact - same source/formula
+        // the OTHER (VehicleConstraint) Jolt path already uses (SetTireMaxImpulseCallback above),
+        // computed once per call rather than per wheel (level geometry is constant for the run,
+        // same discipline as that path's own tileSize).
+        const float tileSize = (float) hta::ai::CServer::Instance()->GetLevelSize()
+            / (float) hta::ai::CServer::Instance()->GetWorld()->GetLandscape().GetTileSize();
+        const JPH::BodyID roadsBodyId(kraken::fix::jolt::GetRoadsBodyRawId());
 
         const JPH::Wheels& wheels = state.constraint->GetWheels();
         const size_t nw = std::min(wheels.size(), state.wmSuspLen.size());
@@ -1537,6 +1543,14 @@ namespace kraken::fix::joltshadow {
             const float wheelMuReal = wheelProto ? wheelProto->m_mU : 1.0f;
             wm::WMParams Pw = P;
             Pw.mu = P.mu * wheelMuReal;
+
+            // docs §43: real per-wheel unsprung mass (hta::ai::Wheel::GetMass(), NATIVE-bound,
+            // backed by WheelPrototypeInfo's real per-wheel-type Mass field in vehicleparts.xml -
+            // confirmed to vary 1-50kg across wheel types, not one flat guess) replaces the old
+            // jolt_wm_unsprung_mass constant (20.0 for every wheel of every vehicle). Fallback
+            // literal only for the defensive hw==nullptr case (shouldn't occur - this loop already
+            // requires a wheelOrder entry for every wheel it processes).
+            const float mUnsprung = std::max(hw ? hw->GetMass() : 20.0f, 0.5f);
 
             const float R   = s->mRadius;
             const float tau = std::min(cfg.jolt_wm_tyre_thickness.value, R * 0.9f);
@@ -1573,6 +1587,7 @@ namespace kraken::fix::joltshadow {
             constexpr int kMaxC = 16;
             wm::WMContact cts[kMaxC];
             wm::WMGeom    gm[kMaxC];
+            JPH::BodyID   hitBody[kMaxC];
             const int n = std::min((int) collector.mHits.size(), kMaxC);
             for (int h = 0; h < n; ++h) {
                 const JPH::CollideShapeResult& r = collector.mHits[(size_t) h];
@@ -1580,9 +1595,28 @@ namespace kraken::fix::joltshadow {
                 cts[h].p = { (float) r.mContactPointOn2.GetX(), (float) r.mContactPointOn2.GetY(), (float) r.mContactPointOn2.GetZ() };
                 cts[h].n = { nrm.GetX(), nrm.GetY(), nrm.GetZ() };
                 cts[h].depth = r.mPenetrationDepth;
+                hitBody[h] = r.mBodyID2;
                 gm[h] = wm::ComputeGeom(cts[h], c, UP, a, R, R);
             }
             wm::WMSlots slots = wm::Classify(gm, n);
+
+            // docs §43: soil-friction scaling only for the GROUND slot (the tyre's actual rolling
+            // surface) - obstacle/side slots (wall faces, steps) keep the wheel-type-only Pw, same
+            // reasoning the base grip/mU tuning already covers those. Same "not the roads body"
+            // rule as the other Jolt path (SetTireMaxImpulseCallback above): roads stay at the tire
+            // model's own mu (friction=1.0 equivalent), anything else gets the real terrain-tile
+            // lookup, regardless of what's actually under the contact (matches that path's existing
+            // precedent, which doesn't distinguish terrain from rock/obstacle either).
+            wm::WMParams PwGround = Pw;
+            float soilFrictionReal = 1.0f;
+            if (slots.ground >= 0 && hitBody[slots.ground] != roadsBodyId) {
+                const int32_t soilX = (int32_t) (cts[slots.ground].p.x / tileSize + 0.5f);
+                const int32_t soilZ = (int32_t) (cts[slots.ground].p.z / tileSize + 0.5f);
+                const hta::ai::DynamicScene::SoilProps& props =
+                    hta::ai::DynamicScene::Instance()->GetSoilProps((uint32_t) soilX, (uint32_t) soilZ);
+                soilFrictionReal = props.m_friction;
+                PwGround.mu *= soilFrictionReal;
+            }
 
             auto vpAt = [&](const wm::vec3& p) {
                 const JPH::Vec3 rr(p.x - (float) comW.GetX(), p.y - (float) comW.GetY(), p.z - (float) comW.GetZ());
@@ -1615,7 +1649,7 @@ namespace kraken::fix::joltshadow {
                 omega = std::clamp(omega, -kMaxOmega, kMaxOmega);
             }
 
-            wm::WMForce fG = (slots.ground   >= 0) ? wm::GeneralizedContactForce(cts[slots.ground].p,   cts[slots.ground].n,   gm[slots.ground].pen,   gm[slots.ground].wr, c, a, vpAt(cts[slots.ground].p),   omega, R, tau, m, dt, Pw) : wm::WMForce();
+            wm::WMForce fG = (slots.ground   >= 0) ? wm::GeneralizedContactForce(cts[slots.ground].p,   cts[slots.ground].n,   gm[slots.ground].pen,   gm[slots.ground].wr, c, a, vpAt(cts[slots.ground].p),   omega, R, tau, m, dt, PwGround) : wm::WMForce();
             wm::WMForce fO = (slots.obstacle >= 0) ? wm::GeneralizedContactForce(cts[slots.obstacle].p, cts[slots.obstacle].n, gm[slots.obstacle].pen, gm[slots.obstacle].wr, c, a, vpAt(cts[slots.obstacle].p), omega, R, tau, m, dt, Pw) : wm::WMForce();
             wm::WMForce fS = (slots.side     >= 0) ? wm::GeneralizedContactForce(cts[slots.side].p,     cts[slots.side].n,     gm[slots.side].pen,     gm[slots.side].wl, c, a, vpAt(cts[slots.side].p),     omega, R, tau, m, dt, Pw) : wm::WMForce();
 
@@ -1657,7 +1691,41 @@ namespace kraken::fix::joltshadow {
             compVel = (compVel + springAccel * dt) / (1.0f + (cSusp / mUnsprung) * dt);
             comp   += compVel * dt; // symplectic: integrate position with the just-updated velocity
             const float compMin = restLen - maxLen; // most-drooped (negative)
-            const float compMax = travel;           // most-compressed
+            // docs §43: real per-wheel compression-travel budget. FIRST attempt used
+            // restLen - mSuspensionMinLength, reasoning mSuspensionMinLength was real per-wheel
+            // hard-stop data like mSuspensionMaxLength - WRONG, caught by an immediate live test
+            // (compMax pinned at the 0.01 floor the entire run, suspF capped under 100N for a
+            // 167kg vehicle - permanently bottomed out, ratio collapsed to 0.39). Root cause:
+            // mSuspensionMinLength is a flat hardcoded 0.05 (BuildShadow, unlike mSuspensionMax
+            // Length which DOES fold in the real suspensionRange) authored only for the
+            // VehicleConstraint's own built-but-never-simulated internal math - and wheelmodel's
+            // raycast-anchored restLen (InitWheelModelSuspension) sits close to THAT arbitrary
+            // floor by construction (the chassis-local mount point already approximates the
+            // wheel's own resting ground-contact position), not close to mSuspensionMaxLength as
+            // first assumed - so restLen-minLength measures almost nothing.
+            // SECOND attempt used the full remaining geometric range ((1-restFraction)*range,
+            // ~0.93m for this vehicle) - also WRONG, caught by a second live test: comp snapped
+            // straight to the new 0.93m ceiling on a single bump, suspF spiked to multiple kN,
+            // and the chassis visibly launched (fwd.y climbed from ~0 to 0.75 - nosing skyward -
+            // and the orientation-divergence angle hit 170deg by scenario end). Root cause: kSusp/
+            // cSusp (docs §31/§42.5) are a LINEAR spring calibrated ONLY to be realistic near its
+            // actual static operating point (restFraction*range deflection under the vehicle's own
+            // weight) - real suspensions are progressive/non-linear specifically so bottoming out
+            // doesn't behave like this, but this model has no such curve, so letting the SAME
+            // per-meter stiffness swing through 13x its calibrated deflection generates force no
+            // real suspension over that same travel would.
+            // Fixed by bounding how far the linear approximation is trusted rather than maximizing
+            // geometric travel: capped at 5x the real static sag (rest_fraction*suspensionRange) -
+            // a standard vehicle-dynamics bump-reserve rule of thumb, and not coincidentally close
+            // to the old flat jolt_wm_susp_travel constant (0.35) at this vehicle's own real
+            // suspensionRange/rest_fraction (5*0.07*1.0 = 0.35) - so this reduces to the
+            // previously-validated-safe magnitude at the reference values while now scaling
+            // per-vehicle with real suspensionRange data instead of being one flat constant for
+            // every vehicle. The deeper fix (an actual progressive spring curve) is a real,
+            // separate, non-trivial improvement - flagged, not attempted this pass.
+            const float suspensionRangeReal = std::max(maxLen - s->mSuspensionMinLength, 0.01f);
+            const float restFraction = std::clamp(cfg.jolt_susp_rest_fraction.value, 0.02f, 0.4f);
+            const float compMax = std::clamp(5.0f * restFraction * suspensionRangeReal, 0.02f, suspensionRangeReal); // most-compressed
             if (comp < compMin) { comp = compMin; if (compVel < 0.0f) compVel = 0.0f; }
             if (comp > compMax) { comp = compMax; if (compVel > 0.0f) compVel = 0.0f; }
             state.wmSuspVel[i] = compVel;
@@ -1707,11 +1775,12 @@ namespace kraken::fix::joltshadow {
                 const bool gHit = physics->GetNarrowPhaseQuery().CastRay(downRay, hit);
                 const float groundBelow = gHit ? 20.0f * hit.mFraction : -1.0f;
                 const JPH::Vec3 fwdW = chassisRot * JPH::Vec3(0, 0, 1); // vehicle forward in world
-                LOG_INFO("docs §42.9: wm apply (%s) w=%zu drv=%d n=%d gSlot=%d pen=%.3f comp=%.3f suspF=%.0f omega=%.1f thr=%.2f fwd=(%.2f,%.2f,%.2f) Fg=(%.0f,%.0f,%.0f) fpar=%.0f gear=%d rpm=%.0f maxTq=%.0f muReal=%.3f",
+                LOG_INFO("docs §43: wm apply (%s) w=%zu drv=%d n=%d gSlot=%d pen=%.3f comp=%.3f suspF=%.0f omega=%.1f thr=%.2f fwd=(%.2f,%.2f,%.2f) Fg=(%.0f,%.0f,%.0f) fpar=%.0f gear=%d rpm=%.0f maxTq=%.0f muReal=%.3f compMax=%.3f mUnsprung=%.1f soilMu=%.3f",
                     label, i, driven?1:0, n, slots.ground, (double)(slots.ground>=0?gm[slots.ground].pen:0.0f), (double) comp, (double) suspForce,
                     (double) omega, (double) throttle, (double) fwdW.GetX(), (double) fwdW.GetY(), (double) fwdW.GetZ(),
                     (double) fG.F.x, (double) fG.F.y, (double) fG.F.z, (double) fG.fpar_w,
-                    state.wmGear, (double) state.wmEngineRpm, (double) maxWheelTorque, (double) wheelMuReal);
+                    state.wmGear, (double) state.wmEngineRpm, (double) maxWheelTorque, (double) wheelMuReal,
+                    (double) compMax, (double) mUnsprung, (double) soilFrictionReal);
             }
         }
     }

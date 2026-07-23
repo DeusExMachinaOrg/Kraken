@@ -132,8 +132,10 @@ namespace kraken {
         // the real CFM/ERP-derived s->mSuspensionSpring (see StepWheelModel), same real data
         // §31 already computes for the VehicleConstraint built (but not simulated) in wheelmodel
         // mode. jolt_wm_susp_stiffness/damping removed rather than left as dead/unused knobs.
-        ConfigValue<float>                    jolt_wm_susp_travel;        // max suspension travel (m)
-        ConfigValue<float>                    jolt_wm_unsprung_mass;      // effective wheel-side mass for the DOF integrator (kg)
+        // docs §43: jolt_wm_susp_travel/unsprung_mass removed the same way - travel is now
+        // restLen - s->mSuspensionMinLength (real per-wheel geometry, already on hand) and
+        // unsprung mass is hta::ai::Wheel::GetMass() (real per-wheel-type data), both computed
+        // directly in StepWheelModel rather than kept as flat guessed constants.
         ConfigValue<float>                    jolt_friction_long;
         ConfigValue<float>                    jolt_friction_lat;
         ConfigValue<uint32_t>                 jolt_autotune;
