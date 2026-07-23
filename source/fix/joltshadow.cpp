@@ -3539,12 +3539,15 @@ namespace kraken::fix::joltshadow {
 
     // Hard upper bound on the number of AI shadows ever live at once - matches [jolt_harness]
     // ai_count's own ConfigValue range (source/config.cpp: `{"jolt_harness","ai_count", 0, true,
-    // 0, 16}`), which clamps the ini value to 0..16 before InitAiShadowsIfNeeded ever selects
+    // 0, 128}`), which clamps the ini value to 0..128 before InitAiShadowsIfNeeded ever selects
     // vehicles, so g_aiShadows/g_aiTargets never actually grow past this. Sized as a fixed stack
     // array (not a per-frame heap allocation - this whole refactor exists to keep this hot path
     // allocation-free) with a defensive runtime clamp below in case that config limit is ever
-    // loosened without this array being resized to match.
-    static constexpr size_t kMaxAiShadowsPerFrame = 16;
+    // loosened without this array being resized to match. Raised from 16->128 per user request
+    // ("убери ограничение ai_count") - nothing else in this file assumes <=16 (GroupIDs are plain
+    // sequential uint32_t, g_aiShadows/g_aiTargets are already std::vector) so this is just two
+    // small stack arrays growing (bool[128] + char[128][16], still trivial per-frame cost).
+    static constexpr size_t kMaxAiShadowsPerFrame = 128;
 
     // Forward-declared: defined alongside VehiclePushbackContactListener (docs §23.11), well
     // after UpdateShadow in this file, but needs calling from UpdateShadow's Pass 2 below,

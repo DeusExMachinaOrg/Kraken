@@ -57,7 +57,7 @@ namespace kraken {
         this->jolt_shadow                       = { "jolt_harness","shadow",                         0,     true,  0,     1           };
         this->jolt_apply                        = { "jolt_harness","apply",                          0,     true,  0,     1           };
         this->jolt_player_only                  = { "jolt_harness","player_only",                    1,     true,  0,     1           };
-        this->jolt_ai_count                     = { "jolt_harness","ai_count",                       0,     true,  0,     16          };
+        this->jolt_ai_count                     = { "jolt_harness","ai_count",                       0,     true,  0,     128         };
         this->jolt_susp_frequency               = { "jolt_harness","susp_frequency",                 1.0,   true,  0.5,   2.0         };
         this->jolt_susp_rest_fraction           = { "jolt_harness","susp_rest_fraction",             0.07,  true,  0.02,  0.4         };
         this->jolt_susp_damping                 = { "jolt_harness","susp_damping",                   1.0,   true,  0.2,   3.0         };
