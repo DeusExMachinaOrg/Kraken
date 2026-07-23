@@ -1790,6 +1790,20 @@ namespace kraken::fix::joltshadow {
                         // bound it at a generous multiple instead: enough headroom for any
                         // realistic impact (10x maxForce is already a ~60g-equivalent ceiling,
                         // vs maxForce's own 6g) while catching the actual runaway case.
+                        //
+                        // docs §50: tried rebasing this on chassis effective-mass-at-lever-arm
+                        // (translation+rotation combined) instead of mUnsprung, reasoning Bug01's
+                        // yaw-spin problem was about how little this LIGHT chassis resists torque
+                        // at its wheels - REVERTED after live-testing showed no improvement (still
+                        // ~163deg). Root cause on reflection: hardStopForce is applied PURELY along
+                        // upW (vertical) - torqueAxis = leverArm x upDir always lies in the
+                        // horizontal plane (a vertical force's moment arm can only ever produce a
+                        // horizontal torque axis, i.e. pitch/roll), so this force literally cannot
+                        // cause YAW at all, regardless of how its magnitude is capped. Bug01's
+                        // observed spin (fwd.x sweeping through 90+ degrees = rotation about the
+                        // VERTICAL axis) was never something this term could have caused - the real
+                        // culprit is the horizontal friction force below, still capped by the flat,
+                        // mass-only maxForce untouched since §44.1. See that fix instead.
                         constexpr float kHardStopMaxForceMult = 10.0f;
                         const float magnitudeCapped = std::min(mUnsprung * compVel / dt, maxForce * kHardStopMaxForceMult);
 
@@ -1861,6 +1875,25 @@ namespace kraken::fix::joltshadow {
                 JPH::Vec3 fFriction(Fperp.x, Fperp.y, Fperp.z);
                 const float ffl = fFriction.Length();
                 groundForcePreClampMag = ffl;
+                // docs §50: three attempts to fix Bug01's yaw-spin problem by tightening this cap
+                // were all tried live and reverted - (1) rebasing hardStopForce on chassis
+                // effective mass at the wheel's lever arm: WRONG TARGET, proven analytically that
+                // a purely-vertical force's torque axis is confined to the horizontal plane and
+                // can never cause yaw regardless of magnitude; (2) the same effective-mass idea
+                // applied to friction's own direction instead (which CAN cause yaw): a real,
+                // sound mechanism, but a direct diagnostic showed chassisEffMassAtContact was
+                // ALWAYS larger than the flat per-corner mass for this vehicle, so it never
+                // actually tightened anything - a confirmed no-op; (3) sharing hardStopForce's
+                // cumulative-impulse budget (§49) with friction too, reasoning friction sustained
+                // over many bottomed frames could accumulate yaw impulse the same way §49 found
+                // for pitch: caused a real, live-confirmed REGRESSION on Belaz01 (angle back up to
+                // 130-167deg, from the established 47.8-108.8deg §49 baseline) - splitting the
+                // budget between two force components starved hardStopForce of what it needed for
+                // the mechanism §49 was actually fixing. Reverted to the plain §44.1 cap. Bug01's
+                // yaw-spin root cause remains genuinely unidentified after three reasoned attempts -
+                // needs a frame-by-frame torque-tracing investigation (separating friction's,
+                // hardStopForce's, and the spin-reaction tSpin's individual contributions to
+                // angular velocity) before a fourth attempt, not another guessed cap.
                 if (ffl > maxForce && ffl > 1e-3f) fFriction = fFriction * (maxForce / ffl);
                 // docs §46: chassis-heave damping - the missing HALF of the suspension damper.
                 // The real damper opposes the RELATIVE velocity between chassis and wheel along the
