@@ -27,6 +27,7 @@
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/GroupFilterTable.h>
 #include <Jolt/Physics/Constraints/SliderConstraint.h>
 
 #include "hta/ai/CServer.hpp"
@@ -100,6 +101,28 @@ namespace kraken::fix::joltshadow {
     // layer (unlike WHEEL_QUERY above), also restricted to NON_MOVING only, for the auxiliary
     // wheel-proxy bodies built by BuildWheelProxy below.
     static constexpr JPH::ObjectLayer kWheelProxyLayer = 3;
+
+    // docs §37 item 3: explicit chassis-vs-own-wheel-proxy collision exclusion, hardening
+    // BuildWheelProxy's previously sole safeguard (mLimitsMin keeping the proxy geometrically
+    // clear of the chassis shape - docs §34.1's known simplification, never proven watertight
+    // in every possible extreme rotation). Subgroup 0 is always the chassis; subgroups
+    // 1..kMaxWheelsPerVehicleGroupFilter are wheel slots (wheelIndex+1). Every vehicle shares
+    // this SAME table instance but gets its own CollisionGroup::GroupID (see collisionGroupId
+    // threaded alongside label through BuildShadow/BuildWheelProxy below) - GroupFilterTable::
+    // CanCollide only consults the bit table once both bodies already share a GroupID (see
+    // GroupFilterTable.h), so a DIFFERENT vehicle's chassis/proxies (different GroupID) still
+    // always collide normally, unaffected by this table - only a vehicle's own chassis-vs-own-
+    // proxy pairs are ever suppressed.
+    static constexpr uint32_t kMaxWheelsPerVehicleGroupFilter = 16; // generous upper bound - largest real vehicle seen so far (6-wheel truck) is well under this
+    static JPH::GroupFilterTable* g_wheelProxyGroupFilter = nullptr; // built once, shared/leaked forever across every rebuild - same convention as g_collisionTester below
+    static JPH::GroupFilterTable* GetWheelProxyGroupFilter() {
+        if (g_wheelProxyGroupFilter == nullptr) {
+            g_wheelProxyGroupFilter = new JPH::GroupFilterTable(kMaxWheelsPerVehicleGroupFilter + 1);
+            for (uint32_t i = 1; i <= kMaxWheelsPerVehicleGroupFilter; ++i)
+                g_wheelProxyGroupFilter->DisableCollision(0, i);
+        }
+        return g_wheelProxyGroupFilter;
+    }
 
     // Not in extern/hta's ode.hpp yet - declared locally rather than editing that submodule.
     // Confirmed via disassembly (docs §22.3): counts the body's dxJointNode linked list at
@@ -425,7 +448,7 @@ namespace kraken::fix::joltshadow {
     // ever observed live. Gated behind [jolt_harness] wheel_proxy (default on) so it can be
     // disabled without a rebuild if it ever needs to be ruled out live.
     static void BuildWheelProxy(JPH::PhysicsSystem* physics, JPH::Body* chassisBody,
-            const JPH::WheelSettingsWV* ws, const char* label, uint32_t wheelIndex) {
+            const JPH::WheelSettingsWV* ws, const char* label, uint32_t wheelIndex, uint32_t collisionGroupId) {
         if (kraken::Config::Instance().jolt_wheel_proxy.value == 0)
             return;
 
@@ -458,6 +481,16 @@ namespace kraken::fix::joltshadow {
             return;
         }
         bodyInterface.AddBody(proxyBody->GetID(), JPH::EActivation::Activate);
+
+        // docs §37 item 3: explicit exclusion, hardening the geometric-only safeguard below -
+        // see GetWheelProxyGroupFilter's comment. Falls back to geometric-only separation
+        // (silently, but logged) if wheelIndex somehow exceeds the table's generous slot count.
+        if (wheelIndex + 1 <= kMaxWheelsPerVehicleGroupFilter) {
+            proxyBody->SetCollisionGroup(JPH::CollisionGroup(GetWheelProxyGroupFilter(), collisionGroupId, wheelIndex + 1));
+        } else {
+            LOG_WARNING("Shadow (%s): wheel=%u exceeds kMaxWheelsPerVehicleGroupFilter=%u - self-collision exclusion not applied for this wheel, relying on geometric separation only",
+                label, wheelIndex, kMaxWheelsPerVehicleGroupFilter);
+        }
 
         // mPoint1 == mPoint2 (both the wheel's real attachment point) explicitly defines the
         // slider's "0" position to be there, regardless of where the proxy body actually starts
@@ -514,7 +547,7 @@ namespace kraken::fix::joltshadow {
     // bodies - JPH's wheels are raycast-based), so accumulating a handful of them across a
     // long play session is a trivial, accepted cost for avoiding the use-after-free entirely
     // rather than guessing at the real fix.
-    static bool BuildShadow(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label) {
+    static bool BuildShadow(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label, uint32_t collisionGroupId) {
         const uint32_t numWheels = vehicle->GetNumWheels();
         if (numWheels == 0) {
             LOG_WARNING("Shadow build skipped (%s): vehicle has no wheels", label);
@@ -578,6 +611,9 @@ namespace kraken::fix::joltshadow {
         // hta::ai::Vehicle* that owns this DYNAMIC body, without a per-frame lookup - same
         // technique used for the kinematic mirrors below (MirrorOtherVehicles).
         body->SetUserData(reinterpret_cast<uint64_t>(vehicle));
+        // docs §37 item 3: chassis is always subgroup 0 within this vehicle's own GroupID - see
+        // GetWheelProxyGroupFilter's comment above.
+        body->SetCollisionGroup(JPH::CollisionGroup(GetWheelProxyGroupFilter(), collisionGroupId, 0));
 
         // docs §27: read once here (constant for the whole body, not per-wheel) - used by the
         // per-wheel suspension-frequency derivation below. Valid immediately after CreateBody:
@@ -712,7 +748,7 @@ namespace kraken::fix::joltshadow {
             wheelOrder.push_back(wheel);
             wheelSourceIndex.push_back(i);
 
-            BuildWheelProxy(physics, body, ws, label, i);
+            BuildWheelProxy(physics, body, ws, label, i, collisionGroupId);
         }
 
         if (vehicleSettings.mWheels.empty()) {
@@ -1582,7 +1618,7 @@ namespace kraken::fix::joltshadow {
     // after a level load before the vehicle's data is fully ready) - same semantics as the old
     // combined function's early return: the caller simply skips this vehicle for this frame and
     // retries on the next one, no state is left half-initialized.
-    static bool UpdateOneVehiclePreStep(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label) {
+    static bool UpdateOneVehiclePreStep(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label, uint32_t collisionGroupId) {
         // Rebuilds on a vehicle swap (level reload, vehicle switch), a tuning-parameter change
         // (g_tuningGeneration bumped by SetTuningOverride - the autotuner uses this to apply a
         // new candidate suspension/friction set between trials without needing to recreate
@@ -1598,7 +1634,7 @@ namespace kraken::fix::joltshadow {
             if (wheelsChanged)
                 LOG_WARNING("Shadow (%s): a wheel present at build time is now gone/replaced, rebuilding", label);
 
-            if (!BuildShadow(vehicle, state, label))
+            if (!BuildShadow(vehicle, state, label, collisionGroupId))
                 return false; // vehicle data can be not-yet-fully-initialized right after a level
                               // load - just keep retrying on later frames
             state.vehicle = vehicle;
@@ -2468,11 +2504,15 @@ namespace kraken::fix::joltshadow {
 
         // --- Pass 1 (pre-step) ---
         if (playerVehicle != nullptr)
-            playerLive = UpdateOneVehiclePreStep(playerVehicle, g_playerShadow, "player");
+            playerLive = UpdateOneVehiclePreStep(playerVehicle, g_playerShadow, "player", 0);
 
         for (size_t i = 0; i < aiShadowCount; ++i) {
             std::snprintf(aiLabels[i], sizeof(aiLabels[i]), "ai%zu", i);
-            aiLive[i] = UpdateOneVehiclePreStep(g_aiTargets[i], g_aiShadows[i], aiLabels[i]);
+            // docs §37 item 3: player is always GroupID 0 (above); AI shadow slot i gets i+1 -
+            // a stable, distinct GroupID per vehicle so GetWheelProxyGroupFilter's shared table
+            // only ever suppresses a vehicle's own chassis-vs-own-proxy pairs, never cross-
+            // vehicle ones (see its comment).
+            aiLive[i] = UpdateOneVehiclePreStep(g_aiTargets[i], g_aiShadows[i], aiLabels[i], static_cast<uint32_t>(i) + 1);
         }
 
         // --- Pass 2: step the shared PhysicsSystem exactly once ---
