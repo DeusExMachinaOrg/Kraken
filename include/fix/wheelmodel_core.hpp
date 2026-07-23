@@ -56,6 +56,9 @@ namespace kraken::fix::wheelmodel {
         float eps         = 0.5f;      // slip floor (v_ref minimum)
         float stick_speed = 0.5f;      // v0: static-friction blend speed
         float inertia     = 5.0f;      // wheel spin inertia I
+        float rollingResist = 0.02f;   // Crr: rolling-resistance coefficient (dimensionless,
+                                        // typical tyre range ~0.01-0.04) - see §42 in
+                                        // GeneralizedContactForce for how this folds into Phi().
     };
 
     // Pacejka magic formula Φ(ξ) = D·sin(C·atan(Bξ − E(Bξ − atan Bξ))).
@@ -176,8 +179,29 @@ namespace kraken::fix::wheelmodel {
             const float kappa = -v_par / v_ref;
             const float alpha = atan2f(-v_lat, v_ref);
 
+            // §42: rolling resistance folded directly into the slip curve, not a bolted-on
+            // chassis-level drag force. Phi(0) is exactly 0 by construction (the sin/atan
+            // composition is odd), which is correct for SLIP friction but misses that a real
+            // tyre retards motion even at perfect rolling (kappa=0) - a separate loss mechanism
+            // (carcase hysteresis), small (Crr ~1-4%) but present. Shifting the input by kappaRR
+            // moves the natural free-rolling equilibrium off zero, giving a small retarding
+            // force exactly where the pure-slip formula gave none, while leaving high-slip
+            // behaviour (traction/braking, where the curve already saturates near +-D)
+            // essentially unchanged - both properties match real rolling resistance.
+            // kappaRR is DERIVED, not tuned: for small xi, Phi(xi) ~= D*C*B*xi (first-order
+            // Taylor of the sin/atan composition around 0), so solving D*C*B*kappaRR =
+            // rollingResist*F_n (the target force at kappa=0) gives
+            // kappaRR = rollingResist/(mu*C*B) - F_n cancels (D=mu*F_n), so it's a pure shape
+            // constant, not a per-contact one.
+            // travelSign (signed, smooth through zero, already using v_ref's existing floor)
+            // flips the shift to always oppose the CHASSIS's actual direction of travel -
+            // without it a fixed-sign shift would accelerate reverse motion instead of
+            // retarding it, since kappa's own sign only encodes slip, not travel direction.
+            const float travelSign = Dot(v_p, t) / v_ref;
+            const float kappaRR = P.rollingResist / fmaxf(P.mu * P.C * P.B, 1e-6f);
+
             const float D = P.mu * F_n; // unweighted (see header note)
-            float f_par = Phi(kappa, D, P);
+            float f_par = Phi(kappa - kappaRR * travelSign, D, P);
             float f_lat = Phi(alpha, D, P);
 
             // friction circle

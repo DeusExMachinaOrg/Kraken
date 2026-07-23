@@ -268,6 +268,7 @@ namespace kraken::fix::joltshadow {
         p.eps         = c.jolt_wm_slip_floor.value;
         p.stick_speed = c.jolt_wm_stick_speed.value;
         p.inertia     = c.jolt_wm_wheel_inertia.value;
+        p.rollingResist = c.jolt_wm_rolling_resist.value;
         return p;
     }
 

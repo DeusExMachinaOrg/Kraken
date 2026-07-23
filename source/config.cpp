@@ -76,6 +76,7 @@ namespace kraken {
         this->jolt_wm_slip_floor                 = { "wheelmodel","slip_floor",       0.5f,      true, 0.01f,    100.0f  };
         this->jolt_wm_stick_speed                = { "wheelmodel","stick_speed",      0.5f,      true, 0.01f,    100.0f  };
         this->jolt_wm_wheel_inertia              = { "wheelmodel","wheel_inertia",    30.0f,     true, 0.001f,   10000.0f};
+        this->jolt_wm_rolling_resist             = { "wheelmodel","rolling_resist",   0.02f,     true, 0.0f,     0.5f    };
         this->jolt_wm_react_scale                = { "wheelmodel","react_scale",      1.0f,      true, 0.0f,     10.0f   };
         this->jolt_wm_own_spin                   = { "wheelmodel","own_spin",         1,         true, 0,        1       };
         this->jolt_wm_max_g                      = { "wheelmodel","max_g",            6.0f,      true, 1.0f,     100.0f  };
@@ -182,6 +183,7 @@ namespace kraken {
         this->LoadValue(&this->jolt_wm_slip_floor);
         this->LoadValue(&this->jolt_wm_stick_speed);
         this->LoadValue(&this->jolt_wm_wheel_inertia);
+        this->LoadValue(&this->jolt_wm_rolling_resist);
         this->LoadValue(&this->jolt_wm_react_scale);
         this->LoadValue(&this->jolt_wm_own_spin);
         this->LoadValue(&this->jolt_wm_max_g);
@@ -266,6 +268,7 @@ namespace kraken {
         this->DumpValue(&this->jolt_wm_slip_floor);
         this->DumpValue(&this->jolt_wm_stick_speed);
         this->DumpValue(&this->jolt_wm_wheel_inertia);
+        this->DumpValue(&this->jolt_wm_rolling_resist);
         this->DumpValue(&this->jolt_wm_react_scale);
         this->DumpValue(&this->jolt_wm_own_spin);
         this->DumpValue(&this->jolt_wm_max_g);
