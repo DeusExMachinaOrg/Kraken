@@ -1388,6 +1388,7 @@ namespace kraken::fix::joltshadow {
         const float mUnsprung = std::max(cfg.jolt_wm_unsprung_mass.value, 0.5f);
         const bool  ownSpin = cfg.jolt_wm_own_spin.value != 0;
         const float driveTq = cfg.jolt_wm_drive_torque.value;
+        const float falloffOmega = cfg.jolt_wm_torque_falloff_omega.value;
         const float reactScale = cfg.jolt_wm_react_scale.value;
 
         // Drive intent: m_realThrottle, the SAME field the working VehicleConstraint path feeds
@@ -1480,7 +1481,19 @@ namespace kraken::fix::joltshadow {
                 omega = 0.0f;
             } else if (ownSpin) {
                 const float I = std::max(P.inertia, 1e-3f);
-                const float tauDrive = driven ? throttle * driveTq : 0.0f;
+                // docs §40: linear torque-vs-speed falloff - a real engine/gearbox (what ODE's
+                // own vehicles use, and what spring_wheel's origin branch chased directly via a
+                // real Hinge2 wheel's omega) has finite torque at any given RPM, giving a natural
+                // top speed; this constant-torque stand-in had none, so it accelerated forever
+                // at a roughly constant rate (Pacejka friction saturates the FORCE at high slip,
+                // but nothing opposes the chassis at speed, so net force stayed positive
+                // indefinitely). Reusing the existing kMaxOmega hard clamp doesn't fix this - it
+                // was never being reached (measured omega maxed ~30-53 rad/s on live runs, well
+                // under 250) - so it's a backstop, not a governor. This falloff is a minimal,
+                // principled fix: torque ramps linearly to zero as |omega| approaches
+                // falloffOmega, same shape as a simple DC-motor/redline curve.
+                const float falloff = std::clamp(1.0f - std::fabs(omega) / std::max(falloffOmega, 1e-3f), 0.0f, 1.0f);
+                const float tauDrive = driven ? throttle * driveTq * falloff : 0.0f;
                 omega += tauDrive / I * dt;
                 if (brake > 0.0f)
                     omega -= omega * std::min(1.0f, brake * 4.0f * dt); // brake as decay toward 0

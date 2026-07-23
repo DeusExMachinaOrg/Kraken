@@ -117,6 +117,14 @@ namespace kraken {
         ConfigValue<uint32_t>                 jolt_wm_own_spin;
         ConfigValue<float>                    jolt_wm_motor_gain;
         ConfigValue<float>                    jolt_wm_drive_torque;
+        // docs §40: spring_wheel's own_spin chased a REAL ODE Hinge2 wheel's real engine/gearbox
+        // spin rate (motor_gain was its P-controller gain) - the Jolt port has no such real
+        // drivetrain to read (it replaces the whole vehicle, not just tyre contact), so its
+        // constant-torque stand-in had no speed-dependent falloff at all, giving unbounded
+        // constant acceleration (no real top speed) unlike ODE's own torque-curve/drag-limited
+        // one. This is a minimal linear torque-vs-|omega| falloff so the simplified motor has
+        // SOME natural governing speed - not a redesign, just closing an identified gap.
+        ConfigValue<float>                    jolt_wm_torque_falloff_omega;
         ConfigValue<float>                    jolt_wm_max_g;
         // docs §39: my suspension travel DOF (spring_wheel used ODE's Hinge2 for this; the Jolt port has no wheel body so models it explicitly).
         ConfigValue<float>                    jolt_wm_susp_stiffness;     // k_susp (N/m) soft suspension spring (gives ride travel; series with the stiff tyre)
