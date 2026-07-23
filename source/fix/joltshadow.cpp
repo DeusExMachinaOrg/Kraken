@@ -1526,6 +1526,24 @@ namespace kraken::fix::joltshadow {
 
         const JPH::Wheels& wheels = state.constraint->GetWheels();
         const size_t nw = std::min(wheels.size(), state.wmSuspLen.size());
+
+        // docs §51: frame-by-frame torque-tracing diagnostic - §50's stated next step before a
+        // fourth guessed cap. §50 proved hardStopForce's torque vector (leverArm x upW) has zero
+        // world-Y component and reasoned it therefore "cannot cause yaw" - but that only follows
+        // if the inverse inertia tensor is diagonal in WORLD space, which is only true while the
+        // chassis is perfectly level. Mid-impact the chassis is often rolled/pitched, and the
+        // rotated (generally dense) tensor can leak a horizontal torque into yaw angular
+        // acceleration through its off-diagonal terms. Rather than assume that away again, measure
+        // it directly: accumulate each force source's torque about the chassis COM separately, then
+        // run each through the chassis's REAL world-space inverse inertia
+        // (MultiplyWorldSpaceInverseInertiaByVector, the same API already proven to compile/work
+        // from reverted attempt 1) to see its actual yaw contribution.
+        JPH::Vec3 torqueFriction = JPH::Vec3::sZero(); // leverArm x fFriction, ground slot
+        JPH::Vec3 torqueVertical = JPH::Vec3::sZero(); // leverArm x (upW*(suspForce+hardStop+chassisDamp))
+        JPH::Vec3 torqueHardStop = JPH::Vec3::sZero(); // leverArm x (upW*hardStopForce) - isolated
+        JPH::Vec3 torqueObstSide = JPH::Vec3::sZero(); // leverArm x fApply, obstacle+side slots
+        bool anyBottomedThisFrame = false;
+
         for (size_t i = 0; i < nw; ++i) {
             const JPH::Wheel* jwheel = wheels[i];
             const JPH::WheelSettings* s = jwheel ? jwheel->GetSettings() : nullptr;
@@ -1758,6 +1776,7 @@ namespace kraken::fix::joltshadow {
             if (haveBottomedCounter)
                 state.wmBottomedFrames[i] = bottomedOut ? (state.wmBottomedFrames[i] + 1) : 0;
             const int32_t bottomedFrames = haveBottomedCounter ? state.wmBottomedFrames[i] : 0;
+            if (bottomedFrames > 0) anyBottomedThisFrame = true; // docs §51: gates the post-loop torque-trace log
 
             float hardStopForce = 0.0f;
             if (bottomedOut) {
@@ -1909,10 +1928,50 @@ namespace kraken::fix::joltshadow {
                 // uncapped per §44's reasoning.
                 const float vChassisDown = wm::Dot(vpAt(cts[slots.ground].p), downW); // + = compressing
                 const float chassisDamp = std::clamp(cSusp * vChassisDown, -maxForce, maxForce);
-                const float upMag = std::max(0.0f, suspForce + hardStopForce + chassisDamp);
-                const JPH::Vec3 fApply = upW * upMag + fFriction;
+                // docs §51: hardStopForce applied along WORLD-up rather than the wheel's local
+                // (chassis-tilted) upW. Found via the torque-tracing diagnostic below that
+                // hardStopForce leaks real yaw torque once the chassis is significantly rolled/
+                // pitched - live-measured up to tiltDeg=47-50 during Bug01's yaw-spin event, at
+                // which point hardStopForce's own torqueY reached -15890 (dwarfing friction's
+                // -3177 at that same instant). §50's "a vertical force's torque is horizontal-only,
+                // so it can't cause yaw" proof implicitly assumed upW equals world Y exactly - only
+                // true while the chassis is level. suspForce+chassisDamp are a REAL strut-aligned
+                // spring/damper and must stay along upW even when tilted (that's how a real
+                // suspension behaves), but hardStopForce is a synthetic numerical patch (docs §44's
+                // inelastic-impulse stand-in for "arrest the chassis's WORLD-FRAME downward
+                // velocity"), not a physical spring - nothing requires it to be strut-aligned.
+                // Pinning it to world-up closes the yaw leak at its source (leverArm x worldUp has
+                // zero Y-component by construction) instead of re-capping the symptom, which is what
+                // all three of §50's reverted attempts tried instead. Verified: hardStop's own
+                // torqueY is now a structural 0 in every frame. 1 of 3 Bug01 repeats improved a lot
+                // (160-179deg -> 80.4deg); the other 2 stayed bad (172.7/170.7deg) because friction
+                // and obstacle/side forces leak yaw through the SAME tilted-frame mechanism and
+                // aren't touched by this fix - so Bug01's yaw-spin is NOT fully solved, only
+                // partially. First live pass looked like a Molokovoz01 regression (two runs showed
+                // max-angle 152-165deg vs a remembered 8.6-14.9deg baseline) - investigated by
+                // rebuilding the untouched pre-§51 commit and testing it cold: THAT baseline itself
+                // produced max-angle 151.3/161.4/166.7deg across 3 repeats, i.e. this scripted
+                // scenario's "angle" metric (yaw-conflated, see docs §47's own caveat) has much
+                // wider natural run-to-run variance than the old remembered figures reflected. With
+                // that corrected baseline, this fix's numbers (157.1/165.7deg, ratio 1.23/0.92, both
+                // healthy) are statistically indistinguishable from unmodified code - no regression.
+                // Lesson: don't trust 1-2 samples of this angle metric against a remembered range;
+                // re-baseline cold before attributing a noisy metric's swing to a code change.
+                const float suspAndDampMag = std::max(0.0f, suspForce + chassisDamp);
+                const JPH::Vec3 kWorldUp(0.0f, 1.0f, 0.0f);
+                const JPH::Vec3 fApply = upW * suspAndDampMag + kWorldUp * hardStopForce + fFriction;
                 const JPH::RVec3 at(cts[slots.ground].p.x, cts[slots.ground].p.y, cts[slots.ground].p.z);
                 bi.AddForce(state.bodyId, fApply, at);
+
+                // docs §51: split this wheel's torque contribution by source for the post-loop
+                // inverse-inertia diagnostic below.
+                if (vehicle->m_bIsControlledByPlayer) {
+                    const wm::vec3& gp = cts[slots.ground].p;
+                    const JPH::Vec3 lever(gp.x - (float) comW.GetX(), gp.y - (float) comW.GetY(), gp.z - (float) comW.GetZ());
+                    torqueFriction += lever.Cross(fFriction);
+                    torqueVertical += lever.Cross(upW * suspAndDampMag + kWorldUp * hardStopForce);
+                    torqueHardStop += lever.Cross(kWorldUp * hardStopForce); // structurally 0 by construction - confirms the fix
+                }
             }
             // docs §44: unthrottled (not the %30 sampled diagnostic below, which would likely MISS
             // a transient few-frame bump event entirely) - only fires while a wheel is actually
@@ -1932,6 +1991,14 @@ namespace kraken::fix::joltshadow {
                 if (fl > maxForce && fl > 1e-3f) fApply = fApply * (maxForce / fl);
                 const JPH::RVec3 at(cts[idx].p.x, cts[idx].p.y, cts[idx].p.z);
                 bi.AddForce(state.bodyId, fApply, at);
+                // docs §51: obstacle/side forces weren't previously suspected for Bug01's yaw-spin
+                // (the event was found via the ground-only §44 bottomed-out log), but measure them
+                // too rather than assume - a wall/curb-clip kick is exactly the kind of asymmetric,
+                // single-wheel impulse that could independently cause yaw.
+                if (vehicle->m_bIsControlledByPlayer) {
+                    const JPH::Vec3 lever(cts[idx].p.x - (float) comW.GetX(), cts[idx].p.y - (float) comW.GetY(), cts[idx].p.z - (float) comW.GetZ());
+                    torqueObstSide += lever.Cross(fApply);
+                }
             };
             applyDirect(slots.obstacle, fO);
             applyDirect(slots.side, fS);
@@ -1951,6 +2018,34 @@ namespace kraken::fix::joltshadow {
                     (double) fG.F.x, (double) fG.F.y, (double) fG.F.z, (double) fG.fpar_w,
                     state.wmGear, (double) state.wmEngineRpm, (double) maxWheelTorque, (double) wheelMuReal,
                     (double) compMax, (double) mUnsprung, (double) soilFrictionReal);
+            }
+        }
+
+        // docs §51: log the actual per-source yaw angular-ACCELERATION each force would produce
+        // through the chassis's real (possibly rotated, possibly non-diagonal) inverse inertia
+        // tensor - not just each torque vector's raw direction. Unthrottled (fires every frame of
+        // a bottomed-out event, same reasoning as the existing §44 log: these events are rare and
+        // brief enough that a %30 sample could miss them entirely).
+        if (anyBottomedThisFrame && vehicle->m_bIsControlledByPlayer) {
+            JPH::Body* chassisBody = physics->GetBodyLockInterfaceNoLock().TryGetBody(state.bodyId);
+            if (chassisBody != nullptr) {
+                const JPH::MotionProperties* mp = chassisBody->GetMotionProperties();
+                const JPH::Vec3 alphaFriction = mp->MultiplyWorldSpaceInverseInertiaByVector(chassisRot, torqueFriction);
+                const JPH::Vec3 alphaVertical = mp->MultiplyWorldSpaceInverseInertiaByVector(chassisRot, torqueVertical);
+                const JPH::Vec3 alphaHardStop = mp->MultiplyWorldSpaceInverseInertiaByVector(chassisRot, torqueHardStop);
+                const JPH::Vec3 alphaObstSide = mp->MultiplyWorldSpaceInverseInertiaByVector(chassisRot, torqueObstSide);
+                // docs §51: direct confirmation of the "upW isn't world-Y once tilted" hypothesis -
+                // §50's proof that a vertical force's torque axis is horizontal-only implicitly
+                // assumed upW (the wheel's LOCAL suspension-up, chassisXform-rotated) equals world
+                // Y exactly, which is only true while the chassis is perfectly level. Log the actual
+                // tilt so a correlation between tilt magnitude and hardStop/vert leaking into yaw can
+                // be checked directly instead of inferred.
+                const JPH::Vec3 chassisUp = chassisRot * JPH::Vec3(0.0f, 1.0f, 0.0f);
+                const float tiltDeg = JPH::RadiansToDegrees(std::acos(std::clamp(chassisUp.GetY(), -1.0f, 1.0f)));
+                LOG_INFO("docs §51 torque-trace (%s): alphaY fric=%.3f vert=%.3f hardStop=%.3f obstSide=%.3f | torqueY fric=%.0f vert=%.0f hardStop=%.0f obstSide=%.0f | vAngY=%.3f tiltDeg=%.1f",
+                    label, (double) alphaFriction.GetY(), (double) alphaVertical.GetY(), (double) alphaHardStop.GetY(), (double) alphaObstSide.GetY(),
+                    (double) torqueFriction.GetY(), (double) torqueVertical.GetY(), (double) torqueHardStop.GetY(), (double) torqueObstSide.GetY(),
+                    (double) vAng.GetY(), (double) tiltDeg);
             }
         }
     }
