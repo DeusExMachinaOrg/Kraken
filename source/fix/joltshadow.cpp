@@ -1692,8 +1692,26 @@ namespace kraken::fix::joltshadow {
             // value weight/kSusp under load. comp<0 = drooped (wheel reaching below rest, airborne).
             const float restLen = state.wmRestLen[i];
             const float maxLen  = s->mSuspensionMaxLength;
+            // docs §43: real per-wheel compression-travel budget (see the doc for the two failed
+            // attempts before this formula - restLen-mSuspensionMinLength pinned at a 0.01 floor;
+            // (1-restFraction)*range let the linear spring blow up on a bump).
+            const float suspensionRangeReal = std::max(maxLen - s->mSuspensionMinLength, 0.01f);
+            const float restFraction = std::clamp(cfg.jolt_susp_rest_fraction.value, 0.02f, 0.4f);
+            const float compMax = std::clamp(5.0f * restFraction * suspensionRangeReal, 0.02f, suspensionRangeReal); // most-compressed
+
             float comp    = restLen - state.wmSuspLen[i];
             float compVel = state.wmSuspVel[i];
+
+            // docs §45: a progressive (non-linear) spring stiffening near full compression was
+            // tried here and REVERTED - kProgressiveStart=0.6/kProgressiveMult=4x gave no
+            // measurable pitch improvement (absolute-tilt ratio stayed ~1.4x ODE, same as the
+            // plain linear spring) while making the forward-travel ratio noticeably worse and
+            // noisier (5 confirmed-vehicle repeats: 0.16-1.17, avg 0.75, vs the linear spring's
+            // 0.72-1.13, avg 0.925) - a clear regression with no compensating benefit, so reverted
+            // rather than kept on the theory it might help. A real fix for the remaining pitch gap
+            // would need a properly re-tuned progressive curve (different start point/multiplier,
+            // possibly per-vehicle) verified to actually help before adopting - left open rather
+            // than shipped on a hypothesis that didn't pan out when tested.
             // chassis support: only the compressed spring pushes up (a drooped strut just hangs)
             const float suspForce = std::max(0.0f, kSusp * std::max(comp, 0.0f) + cSusp * compVel);
             // Wheel (unsprung) DOF, semi-implicit Euler with IMPLICIT damping. Explicit damping
@@ -1708,41 +1726,6 @@ namespace kraken::fix::joltshadow {
             compVel = (compVel + springAccel * dt) / (1.0f + (cSusp / mUnsprung) * dt);
             comp   += compVel * dt; // symplectic: integrate position with the just-updated velocity
             const float compMin = restLen - maxLen; // most-drooped (negative)
-            // docs §43: real per-wheel compression-travel budget. FIRST attempt used
-            // restLen - mSuspensionMinLength, reasoning mSuspensionMinLength was real per-wheel
-            // hard-stop data like mSuspensionMaxLength - WRONG, caught by an immediate live test
-            // (compMax pinned at the 0.01 floor the entire run, suspF capped under 100N for a
-            // 167kg vehicle - permanently bottomed out, ratio collapsed to 0.39). Root cause:
-            // mSuspensionMinLength is a flat hardcoded 0.05 (BuildShadow, unlike mSuspensionMax
-            // Length which DOES fold in the real suspensionRange) authored only for the
-            // VehicleConstraint's own built-but-never-simulated internal math - and wheelmodel's
-            // raycast-anchored restLen (InitWheelModelSuspension) sits close to THAT arbitrary
-            // floor by construction (the chassis-local mount point already approximates the
-            // wheel's own resting ground-contact position), not close to mSuspensionMaxLength as
-            // first assumed - so restLen-minLength measures almost nothing.
-            // SECOND attempt used the full remaining geometric range ((1-restFraction)*range,
-            // ~0.93m for this vehicle) - also WRONG, caught by a second live test: comp snapped
-            // straight to the new 0.93m ceiling on a single bump, suspF spiked to multiple kN,
-            // and the chassis visibly launched (fwd.y climbed from ~0 to 0.75 - nosing skyward -
-            // and the orientation-divergence angle hit 170deg by scenario end). Root cause: kSusp/
-            // cSusp (docs §31/§42.5) are a LINEAR spring calibrated ONLY to be realistic near its
-            // actual static operating point (restFraction*range deflection under the vehicle's own
-            // weight) - real suspensions are progressive/non-linear specifically so bottoming out
-            // doesn't behave like this, but this model has no such curve, so letting the SAME
-            // per-meter stiffness swing through 13x its calibrated deflection generates force no
-            // real suspension over that same travel would.
-            // Fixed by bounding how far the linear approximation is trusted rather than maximizing
-            // geometric travel: capped at 5x the real static sag (rest_fraction*suspensionRange) -
-            // a standard vehicle-dynamics bump-reserve rule of thumb, and not coincidentally close
-            // to the old flat jolt_wm_susp_travel constant (0.35) at this vehicle's own real
-            // suspensionRange/rest_fraction (5*0.07*1.0 = 0.35) - so this reduces to the
-            // previously-validated-safe magnitude at the reference values while now scaling
-            // per-vehicle with real suspensionRange data instead of being one flat constant for
-            // every vehicle. The deeper fix (an actual progressive spring curve) is a real,
-            // separate, non-trivial improvement - flagged, not attempted this pass.
-            const float suspensionRangeReal = std::max(maxLen - s->mSuspensionMinLength, 0.01f);
-            const float restFraction = std::clamp(cfg.jolt_susp_rest_fraction.value, 0.02f, 0.4f);
-            const float compMax = std::clamp(5.0f * restFraction * suspensionRangeReal, 0.02f, suspensionRangeReal); // most-compressed
             if (comp < compMin) { comp = compMin; if (compVel < 0.0f) compVel = 0.0f; }
             const bool bottomedOut = comp >= compMax;
             // docs §44: a real mechanical bump-stop delivers a reaction PROPORTIONAL to how much
