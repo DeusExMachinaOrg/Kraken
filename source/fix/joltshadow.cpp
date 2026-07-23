@@ -17,16 +17,28 @@
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/Shape/SphereShape.h>
+#include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 #include <Jolt/Physics/Vehicle/VehicleConstraint.h>
 #include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
 #include <Jolt/Physics/Vehicle/VehicleCollisionTester.h>
+#include <Jolt/Physics/Collision/ContactListener.h>
+#include <Jolt/Physics/Collision/RayCast.h>
+#include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Constraints/SliderConstraint.h>
 
 #include "hta/ai/CServer.hpp"
 #include "hta/ai/DynamicScene.hpp"
+#include "hta/ai/Geom.hpp"
 #include "hta/ai/ObjContainer.hpp"
 #include "hta/ai/Vehicle.hpp"
+#include "hta/ai/VehiclePart.hpp"
 #include "hta/ai/Wheel.hpp"
+#include "hta/m3d/CWorld.hpp"
+#include "hta/m3d/Landscape.hpp"
+#include "hta/m3d/WheelTraceMgr.hpp"
 #include "hta/CVector.hpp"
 #include "hta/Quaternion.hpp"
 
@@ -40,7 +52,10 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <map>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 JPH_SUPPRESS_WARNINGS
@@ -81,6 +96,11 @@ namespace kraken::fix::joltshadow {
     // kinematic mirror bodies (docs §22.11/§23.5).
     static constexpr JPH::ObjectLayer kWheelQueryLayer = 2;
 
+    // Must match kraken::fix::jolt::Layers::WHEEL_PROXY (jolt.cpp, docs §34) - a REAL body
+    // layer (unlike WHEEL_QUERY above), also restricted to NON_MOVING only, for the auxiliary
+    // wheel-proxy bodies built by BuildWheelProxy below.
+    static constexpr JPH::ObjectLayer kWheelProxyLayer = 3;
+
     // Not in extern/hta's ode.hpp yet - declared locally rather than editing that submodule.
     // Confirmed via disassembly (docs §22.3): counts the body's dxJointNode linked list at
     // [body+0x14]/[node+8], i.e. exactly ODE's real, live joint count - not cached anywhere.
@@ -116,8 +136,13 @@ namespace kraken::fix::joltshadow {
     // these between trials without a kraken.ini round-trip (Config is loaded once at startup,
     // there is no hot-reload in this codebase).
     struct TuningParams {
-        float suspensionFrequency; // Hz, JPH::SpringSettings::mFrequency (FrequencyAndDamping mode)
-        float suspensionDamping;   // damping RATIO (0=undamped, 1=critical), JPH::SpringSettings::mDamping
+        // docs §31: NOT a direct Hz value or ratio despite the field name (kept from §27 to
+        // avoid config/autotuner churn a third time) - BuildShadow now computes REAL ODE-
+        // derived stiffness (N/m) and damping (N*s/m) per wheel from WheelPrototypeInfo's own
+        // CFM/ERP, and these two fields are dimensionless residual MULTIPLIERS on top of that
+        // (1.0 = trust ODE's real values as-is). See BuildShadow's wheel loop for the derivation.
+        float suspensionFrequency; // multiplies the derived stiffness (JPH::SpringSettings::mStiffness, N/m)
+        float suspensionDamping;   // multiplies the derived damping (JPH::SpringSettings::mDamping, N*s/m)
         float frictionLongScale;   // uniform multiplier on WheelSettingsWV's default longitudinal friction curve
         float frictionLatScale;    // uniform multiplier on WheelSettingsWV's default lateral friction curve
     };
@@ -199,6 +224,270 @@ namespace kraken::fix::joltshadow {
         return scene->GetVehicleControlledByPlayer();
     }
 
+    // docs §23.10: assembles the chassis's REAL multi-part collision geometry (Chassis/Cabin/
+    // Basket/etc. boxes+spheres+capsules, via ComplexPhysicObj::m_vehicleParts ->
+    // PhysicBody::GetNumGeoms/GetGeom -> ai::Geom::GetGeomId()'s raw dxGeom*) into a single
+    // Jolt compound shape, instead of the single bounding box used since Stage 1. Box/sphere/
+    // capsule extraction mirrors fix::jolt's WalkSpaceForStaticExport (same ODE accessor
+    // calls, same capsule Z(ODE)->Y(Jolt) axis remap) - duplicated rather than shared across
+    // translation units given this session's time budget, not because the logic differs.
+    // Trimesh parts are deliberately NOT supported (skipped + logged if seen): unlike static
+    // terrain, vehicle collision parts are performance-critical and, in every prototype seen
+    // so far, simple shapes - and a trimesh part would need its world-space vertices (that's
+    // what dGeomTriMeshGetTriangle returns) converted into chassis-local space, which adds
+    // real complexity for a case that may never occur.
+    // Returns null (caller falls back to the existing single-box shape) if no usable part
+    // geoms are found at all - never leaves the vehicle without SOME collision shape.
+    static JPH::RefConst<JPH::Shape> BuildChassisCompoundShape(hta::ai::Vehicle* vehicle,
+            const hta::CVector& chassisPos, const hta::Quaternion& chassisRot) {
+        JPH::Ref<JPH::StaticCompoundShapeSettings> compound = new JPH::StaticCompoundShapeSettings();
+        int32_t partCount = 0, geomCount = 0, boxCount = 0, sphereCount = 0, capsuleCount = 0, skippedCount = 0;
+
+        const hta::Quaternion invChassisRot = chassisRot.Conjugate();
+
+        for (const auto& [partName, part] : vehicle->m_vehicleParts) {
+            if (part == nullptr)
+                continue;
+            ++partCount;
+
+            const uint32_t numGeoms = part->GetNumGeoms();
+            for (uint32_t i = 0; i < numGeoms; ++i) {
+                hta::ai::Geom* partGeom = part->GetGeom(i); // PhysicBody::GetGeom returns non-const Geom* despite being a const method
+                if (partGeom == nullptr)
+                    continue;
+
+                // docs §23.10: PhysicBody::m_pGeoms stores ai::GeomTransform* (ODE's
+                // dGeomTransform, geom class 6, wrapping the real box/sphere/capsule as an
+                // "inner" geom so it can sit at an offset from the body) - GetGeom() returns
+                // the base Geom* type, but the underlying object IS actually a GeomTransform
+                // (confirmed by m_pGeoms's declared element type); static_cast is safe here,
+                // no RTTI needed. dGeomGetClass on the OUTER transform is always class 6, never
+                // the real shape - unwrap to the inner geom first. Must stay non-const: only
+                // the non-const GeomTransform::GetGeom() overload has a NATIVE trampoline
+                // registered (extern/hta/source/hta/ai/GeomTransform.cpp) - the const overload
+                // is declaration-only and would fail to link.
+                hta::ai::GeomTransform* transform = static_cast<hta::ai::GeomTransform*>(partGeom);
+                hta::ai::Geom* innerGeom = transform->GetGeom();
+                if (innerGeom == nullptr)
+                    continue;
+                dxGeom* geom = innerGeom->GetGeomId();
+                if (geom == nullptr)
+                    continue;
+                ++geomCount;
+
+                const int32_t geomClass = dGeomGetClass(geom);
+                JPH::Ref<JPH::Shape> shape;
+                // Extra LOCAL-frame rotation the shape needs before the geom's own world
+                // rotation is applied (docs §22.13) - only capsule needs this.
+                JPH::Quat localShapeRemap = JPH::Quat::sIdentity();
+
+                if (geomClass == dBoxClass) {
+                    float lengths[3]; // full side lengths, not half-extents
+                    dGeomBoxGetLengths(geom, lengths);
+                    JPH::ShapeSettings::ShapeResult result =
+                        JPH::BoxShapeSettings(JPH::Vec3(lengths[0] * 0.5f, lengths[1] * 0.5f, lengths[2] * 0.5f)).Create();
+                    if (result.HasError()) { ++skippedCount; continue; }
+                    shape = result.Get();
+                    ++boxCount;
+                } else if (geomClass == dSphereClass) {
+                    const float radius = (float) dGeomSphereGetRadius(geom);
+                    JPH::ShapeSettings::ShapeResult result = JPH::SphereShapeSettings(radius).Create();
+                    if (result.HasError()) { ++skippedCount; continue; }
+                    shape = result.Get();
+                    ++sphereCount;
+                } else if (geomClass == dCCylinderClass) {
+                    float radius = 0.0f, length = 0.0f;
+                    dGeomCCylinderGetParams(geom, &radius, &length);
+                    if (radius <= 0.0f || length <= 0.0f) { ++skippedCount; continue; }
+                    JPH::ShapeSettings::ShapeResult result = JPH::CapsuleShapeSettings(length * 0.5f, radius).Create();
+                    if (result.HasError()) { ++skippedCount; continue; }
+                    shape = result.Get();
+                    // ODE capsule long axis is local Z, Jolt's is local Y - same remap as
+                    // WalkSpaceForStaticExport (docs §22.13).
+                    localShapeRemap = JPH::Quat::sRotation(JPH::Vec3::sAxisX(), JPH::DegreesToRadians(90.0f));
+                    ++capsuleCount;
+                } else {
+                    ++skippedCount; // trimesh/other - not supported for vehicle parts, see comment above
+                    continue;
+                }
+
+                // docs §23.10: confirmed live (diagnostic log, since removed) that the OUTER
+                // transform's own world position is a constant per-vehicle offset (matches
+                // PhysicObj::GetPosition() + rot*GetMassCenter(), i.e. it tracks the RAW ODE
+                // body origin, not PhysicObj's own adjusted GetPosition()) - identical across
+                // every part of the same vehicle, NOT a per-part placement. The INNER geom's
+                // position/rotation (ODE's dGeomTransform contract: a geom attached to a
+                // transform has its coordinates set relative to that transform) is where the
+                // real per-part offset lives. Combine both to get the part's true world
+                // transform, then re-express relative to the chassis body (PhysicObj::
+                // GetPosition/GetRotation) our compound shape is actually rooted at.
+                const hta::CVector    outerWorldPos  = partGeom->GetPosition();
+                const hta::Quaternion outerWorldRot  = partGeom->GetRotation();
+                const hta::CVector    innerLocalPos  = innerGeom->GetPosition();
+                const hta::Quaternion innerLocalRot  = innerGeom->GetRotation();
+
+                const hta::CVector    partWorldPos = outerWorldPos + outerWorldRot * innerLocalPos;
+                const hta::Quaternion partWorldRot = outerWorldRot * innerLocalRot;
+
+                const hta::CVector    localPos = invChassisRot * (partWorldPos - chassisPos);
+                const hta::Quaternion localRotRaw = invChassisRot * partWorldRot;
+                const JPH::Quat       localRot = JPH::Quat(localRotRaw.x, localRotRaw.y, localRotRaw.z, localRotRaw.w).Normalized() * localShapeRemap;
+
+                compound->AddShape(JPH::Vec3(localPos.x, localPos.y, localPos.z), localRot, shape.GetPtr());
+            }
+        }
+
+        if (compound->mSubShapes.empty()) {
+            LOG_WARNING("Shadow: no usable vehicle-part geoms for compound chassis shape (parts=%d geoms=%d) - falling back to bounding box",
+                partCount, geomCount);
+            return nullptr;
+        }
+
+        // docs §32: tried adding a small per-wheel "safety sphere" to this compound shape here
+        // (positioned at mSuspensionMaxLength along the suspension direction, meant to only
+        // engage once a wheel's own raycast already failed) to give the chassis body some real
+        // collision presence where Jolt's raycast-only wheels have none - real ODE wheels are
+        // physical bodies that can still brace against a slope even when heavily tilted; Jolt's
+        // wheels contribute nothing once their raycast misses. REVERTED after live testing showed
+        // it made things worse, not better: across 2 separate settle attempts on the same save,
+        // the vehicle's resting trajectory changed substantially (once sliding ~26m further down
+        // the slope than without the spheres, once settling with ALL 4 wheel raycasts reporting
+        // no contact simultaneously - held up by the new spheres directly touching ground instead
+        // of by wheel physics at all). Most likely cause: the added spheres, being part of the
+        // PRIMARY collision shape (not a last-resort-only mechanism), also engage during the
+        // initial chaotic post-spawn settling fall, changing the vehicle's bounce/roll trajectory
+        // unpredictably - and for wheels already in normal contact, the sphere sits close enough
+        // to the wheel's own contact point to compete with the suspension's own force rather than
+        // staying inert. The underlying diagnosis (docs §32.1-32.4: Jolt's shadow chassis tips to
+        // ~45° vs real ODE's ~19° on this save, because Jolt's wheels have no physical presence of
+        // their own to arrest rotation once their raycast fails) still stands - just without a
+        // fix here yet. A different approach (e.g. a true auxiliary body per wheel instead of a
+        // shape folded into the same rigid body, or accepting this as a known Jolt-vehicle-model
+        // limitation on steep terrain) would need its own dedicated investigation.
+
+        JPH::ShapeSettings::ShapeResult result = compound->Create();
+        if (result.HasError()) {
+            LOG_WARNING("Shadow: compound chassis shape creation failed (%s) - falling back to bounding box", result.GetError().c_str());
+            return nullptr;
+        }
+
+        LOG_INFO("Shadow: compound chassis shape built - %d part(s), %d geom(s) (%d box, %d sphere, %d capsule, %d skipped)",
+            partCount, geomCount, boxCount, sphereCount, capsuleCount, skippedCount);
+        return result.Get();
+    }
+
+    // docs §34: gives one wheel some genuine physical presence for the one case Jolt's raycast-
+    // only WheeledVehicleController wheels can never handle on their own - a chassis tipped far
+    // enough that the wheel's own raycast (bounded to mSuspensionMaxLength + radius, fixed
+    // direction from a fixed attachment point) no longer reaches the ground at all. Confirmed
+    // live (docs §32.1-32.3): on a save that rests a vehicle on a steep slope, Jolt's shadow
+    // chassis settles at ~45° pitch where real ODE settles at ~19° on the same save - because
+    // once 2 of 4 wheels' raycasts stop finding contact, NOTHING (wheels contribute zero force
+    // when their raycast fails; real ODE wheels are physical bodies that still brace against
+    // the slope) arrests the tip. Root goal (per explicit user direction: the target is Jolt
+    // fully replacing ODE, so "fall back to ODE when this happens" is not an option) - make
+    // Jolt's own vehicle model self-sufficient here instead.
+    //
+    // A prior attempt (docs §32.4) fused a same-sized sphere directly into the chassis's own
+    // compound shape, positioned at exactly the wheel's maximum raycast reach - reverted after
+    // live testing showed real regressions (vehicle sliding ~26m further down a slope once;
+    // settling with all 4 wheels' raycasts reporting zero contact another time, held up
+    // entirely by the new spheres instead of by any wheel physics). Root cause of that failure:
+    // a shape fused into the SAME rigid body (a) participates in the chaotic post-spawn
+    // settling fall unpredictably, and (b) sitting at exactly the wheel's own boundary reach
+    // means it's ALREADY touching the ground whenever the wheel's own raycast is ALSO finding
+    // ground nearby - directly competing with the suspension spring under perfectly normal
+    // conditions, not just as a last resort.
+    //
+    // This version is a genuinely SEPARATE dynamic body, connected to the chassis via a
+    // JPH::SliderConstraint (translation-only along the suspension axis, no rotation - exactly
+    // what's wanted here), with its allowed range set to [wheelReach, wheelReach+margin] - NOT
+    // [0, wheelReach+margin]. That's the key structural difference from the reverted attempt:
+    // this proxy is PHYSICALLY INCAPABLE of ever being closer to the chassis than exactly where
+    // the wheel's own raycast reach already ends, so for the entire normal operating range
+    // (ground anywhere within the wheel's own reach) it simply cannot also touch anything and
+    // cannot compete with the suspension spring at all. It only has room to extend further once
+    // the chassis has tipped enough that even the wheel's own full reach has already failed -
+    // exactly the failure case this is meant to catch, and only that case.
+    //
+    // No motor, no driven friction, no steering - a plain sphere purely for last-resort
+    // structural bracing, not a second wheel model. Object layer restricted to NON_MOVING only
+    // (kWheelProxyLayer mirrors kWheelQueryLayer's own restriction, same reason: this must
+    // brace against terrain, never push against another vehicle's body or kinematic mirror).
+    // Leaked forever on rebuild, matching this file's established convention for the main
+    // shadow body/constraint (see BuildShadow's own comment for why - tearing down Jolt
+    // bodies/constraints on a vehicle swap caused a real, repeatable worker-thread crash
+    // earlier this session).
+    //
+    // Known simplification: relies on mLimitsMin keeping the proxy geometrically clear of the
+    // chassis shape rather than an explicit JPH::GroupFilterTable exclusion - not proven
+    // watertight in every possible extreme rotation; revisit if self-collision artifacts are
+    // ever observed live. Gated behind [jolt_harness] wheel_proxy (default on) so it can be
+    // disabled without a rebuild if it ever needs to be ruled out live.
+    static void BuildWheelProxy(JPH::PhysicsSystem* physics, JPH::Body* chassisBody,
+            const JPH::WheelSettingsWV* ws, const char* label, uint32_t wheelIndex) {
+        if (kraken::Config::Instance().jolt_wheel_proxy.value == 0)
+            return;
+
+        JPH::BodyInterface& bodyInterface = physics->GetBodyInterface();
+
+        const float reachLimit = ws->mSuspensionMaxLength + ws->mRadius; // exactly as far as the wheel's own raycast already searches
+        // docs §34 live-tested: 1.0m was too conservative - the actual measured shortfall on
+        // the Molokovoz slope test was 2.2-3.2m (docs §32.1's LogNoContactRaycastDiagnostic),
+        // so a 1.0m margin left the proxy still short of the ground and the vehicle settled at
+        // the same ~45° pitch as with no proxy at all. Widened to something that can plausibly
+        // reach across a real tip on this scale of vehicle - not a rigorously derived number,
+        // just generously beyond the worst shortfall actually measured.
+        constexpr float kExtraReachMargin = 3.5f; // meters beyond the wheel's own reach - the ONLY zone this proxy can ever occupy
+        const float proxyRadius = std::max(ws->mRadius, 0.05f);
+
+        const JPH::RMat44 chassisTransform = chassisBody->GetWorldTransform();
+        const JPH::RVec3  worldAttachPoint = chassisTransform * ws->mPosition;
+        const JPH::Vec3   worldSuspensionDir = chassisTransform.Multiply3x3(ws->mSuspensionDirection).Normalized();
+        const JPH::RVec3  worldProxyStart = worldAttachPoint + worldSuspensionDir * reachLimit;
+
+        JPH::RefConst<JPH::Shape> proxyShape = new JPH::SphereShape(proxyRadius);
+        JPH::BodyCreationSettings proxySettings(proxyShape.GetPtr(), worldProxyStart,
+            JPH::Quat::sIdentity(), JPH::EMotionType::Dynamic, kWheelProxyLayer);
+        proxySettings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+        proxySettings.mMassPropertiesOverride.mMass = 10.0f; // light - a structural probe, not meant to add meaningfully to the vehicle's own dynamics
+
+        JPH::Body* proxyBody = bodyInterface.CreateBody(proxySettings);
+        if (proxyBody == nullptr) {
+            LOG_WARNING("Shadow (%s): wheel proxy body creation failed for wheel=%u (out of bodies?)", label, wheelIndex);
+            return;
+        }
+        bodyInterface.AddBody(proxyBody->GetID(), JPH::EActivation::Activate);
+
+        // mPoint1 == mPoint2 (both the wheel's real attachment point) explicitly defines the
+        // slider's "0" position to be there, regardless of where the proxy body actually starts
+        // (worldProxyStart, reachLimit away) - the constraint computes the ACTUAL initial slider
+        // value from the bodies' real positions relative to this shared reference, which comes
+        // out to exactly reachLimit given where the proxy was just placed. mLimitsMin=0 then
+        // means "can't get closer than reachLimit from the attachment", not "can't get closer
+        // than the attachment itself" - the whole point of this design.
+        JPH::SliderConstraintSettings sliderSettings;
+        sliderSettings.mSpace         = JPH::EConstraintSpace::WorldSpace;
+        sliderSettings.mAutoDetectPoint = false;
+        sliderSettings.mPoint1       = worldAttachPoint;
+        sliderSettings.mPoint2       = worldAttachPoint;
+        sliderSettings.mSliderAxis1  = worldSuspensionDir;
+        sliderSettings.mSliderAxis2  = worldSuspensionDir;
+        // Any world axis not parallel to the slider axis works as the perpendicular reference -
+        // chassis-local forward is always perpendicular to chassis-local "down".
+        const JPH::Vec3 worldNormalAxis = chassisTransform.Multiply3x3(JPH::Vec3(0.0f, 0.0f, 1.0f)).Normalized();
+        sliderSettings.mNormalAxis1  = worldNormalAxis;
+        sliderSettings.mNormalAxis2  = worldNormalAxis;
+        sliderSettings.mLimitsMin    = 0.0f;
+        sliderSettings.mLimitsMax    = kExtraReachMargin;
+
+        JPH::Constraint* constraint = sliderSettings.Create(*chassisBody, *proxyBody);
+        physics->AddConstraint(constraint);
+
+        LOG_INFO("Shadow (%s): wheel proxy built for wheel=%u - engages only beyond %.3fm from attachment (wheel's own raycast already covers up to there), extra reach margin %.1fm",
+            label, wheelIndex, (double) reachLimit, (double) kExtraReachMargin);
+    }
+
     // Builds a fresh shadow chassis+wheel body/constraint mirroring `vehicle`'s prototype
     // geometry into `state`, called once for the first vehicle a given ShadowState tracks and
     // again every time it changes (level reload, vehicle switch - see UpdateOneVehiclePreStep below).
@@ -235,17 +524,25 @@ namespace kraken::fix::joltshadow {
         JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
         JPH::BodyInterface&  bodyInterface = physics->GetBodyInterface();
 
-        // Chassis: approximate as a single box using the same mass-box dimensions ODE's own
-        // RefreshMass (ComplexPhysicObj::RefreshMass, VA 0x2BCAC0) feeds into dMassSetBoxTotal
-        // (confirmed via disassembly - m_massSize is the full box side lengths, m_massShape
-        // defaults to MS_BOX) - not the real multi-part collision (Chassis/Cabin/Basket boxes
-        // + spherical wheels), but close enough for a divergence-logging shadow.
+        hta::CVector    pos = vehicle->GetPosition();
+        hta::Quaternion rot = vehicle->GetRotation(); // literal dBodyGetQuaternion passthrough (confirmed)
+
+        // Chassis: prefer the real multi-part collision geometry (docs §23.10 -
+        // BuildChassisCompoundShape, Chassis/Cabin/Basket/etc. boxes+spheres+capsules via
+        // ComplexPhysicObj::m_vehicleParts); fall back to the original single mass-box
+        // approximation (same dimensions ODE's own RefreshMass/dMassSetBoxTotal uses, VA
+        // 0x2BCAC0) if no usable part geoms were found for any reason - never leaves the
+        // vehicle without a shape.
         const hta::ai::VehiclePrototypeInfo* protoInfo = vehicle->GetPrototypeInfo();
         hta::CVector massSize = protoInfo != nullptr ? protoInfo->m_massSize : hta::CVector(2.0f, 1.0f, 4.0f);
-        JPH::Vec3 halfExtents(
+        JPH::Vec3 halfExtents( // still computed unconditionally: used as the fallback shape AND for the build-log dimensions below, even when the compound shape wins
             std::max(massSize.x * 0.5f, 0.1f),
             std::max(massSize.y * 0.5f, 0.1f),
             std::max(massSize.z * 0.5f, 0.1f));
+
+        JPH::RefConst<JPH::Shape> chassisBaseShape = BuildChassisCompoundShape(vehicle, pos, rot);
+        if (chassisBaseShape == nullptr)
+            chassisBaseShape = new JPH::BoxShape(halfExtents);
 
         // PhysicObj::m_massCenter (local-space) is exactly the offset PhysicObj::GetPosition()
         // itself subtracts from the raw ODE body origin (confirmed via disassembly of
@@ -257,14 +554,11 @@ namespace kraken::fix::joltshadow {
         JPH::Vec3 comOffset(localCom.x, localCom.y, localCom.z);
 
         JPH::ShapeSettings::ShapeResult chassisResult =
-            JPH::OffsetCenterOfMassShapeSettings(comOffset, new JPH::BoxShape(halfExtents)).Create();
+            JPH::OffsetCenterOfMassShapeSettings(comOffset, chassisBaseShape.GetPtr()).Create();
         if (chassisResult.HasError()) {
             LOG_ERROR("Shadow chassis shape creation failed (%s): %s", label, chassisResult.GetError().c_str());
             return false;
         }
-
-        hta::CVector    pos = vehicle->GetPosition();
-        hta::Quaternion rot = vehicle->GetRotation(); // literal dBodyGetQuaternion passthrough (confirmed)
 
         JPH::BodyCreationSettings bodySettings(
             chassisResult.Get(),
@@ -280,6 +574,18 @@ namespace kraken::fix::joltshadow {
             return false;
         }
         state.bodyId = body->GetID();
+        // docs §23.11: lets VehiclePushbackContactListener map a contact straight back to the
+        // hta::ai::Vehicle* that owns this DYNAMIC body, without a per-frame lookup - same
+        // technique used for the kinematic mirrors below (MirrorOtherVehicles).
+        body->SetUserData(reinterpret_cast<uint64_t>(vehicle));
+
+        // docs §27: read once here (constant for the whole body, not per-wheel) - used by the
+        // per-wheel suspension-frequency derivation below. Valid immediately after CreateBody:
+        // EOverrideMassProperties::CalculateInertia computes these as part of shape/mass
+        // processing, no AddBody/simulation step required first.
+        const JPH::MotionProperties* motionProps = body->GetMotionProperties();
+        const float          chassisInvMass    = motionProps->GetInverseMass();
+        const JPH::Mat44      chassisInvInertia = motionProps->GetLocalSpaceInverseInertia();
 
         JPH::VehicleConstraintSettings vehicleSettings;
         std::vector<hta::ai::Wheel*>& wheelOrder = state.wheelOrder; // parallel to vehicleSettings.mWheels; also reused by ApplyJoltToVehicle
@@ -290,6 +596,13 @@ namespace kraken::fix::joltshadow {
         wheelSourceIndex.reserve(numWheels);
         state.wheelBaselineJointCount.clear();      // re-captured lazily in ApplyJoltToVehicle (docs §22.3)
         state.wheelHadExtraJointLastFrame.clear();
+
+        // docs §31: suspension stiffness/damping are now read directly from real ODE data per
+        // wheel (see the per-wheel derivation below) - superseding §29's front/rear axle weight-
+        // share pre-pass that used to live here. That pre-pass only ever existed to feed §27's
+        // target-rest-fraction formula, which is no longer the primary path; kGravity is kept
+        // for the rare defensive fallback inside the wheel loop.
+        constexpr float kGravity = 9.81f;
 
         for (uint32_t i = 0; i < numWheels; ++i) {
             const hta::ai::Vehicle::WheelRuntimeInfo& info = vehicle->m_wheels[i];
@@ -313,45 +626,75 @@ namespace kraken::fix::joltshadow {
             ws->mWheelUp             = JPH::Vec3(0.0f, 1.0f, 0.0f);
             ws->mWheelForward        = JPH::Vec3(0.0f, 0.0f, 1.0f);
 
-            // WheelPrototypeInfo::m_suspensionRange (confirmed field, offset 0x8c) is the
-            // only suspension-travel data exposed anywhere at runtime - ODE's own
-            // CFM/ERP-form softness params (m_suspensionCFM/ERP) don't translate to Jolt's
-            // frequency/damping spring model without a conversion this session didn't derive,
-            // so travel range comes from real per-wheel data but the spring's own stiffness/
-            // damping is a single global knob (g_activeTuning) instead - see below.
+            // WheelPrototypeInfo::m_suspensionRange (confirmed field, offset 0x8c) is real
+            // per-wheel suspension-travel data (vehicleparts.xml).
             const hta::ai::WheelPrototypeInfo* wheelProto = wheel->GetPrototypeInfo();
             const float suspensionRange = wheelProto != nullptr ? std::max(wheelProto->m_suspensionRange, 0.05f) : 0.2f;
             ws->mSuspensionMinLength = 0.05f;
             ws->mSuspensionMaxLength = 0.05f + suspensionRange;
 
-            // Suspension stiffness/damping and tire friction (docs §8.5/§16) - tunable via
-            // [jolt_harness], searchable via the in-process autotuner (AutoTune* below), applied
-            // identically to every wheel of every shadow vehicle (no per-wheel/per-vehicle
-            // tuning - a single global "feel" knob, matching the scope this increment targets).
+            // docs §31: suspension stiffness/damping now read directly from REAL ODE data
+            // (WheelPrototypeInfo::m_suspensionCFM/m_suspensionERP, vehicleparts.xml),
+            // superseding §27's target-rest-fraction formula and §29's weight-share pre-pass
+            // entirely - those existed only because this session hadn't yet worked out how to
+            // turn ODE's CFM/ERP into a Jolt spring. History: (§23.5) discovered susp_frequency
+            // alone isn't scale-invariant across suspensionRange; (§27) discovered Jolt's real
+            // effective_mass depends on the whole body's inertia tensor, not mass/numWheels;
+            // (§29) discovered weight isn't split evenly across wheels either, needing a real
+            // front/rear axle static-equilibrium split. All three fixes were successive, ever-
+            // more-careful approximations of "what stiffness makes this wheel behave like real
+            // ODE" - approximations that turned out unnecessary once §30 found ODE's own
+            // authored CFM/ERP data and confirmed (by reading it straight off a live Hinge2
+            // joint, bit-for-bit match) that WheelPrototypeInfo's copy is exactly what's live.
             //
-            // docs §23.5: susp_frequency alone is NOT scale-invariant across suspensionRange.
-            // In FrequencyAndDamping mode, a spring's resting compression under gravity is an
-            // ABSOLUTE length x_rest = g / (2*pi*f)^2 - independent of vehicle mass (heavier
-            // vehicles get proportionally stiffer springs for the same f automatically), but
-            // also independent of suspensionRange. So the same tuned frequency gives wildly
-            // different resting-compression FRACTIONS on different vehicles: confirmed live
-            // (docs §23.5's direct JPH::Wheel::GetSuspensionLength() telemetry) that at the
-            // tuned 1.8Hz, a small vehicle (range ~0.25m) rests at a healthy 20-30% compressed,
-            // while a large real-save truck (range ~1.0m) rests at only 0-8% - visually reads
-            // as "suspension stuck fully raised" and, worse, sits so lightly loaded that tire
-            // friction has almost no normal force to work with (matches the live report that
-            // pushed wheels don't spin - the tire just doesn't have enough grip to roll).
-            // Fix: scale frequency per-wheel by sqrt(kReferenceSuspensionRange / suspensionRange)
-            // so every vehicle settles at approximately the SAME resting fraction regardless of
-            // its own suspensionRange, rather than the same absolute frequency. Damping is a
-            // dimensionless ratio (0=undamped, 1=critical) and needs no such correction.
-            constexpr float kReferenceSuspensionRange = 0.25f; // the range susp_frequency was tuned against (docs §16.5, small/menu-demo vehicle)
-            const float wheelFrequency = g_activeTuning.suspensionFrequency
-                * std::sqrt(kReferenceSuspensionRange / suspensionRange);
+            // ODE's Hinge2 suspension DOF is a softened 1D linear constraint; ODE's standard
+            // soft-constraint relationship (see ODE's own manual for the CFM/ERP force law)
+            // gives real physical stiffness/damping directly:
+            //   kp = ERP / (h * CFM)   -- N/m, the spring's real stiffness
+            //   kd = (1 - ERP) / CFM   -- N*s/m, the spring's real damping
+            // where h is ODE's integration timestep. h is NOT fixed in this game - disassembly
+            // of ai::DynamicScene::StepScene confirms it passes the real frame elapsedTime
+            // straight into dWorldQuickStep - so ODE's own suspension stiffness silently varies
+            // with framerate every frame. Jolt's spring has no such dependency once set, so an
+            // exact match is only possible at one reference framerate;
+            // [jolt_harness] susp_reference_hz picks that point (default 60).
+            //
+            // Jolt's ESpringMode::StiffnessAndDamping takes raw N/m stiffness and N*s/m damping
+            // directly (F = -k*x - c*v, the exact same force law ODE's kp/kd already are) - no
+            // effective_mass conversion needed here at all, unlike the old FrequencyAndDamping
+            // approach: Jolt's solver folds the body's real mass/inertia into the constraint
+            // solve internally regardless of which spring mode is used.
+            const float cfm = wheelProto != nullptr ? wheelProto->m_suspensionCFM : 0.0f;
+            const float erp = wheelProto != nullptr ? wheelProto->m_suspensionERP : 0.0f;
 
-            ws->mSuspensionSpring.mMode      = JPH::ESpringMode::FrequencyAndDamping;
-            ws->mSuspensionSpring.mFrequency = wheelFrequency;
-            ws->mSuspensionSpring.mDamping   = g_activeTuning.suspensionDamping;
+            float stiffness, damping;
+            if (cfm > 1.0e-8f) {
+                const float referenceH = 1.0f / std::max(kraken::Config::Instance().jolt_susp_reference_hz.value, 1.0f);
+                stiffness = erp / (referenceH * cfm);
+                damping   = (1.0f - erp) / cfm;
+            } else {
+                // Defensive fallback for a wheel prototype with no usable CFM - not observed in
+                // this game's actual data (every sampled prototype in vehicleparts.xml has one),
+                // but stay safe rather than dividing by zero. Reuses §27's effective_mass-based
+                // derivation with a plain equal weight split (no axle clustering - simplest thing
+                // that's still physically sane for a case that shouldn't occur in practice).
+                const JPH::Vec3 forcePoint = ws->mPosition
+                    + 0.5f * (ws->mSuspensionMinLength + ws->mSuspensionMaxLength) * ws->mSuspensionDirection;
+                const JPH::Vec3 up(0.0f, 1.0f, 0.0f);
+                const JPH::Vec3 forcePointXNegUp = forcePoint.Cross(-up);
+                const float rotationalTerm = forcePointXNegUp.Dot(chassisInvInertia.Multiply3x3(forcePointXNegUp));
+                const float effectiveMass = 1.0f / std::max(chassisInvMass + rotationalTerm, 1.0e-8f);
+
+                const float weightShare = (bodySettings.mMassPropertiesOverride.mMass * kGravity) / (float) numWheels;
+                const float restFraction = std::clamp(kraken::Config::Instance().jolt_susp_rest_fraction.value, 0.02f, 0.4f);
+                const float xRestTarget = restFraction * suspensionRange;
+                stiffness = weightShare / std::max(xRestTarget, 1.0e-4f);
+                damping   = 2.0f * std::sqrt(stiffness * effectiveMass); // critically-damped baseline
+            }
+
+            ws->mSuspensionSpring.mMode      = JPH::ESpringMode::StiffnessAndDamping;
+            ws->mSuspensionSpring.mStiffness = stiffness * g_activeTuning.suspensionFrequency; // residual fine-tune multiplier, see TuningParams
+            ws->mSuspensionSpring.mDamping   = damping * g_activeTuning.suspensionDamping;     // residual fine-tune multiplier, see TuningParams
             // WheelSettingsWV's constructor already seeds mLongitudinalFriction/mLateralFriction
             // with a plausible-shaped 3-point slip curve (see WheeledVehicleController.cpp) -
             // scale its Y values uniformly rather than replacing the curve shape outright, so
@@ -368,6 +711,8 @@ namespace kraken::fix::joltshadow {
             vehicleSettings.mWheels.push_back(ws);
             wheelOrder.push_back(wheel);
             wheelSourceIndex.push_back(i);
+
+            BuildWheelProxy(physics, body, ws, label, i);
         }
 
         if (vehicleSettings.mWheels.empty()) {
@@ -417,10 +762,8 @@ namespace kraken::fix::joltshadow {
         // friction model every ODE-driven vehicle's wheels use, via CollideWheelAndAsphalt/
         // CollideWheelAndLandscape) instead of Jolt's own simplified linear slip curve, so a
         // Jolt-shadowed vehicle's tire feel isn't a quietly different, unrelated model from
-        // every other vehicle in the game. Known, accepted gap vs. the ODE path: no per-soil-
-        // type friction multiplier (kineticfriction.cpp's "friction" param, from a terrain/
-        // road tile lookup) and no skid-trace visual effects - both are additive refinements,
-        // not required for the core physics-parity goal.
+        // every other vehicle in the game. docs §23.12 closed the per-soil-type friction gap
+        // this comment used to list here; skid-trace visual effects remain open (§23.9/§23.12).
         // Captures wheelMu/frictionScale BY VALUE (not a pointer into wheelOrder/g_activeTuning
         // - this lambda outlives the BuildShadow call that created it) and the owning Vehicle*
         // for oil-surface handling (Vehicle::m_onOilMode). Safe against the vehicle pointer
@@ -438,16 +781,55 @@ namespace kraken::fix::joltshadow {
             const float frictionLongScale = g_activeTuning.frictionLongScale;
             const float frictionLatScale  = g_activeTuning.frictionLatScale;
 
+            // docs §23.12: same tile-size formula as CollideWheelAndLandscape (kineticfriction.cpp)
+            // - computed once here (level geometry is constant for the run), not per tire-callback
+            // invocation, since this runs on a hot path (every wheel, every physics sub-step).
+            const float tileSize = (float) hta::ai::CServer::Instance()->GetLevelSize()
+                / (float) hta::ai::CServer::Instance()->GetWorld()->GetLandscape().GetTileSize();
+
             JPH::WheeledVehicleController* controller =
                 static_cast<JPH::WheeledVehicleController*>(state.constraint->GetController());
             controller->SetTireMaxImpulseCallback(
-                [wheelMu, vehicle, frictionLongScale, frictionLatScale](JPH::uint inWheelIndex,
+                [wheelMu, vehicle, frictionLongScale, frictionLatScale, tileSize, constraint = state.constraint](JPH::uint inWheelIndex,
                         float& outLongitudinalImpulse, float& outLateralImpulse, float inSuspensionImpulse,
                         float /*inLongitudinalFriction*/, float /*inLateralFriction*/,
                         float inLongitudinalSlip, float /*inLateralSlip*/, float /*inDeltaTime*/) {
                     static const kraken::fix::kineticfriction::TireParams kTireParams;
                     float muLong = kraken::fix::kineticfriction::mu_from_kappa(inLongitudinalSlip, kTireParams);
                     float muLat  = muLong * kTireParams.lateral_factor;
+
+                    // docs §23.12/§24 Milestone 1: per-soil-type friction multiplier - ODE's own
+                    // `friction` param to CollideWheelSurface. CollideWheelAndAsphalt (paved
+                    // roads) always passes friction=1.0; CollideWheelAndLandscape looks up
+                    // whatever soil tile sits under the contact. Told apart here by comparing
+                    // the wheel's JPH::Wheel::GetContactBodyID() against the roads static body
+                    // (fix::jolt::GetRoadsBodyRawId(), the same body ExportRoadsToJolt creates) -
+                    // both static bodies already exist as SEPARATE Jolt bodies (docs §22.9), so
+                    // this is just asking Jolt which one the raycast actually hit, no new
+                    // information needed. §23.12's original version couldn't tell them apart and
+                    // always used the terrain-tile lookup even on roads - this closes that gap.
+                    //
+                    // Skid-trace visuals are deliberately NOT triggered from here (docs §23.12
+                    // dead-end write-up) - this callback runs once per SolveVelocityConstraint
+                    // velocity-iteration (PhysicsSettings::mNumVelocitySteps, default 10), not
+                    // once per physics step, so anything with a real per-call cost (WheelTraceMgr
+                    // mutation) fires up to 10x too often here. That's handled once per frame
+                    // instead, in ApplyJoltToVehicle's per-wheel post-step loop.
+                    const JPH::Wheel* wheel = constraint->GetWheel(inWheelIndex);
+                    if (wheel != nullptr && wheel->HasContact()) {
+                        const JPH::BodyID roadsBodyId(kraken::fix::jolt::GetRoadsBodyRawId());
+                        if (wheel->GetContactBodyID() != roadsBodyId) {
+                            const JPH::RVec3 contactPos = wheel->GetContactPosition();
+                            const int32_t soilX = (int32_t) (contactPos.GetX() / tileSize + 0.5f);
+                            const int32_t soilZ = (int32_t) (contactPos.GetZ() / tileSize + 0.5f);
+                            const hta::ai::DynamicScene::SoilProps& props =
+                                hta::ai::DynamicScene::Instance()->GetSoilProps((uint32_t) soilX, (uint32_t) soilZ);
+                            muLong *= props.m_friction;
+                            muLat  *= props.m_friction;
+                        }
+                        // else: on the road mesh - friction stays at the tire model's own mu
+                        // (equivalent to CollideWheelAndAsphalt's friction=1.0 multiplier).
+                    }
 
                     const float perWheelMu = inWheelIndex < wheelMu.size() ? wheelMu[inWheelIndex] : 1.0f;
                     muLong *= perWheelMu * frictionLongScale;
@@ -472,7 +854,7 @@ namespace kraken::fix::joltshadow {
         state.builtGeneration = g_tuningGeneration;
         state.chassisBaselineJointCount = -1;      // re-capture structural joint count on next apply (docs §22.3)
         state.chassisHadExtraJointLastFrame = false;
-        LOG_INFO("Shadow vehicle #%u built (%s): %u wheels (%d driven axle(s)), mass=%.1f, chassis=%.2fx%.2fx%.2f, susp=%.2fHz/%.2f, friction=%.2f/%.2f",
+        LOG_INFO("Shadow vehicle #%u built (%s): %u wheels (%d driven axle(s)), mass=%.1f, chassis=%.2fx%.2fx%.2f, susp_mult=%.2fx/damp=%.2f, friction=%.2f/%.2f",
             g_shadowGeneration, label, (uint32_t) vehicleSettings.mWheels.size(), drivenAxles, (double) bodySettings.mMassPropertiesOverride.mMass,
             (double) (halfExtents.GetX() * 2.0f), (double) (halfExtents.GetY() * 2.0f), (double) (halfExtents.GetZ() * 2.0f),
             (double) g_activeTuning.suspensionFrequency, (double) g_activeTuning.suspensionDamping,
@@ -558,6 +940,51 @@ namespace kraken::fix::joltshadow {
     // telemetry already showed doesn't reflect Jolt's wheel state at all, since the ODE
     // wheels are DisablePhysics()'d every frame under apply=1 and never re-collide). Same
     // log cadence as LogDivergence.
+    // docs §32: answers "why doesn't this wheel touch the ground" with a real measurement
+    // instead of a guess. Replicates Jolt's own raycast exactly (confirmed from
+    // VehicleCollisionTesterRay::Collide's source: origin = chassis_transform * mPosition,
+    // direction = chassis_transform.Multiply3x3(mSuspensionDirection), length =
+    // mSuspensionMaxLength + mRadius) but re-casts the SAME ray much further, to distinguish
+    // "the ground is right there, just past the wheel's travel range" from "this ray doesn't
+    // hit the ground at all, at any distance" (e.g. pointed away from the slope entirely).
+    static void LogNoContactRaycastDiagnostic(JPH::PhysicsSystem* physics, const JPH::BodyID& chassisBodyId,
+            const JPH::Wheel* wheel, const char* label, size_t wheelIndex) {
+        const JPH::WheelSettings* settings = wheel->GetSettings();
+        if (settings == nullptr || physics == nullptr)
+            return;
+
+        JPH::BodyInterface& bodyInterface = physics->GetBodyInterface();
+        const JPH::RVec3  bodyPos = bodyInterface.GetPosition(chassisBodyId);
+        const JPH::Quat   bodyRot = bodyInterface.GetRotation(chassisBodyId);
+        const JPH::RMat44 bodyTransform = JPH::RMat44::sRotationTranslation(bodyRot, bodyPos);
+
+        const JPH::RVec3 wsOrigin    = bodyTransform * settings->mPosition;
+        const JPH::Vec3  wsDirection = bodyTransform.Multiply3x3(settings->mSuspensionDirection);
+        const float      normalRayLength = settings->mSuspensionMaxLength + settings->mRadius;
+
+        constexpr float kExtendedLength = 20.0f; // meters - generous, just to find the ground at all
+        JPH::RRayCast extendedRay{ wsOrigin, wsDirection * kExtendedLength };
+        JPH::RayCastResult hit;
+        const bool foundGround = physics->GetNarrowPhaseQuery().CastRay(extendedRay, hit);
+
+        if (foundGround) {
+            const float hitDistance = kExtendedLength * hit.mFraction;
+            LOG_INFO("docs §32: no-contact raycast (%s) wheel=%zu bodyPos=(%.2f,%.2f,%.2f) localMPos=(%.3f,%.3f,%.3f) "
+                "origin=(%.2f,%.2f,%.2f) dir=(%.3f,%.3f,%.3f) normalRayLen=%.3f groundFoundAt=%.3f shortfallBeyondTravel=%.3f",
+                label, wheelIndex, (double) bodyPos.GetX(), (double) bodyPos.GetY(), (double) bodyPos.GetZ(),
+                (double) settings->mPosition.GetX(), (double) settings->mPosition.GetY(), (double) settings->mPosition.GetZ(),
+                (double) wsOrigin.GetX(), (double) wsOrigin.GetY(), (double) wsOrigin.GetZ(),
+                (double) wsDirection.GetX(), (double) wsDirection.GetY(), (double) wsDirection.GetZ(),
+                (double) normalRayLength, (double) hitDistance, (double) (hitDistance - normalRayLength));
+        } else {
+            LOG_INFO("docs §32: no-contact raycast (%s) wheel=%zu origin=(%.2f,%.2f,%.2f) dir=(%.3f,%.3f,%.3f) "
+                "normalRayLen=%.3f - NO GROUND FOUND within %.1fm along this ray at all",
+                label, wheelIndex, (double) wsOrigin.GetX(), (double) wsOrigin.GetY(), (double) wsOrigin.GetZ(),
+                (double) wsDirection.GetX(), (double) wsDirection.GetY(), (double) wsDirection.GetZ(),
+                (double) normalRayLength, (double) kExtendedLength);
+        }
+    }
+
     static void LogWheelState(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label) {
         if (state.constraint == nullptr)
             return;
@@ -568,6 +995,60 @@ namespace kraken::fix::joltshadow {
         LOG_INFO("docs §23.6: driver input (%s) realThrottle=%.2f brake=%.2f handBrake=%d steerRad=%.3f",
             label, (double) vehicle->m_realThrottle, (double) vehicle->m_brake,
             vehicle->m_bHandBrake ? 1 : 0, (double) vehicle->m_steerRadians);
+
+        // docs §32: does Jolt's OWN shadow chassis settle to the same pitch as real ODE, or
+        // does it tip further (e.g. because the compound chassis shape is missing collision
+        // geometry - like an undercarriage/frame - that would arrest a real vehicle's tip
+        // earlier)? Same forward-vector-Y-component measure LogRealOdeWheelState already logs
+        // for the real ODE side (docs §30), computed here for Jolt's shadow body instead, same
+        // frame/cadence, directly comparable line by line.
+        {
+            JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+            if (physics != nullptr) {
+                JPH::BodyInterface& bi = physics->GetBodyInterface();
+                const JPH::RVec3 joltPos = bi.GetPosition(state.bodyId);
+                const JPH::Quat  joltRot = bi.GetRotation(state.bodyId);
+                const JPH::Vec3  joltForward = joltRot * JPH::Vec3(0.0f, 0.0f, 1.0f);
+                LOG_INFO("docs §32: Jolt SHADOW chassis pitch (%s) forward=(%.3f, %.3f, %.3f)",
+                    label, (double) joltForward.GetX(), (double) joltForward.GetY(), (double) joltForward.GetZ());
+
+                // docs §32.4: does the compound CHASSIS shape itself ever come close to the
+                // ground, or is it floating well clear while only the wheels' raycasts probe
+                // downward? Sample all 8 corners of the shape's world-space bounding box, find
+                // the lowest, and extended-raycast straight down from it to see the real
+                // clearance to the terrain - same technique as LogNoContactRaycastDiagnostic.
+                JPH::RefConst<JPH::Shape> shape = bi.GetShape(state.bodyId);
+                if (shape != nullptr) {
+                    const JPH::AABox localBounds = shape->GetLocalBounds();
+                    const JPH::RMat44 bodyTransform = JPH::RMat44::sRotationTranslation(joltRot, joltPos);
+                    float lowestWorldY = 0.0f;
+                    JPH::RVec3 lowestWorldPos = joltPos;
+                    bool haveLowest = false;
+                    for (int corner = 0; corner < 8; ++corner) {
+                        const JPH::Vec3 localCorner(
+                            (corner & 1) ? localBounds.mMax.GetX() : localBounds.mMin.GetX(),
+                            (corner & 2) ? localBounds.mMax.GetY() : localBounds.mMin.GetY(),
+                            (corner & 4) ? localBounds.mMax.GetZ() : localBounds.mMin.GetZ());
+                        const JPH::RVec3 worldCorner = bodyTransform * localCorner;
+                        if (!haveLowest || worldCorner.GetY() < lowestWorldY) {
+                            lowestWorldY = worldCorner.GetY();
+                            lowestWorldPos = worldCorner;
+                            haveLowest = true;
+                        }
+                    }
+
+                    if (haveLowest) {
+                        JPH::RRayCast groundRay{ lowestWorldPos, JPH::Vec3(0.0f, -20.0f, 0.0f) };
+                        JPH::RayCastResult hit;
+                        const bool foundGround = physics->GetNarrowPhaseQuery().CastRay(groundRay, hit);
+                        const float clearance = foundGround ? 20.0f * hit.mFraction : -1.0f;
+                        LOG_INFO("docs §32.4: Jolt SHADOW chassis lowest corner (%s) = (%.2f,%.2f,%.2f) clearanceToGround=%.3f%s",
+                            label, (double) lowestWorldPos.GetX(), (double) lowestWorldPos.GetY(), (double) lowestWorldPos.GetZ(),
+                            (double) clearance, foundGround ? "" : " (no ground found within 20m straight down)");
+                    }
+                }
+            }
+        }
 
         const JPH::Wheels& wheels = state.constraint->GetWheels();
         for (size_t i = 0; i < wheels.size(); ++i) {
@@ -585,6 +1066,165 @@ namespace kraken::fix::joltshadow {
             LOG_INFO("docs §23.5: wheel state (%s) wheel=%zu contact=%d suspLen=%.3f (range %.3f-%.3f, %.0f%% compressed) angVel=%.2f",
                 label, i, wheel->HasContact() ? 1 : 0, (double) len, (double) minLen, (double) maxLen,
                 (double) compressionPct, (double) wheel->GetAngularVelocity());
+
+            if (!wheel->HasContact())
+                LogNoContactRaycastDiagnostic(kraken::fix::jolt::GetPhysicsSystem(), state.bodyId, wheel, label, i);
+        }
+    }
+
+    // docs §28: the REAL ODE-side counterpart to LogWheelState above - that function (and
+    // every other "wheel state" log line in this file) reads Jolt's OWN JPH::Wheel shadow
+    // state, which exists and updates regardless of [jolt_harness] apply, so it was never a
+    // valid way to answer "does Jolt's tuning match real ODE". This reads the REAL Hinge2
+    // joint ODE actually uses for wheel suspension (confirmed live by disassembly, not
+    // assumed: ai::Wheel::AttachToPhysicObj, VA 0x5eec30, calls dJointCreateHinge2 then
+    // dJointAttach and stores the result at Wheel+0x144 = m_jointID).
+    //
+    // Hinge2's own contract: aside from the one axis softened by dParamSuspensionERP/CFM
+    // (confirmed live: dJointSetHinge2Param, VA 0x7cbc50, writes param 9 to joint+0x114 and
+    // param 10 to joint+0x118 - stock ODE's dParamSuspensionERP/CFM numbering), the joint
+    // RIGIDLY enforces anchor-point coincidence between the two bodies. That means
+    // dJointGetHinge2Anchor() (body1/chassis side) and dJointGetHinge2Anchor2() (body2/wheel
+    // side) are EXACTLY equal at zero compression by construction - no separate "unloaded
+    // reference" needs calibrating. Any real-time deviation between them, projected onto
+    // dJointGetHinge2Axis1() (the compliant direction), IS the actual current suspension
+    // travel, directly comparable to WheelPrototypeInfo::m_suspensionRange the same way
+    // Jolt's own suspLen/range comparison above works.
+    //
+    // All three ODE accessors confirmed live via disassembly to share one calling convention -
+    // JPH_FASTCALL-equivalent __fastcall(dJointID joint /*ecx*/, float* result /*edx*/, writes
+    // 3 floats) - matching this file's existing raw-VA-binding style (see
+    // fix::kineticfriction's CollideWheelDefault for precedent).
+    using DJointGetHinge2VecFn = void(__fastcall*)(void* joint, float* result);
+    static const auto RealDJointGetHinge2Anchor  = (DJointGetHinge2VecFn) (0x007d0000);
+    static const auto RealDJointGetHinge2Anchor2 = (DJointGetHinge2VecFn) (0x007d0020);
+    static const auto RealDJointGetHinge2Axis1   = (DJointGetHinge2VecFn) (0x007d0040);
+
+    // docs §30: dBodyGetPosition (RVA 0x3c4720 = VA 0x7c4720, confirmed by disasm: `lea eax,
+    // [ecx+0x98]; ret` - __fastcall(dBody* /*ecx*/) returning a pointer to the body's world
+    // position float[3] at body+0x98). In ODE the body origin IS the center of mass (confirmed
+    // by disassembling ai::PhysicObj::_AdjustMassCenter, RVA 0x1fb130, which shifts every geom
+    // by -m_massCenter so the body frame origin coincides with the COM), so this reads the REAL
+    // ODE fore-aft COM directly - the ground truth to check GetMassCenter() against.
+    //
+    // NOTE: vehicle->GetBody() (PhysicObj::m_body) is NOT the chassis physics body for a
+    // ComplexPhysicObj vehicle (it read (0,0,0) live) - the real chassis body is what the wheel
+    // Hinge2 joints attach to as body1, so we fetch it via dJointGetBody(joint, 0) instead
+    // (RVA 0x3c5150, confirmed by disasm: __fastcall(dxJoint* /*ecx*/, int index /*edx*/),
+    // returns node[index].body).
+    using DBodyGetPositionFn = const float* (__fastcall*)(void* body);
+    static const auto RealDBodyGetPosition = (DBodyGetPositionFn) (0x007c4720);
+    using DJointGetBodyFn = void* (__fastcall*)(void* joint, int index);
+    static const auto RealDJointGetBody = (DJointGetBodyFn) (0x007c5150);
+
+    static void LogRealOdeWheelState(hta::ai::Vehicle* vehicle, const char* label) {
+        const uint32_t numWheels = vehicle->GetNumWheels();
+
+        const hta::Quaternion rot = vehicle->GetRotation();
+        const hta::CVector forwardV = rot * hta::CVector(0.0f, 0.0f, 1.0f);
+
+        // docs §30 investigation: get the REAL ODE chassis body from the FIRST valid wheel's
+        // Hinge2 joint (body1/chassis side), read its world COM, and log it once. Per-wheel we
+        // then log the true fore-aft lever arm from that actual COM - independent of
+        // GetMassCenter()/m_initialPos - to test whether the load imbalance comes from a COM
+        // that differs from what GetMassCenter() reports.
+        void* chassisBody = nullptr;
+        for (uint32_t i = 0; i < numWheels; ++i) {
+            const hta::ai::Vehicle::WheelRuntimeInfo& info = vehicle->m_wheels[i];
+            if (info.m_bWheelPresent && info.m_wheel != nullptr && info.m_wheel->m_jointID != nullptr) {
+                chassisBody = RealDJointGetBody(info.m_wheel->m_jointID, 0);
+                break;
+            }
+        }
+        const float* comPtr = chassisBody != nullptr ? RealDBodyGetPosition(chassisBody) : nullptr;
+        if (comPtr != nullptr) {
+            LOG_INFO("docs §30: REAL ODE chassis COM (%s) body=%p = (%.3f, %.3f, %.3f) forward=(%.3f, %.3f, %.3f)",
+                label, chassisBody, (double) comPtr[0], (double) comPtr[1], (double) comPtr[2],
+                (double) forwardV.x, (double) forwardV.y, (double) forwardV.z);
+        }
+
+        // docs §33: does the REAL ODE chassis body have geoms that vehicle->m_vehicleParts
+        // doesn't account for? BuildChassisCompoundShape (§23.10) only ever walks
+        // vehicle->m_vehicleParts - this walks the body's ACTUAL geom list directly (same
+        // dBodyGetFirstGeom/dGeomGetBodyNext pair PhysicObj::_AdjustMassCenter itself uses,
+        // confirmed via disassembly, docs §30) as an independent ground truth, bypassing
+        // m_vehicleParts entirely. If the counts disagree, m_vehicleParts is missing real
+        // collision geometry that could close the 0.375m gap found in docs §32.4 with real
+        // data instead of a synthetic safety shape.
+        if (chassisBody != nullptr) {
+            int32_t realGeomCount = 0, realTransformCount = 0;
+            dxGeom* geom = dBodyGetFirstGeom(reinterpret_cast<dxBody*>(chassisBody));
+            while (geom != nullptr) {
+                ++realGeomCount;
+                const int32_t geomClass = dGeomGetClass(geom);
+                if (geomClass == dGeomTransformClass) {
+                    ++realTransformCount;
+                    dxGeom* inner = dGeomTransformGetGeom(geom);
+                    const int32_t innerClass = inner != nullptr ? dGeomGetClass(inner) : -1;
+                    const float* innerPos = inner != nullptr ? dGeomGetPosition(inner) : nullptr;
+                    if (innerPos != nullptr)
+                        LOG_INFO("docs §33: real ODE chassis geom (%s) #%d = transform, inner class=%d pos=(%.3f,%.3f,%.3f)",
+                            label, realGeomCount, innerClass, (double) innerPos[0], (double) innerPos[1], (double) innerPos[2]);
+                    else
+                        LOG_INFO("docs §33: real ODE chassis geom (%s) #%d = transform, inner class=%d",
+                            label, realGeomCount, innerClass);
+                } else {
+                    const float* pos = dGeomGetPosition(geom);
+                    const double radius = geomClass == dSphereClass ? dGeomSphereGetRadius(geom) : -1.0;
+                    LOG_INFO("docs §33: real ODE chassis geom (%s) #%d = class %d (not a transform) pos=(%.3f,%.3f,%.3f) radius=%.3f",
+                        label, realGeomCount, geomClass, (double) pos[0], (double) pos[1], (double) pos[2], radius);
+                }
+                geom = dGeomGetBodyNext(geom);
+            }
+            LOG_INFO("docs §33: real ODE chassis (%s) has %d total geom(s) directly attached (%d transform(s)) - "
+                "compare against BuildChassisCompoundShape's own part/geom count in the build log",
+                label, realGeomCount, realTransformCount);
+        }
+
+        for (uint32_t i = 0; i < numWheels; ++i) {
+            const hta::ai::Vehicle::WheelRuntimeInfo& info = vehicle->m_wheels[i];
+            hta::ai::Wheel* wheel = info.m_wheel;
+            if (!info.m_bWheelPresent || wheel == nullptr || wheel->m_jointID == nullptr)
+                continue;
+
+            float anchor1[4] = {}, anchor2[4] = {}, axis1[4] = {};
+            RealDJointGetHinge2Anchor(wheel->m_jointID, anchor1);
+            RealDJointGetHinge2Anchor2(wheel->m_jointID, anchor2);
+            RealDJointGetHinge2Axis1(wheel->m_jointID, axis1);
+
+            const float dx = anchor2[0] - anchor1[0];
+            const float dy = anchor2[1] - anchor1[1];
+            const float dz = anchor2[2] - anchor1[2];
+            const float displacement = dx * axis1[0] + dy * axis1[1] + dz * axis1[2];
+
+            const hta::ai::WheelPrototypeInfo* wheelProto = wheel->GetPrototypeInfo();
+            const float range = wheelProto != nullptr ? std::max(wheelProto->m_suspensionRange, 0.05f) : -1.0f;
+            const float pct = range > 0.0f ? (displacement / range) * 100.0f : -1.0f;
+
+            // docs §30: signed fore-aft distance from the REAL ODE COM to this wheel's chassis-
+            // side anchor, along the vehicle's forward axis (+ = ahead of COM). Comparing the
+            // front group's average to the rear group's gives the true beam lever arms, hence
+            // the real static load split, with no dependence on GetMassCenter().
+            float foreAft = 0.0f;
+            if (comPtr != nullptr) {
+                foreAft = (anchor1[0] - comPtr[0]) * forwardV.x
+                        + (anchor1[1] - comPtr[1]) * forwardV.y
+                        + (anchor1[2] - comPtr[2]) * forwardV.z;
+            }
+
+            // docs §30/§31: WheelPrototypeInfo's CFM/ERP (vehicleparts.xml, loaded via
+            // LoadFromXML RVA 0x1ee840) - confirmed live to be exactly what's on the Hinge2
+            // joint (once, by reading raw floats off the joint at the confirmed
+            // dParamSuspensionERP/CFM offsets, +0x114/+0x118, and matching bit-for-bit; that
+            // one-shot verification code has since been removed - BuildShadow's real fix now
+            // trusts this value directly). Logged here for the same reason foreAft is: a
+            // standing, reusable diagnostic for comparing any future vehicle against ODE.
+            const float cfm = wheelProto != nullptr ? wheelProto->m_suspensionCFM : -1.0f;
+            const float erp = wheelProto != nullptr ? wheelProto->m_suspensionERP : -1.0f;
+
+            LOG_INFO("docs §28: REAL ODE wheel state (%s) wheel=%u displacement=%.4f range=%.3f (%.0f%% compressed, signed) foreAft=%.3f localZ=%.3f cfm=%.6f erp=%.4f",
+                label, i, (double) displacement, (double) range, (double) pct,
+                (double) foreAft, (double) info.m_initialPos.z, (double) cfm, (double) erp);
         }
     }
 
@@ -719,6 +1359,12 @@ namespace kraken::fix::joltshadow {
             state.wheelHadExtraJointLastFrame.resize(state.wheelOrder.size(), false);
         }
 
+        // docs §23.12: same tile-size formula as BuildShadow's tire-callback copy (and
+        // ultimately CollideWheelAndLandscape) - computed once per frame here (level geometry
+        // is constant for the run), used below for the skid-trace soil lookup.
+        const float wheelTileSize = (float) hta::ai::CServer::Instance()->GetLevelSize()
+            / (float) hta::ai::CServer::Instance()->GetWorld()->GetLandscape().GetTileSize();
+
         const JPH::Wheels& wheels = state.constraint->GetWheels();
         for (size_t i = 0; i < state.wheelOrder.size() && i < wheels.size(); ++i) {
             hta::ai::Wheel* wheel = state.wheelOrder[i];
@@ -758,6 +1404,41 @@ namespace kraken::fix::joltshadow {
             wheel->DisablePhysics();
             wheel->SetPositionSelf(hta::CVector(wheelPos.GetX(), wheelPos.GetY(), wheelPos.GetZ()));
             wheel->SetRotationSelf(hta::Quaternion(wheelRot.GetX(), wheelRot.GetY(), wheelRot.GetZ(), wheelRot.GetW()));
+
+            // docs §23.12: skid-trace visuals (WheelTraceMgr::StartSkidding/AddTrace/
+            // EndSkidding), same kappa-threshold/oil-mode rule as CollideWheelSurface -
+            // triggered HERE, once per real frame per wheel (matching the ODE path's actual
+            // cadence), not from SetTireMaxImpulseCallback. That callback runs up to
+            // PhysicsSettings::mNumVelocitySteps (10, default) times per physics STEP, not
+            // once - calling a real, state-mutating side effect (WheelTraceMgr) that often
+            // caused an apparent hang in live testing the first time this was tried (kraken.log
+            // froze solid mid-frame, process still "Responding" per Windows but CPU essentially
+            // idle - almost certainly WheelTraceMgr's internal trace-mesh growth choking on a
+            // 10x call rate it was never designed for). JPH::WheelWV::mLongitudinalSlip already
+            // holds this step's final settled slip value by the time PhysicsSystem::Update()
+            // has returned, so reading it once here gives the same skid/no-skid answer the
+            // tire callback would have, at the intended cadence.
+            const JPH::Wheel* jphWheel = wheels[i];
+            const JPH::WheelWV* wheelWV = static_cast<const JPH::WheelWV*>(jphWheel);
+            hta::m3d::WheelTraceMgr& traceMgr = hta::ai::CServer::Instance()->GetWorld()->GetWheelTracesMgr();
+            const bool inSkid = jphWheel->HasContact()
+                && (vehicle->m_onOilMode || std::fabs(wheelWV->mLongitudinalSlip) > 0.75f);
+            if (inSkid) {
+                const JPH::RVec3 tracePos = jphWheel->GetContactPosition() + jphWheel->GetContactNormal() * 0.01f;
+                const hta::CVector pos(tracePos.GetX(), tracePos.GetY(), tracePos.GetZ());
+                const int32_t soilX = (int32_t) (tracePos.GetX() / wheelTileSize + 0.5f);
+                const int32_t soilZ = (int32_t) (tracePos.GetZ() / wheelTileSize + 0.5f);
+                const hta::ai::DynamicScene::SoilProps& props =
+                    hta::ai::DynamicScene::Instance()->GetSoilProps((uint32_t) soilX, (uint32_t) soilZ);
+                if (traceMgr.IsSkiddingStarted(wheel)) {
+                    traceMgr.AddTrace(pos, wheel->GetRotation(), wheel->GetWidth(), wheel, props.m_idx, false);
+                } else {
+                    traceMgr.StartSkidding(wheel, props.m_idx);
+                    traceMgr.AddTrace(pos, wheel->GetRotation(), wheel->GetWidth(), wheel, props.m_idx, true);
+                }
+            } else if (traceMgr.IsSkiddingStarted(wheel)) {
+                traceMgr.EndSkidding(wheel, true);
+            }
         }
     }
 
@@ -941,6 +1622,7 @@ namespace kraken::fix::joltshadow {
         if (state.frameCounter % kLogIntervalFrames == 0) {
             LogDivergence(vehicle, state, label);
             LogWheelState(vehicle, state, label);
+            LogRealOdeWheelState(vehicle, label);
         }
     }
 
@@ -1061,6 +1743,17 @@ namespace kraken::fix::joltshadow {
                 continue;
             }
 
+            // docs §23.13: real compound chassis shape (§23.10) instead of a single bounding
+            // box - the same shape the player/Stage-3-shadowed vehicles use, extended to every
+            // background AI vehicle now that the extraction technique exists. Only affects the
+            // COLLISION PROFILE other vehicles present (a ram now feels the real hull shape,
+            // not its bounding box); the pushback mechanism (§23.11) is unaffected either way -
+            // it keys off Body::GetMotionType(), not shape. No OffsetCenterOfMassShapeSettings
+            // wrapper here unlike BuildShadow's dynamic bodies - a Kinematic body's own mass/
+            // inertia never enters the solve (MoveKinematic just sets its transform directly
+            // every frame), so there's no rotational-dynamics reason to care where its center
+            // of mass sits; the compound shape's local origin already sits exactly at
+            // vehicle->GetPosition(), which is exactly where this body is placed below.
             const hta::ai::VehiclePrototypeInfo* protoInfo = vehicle->GetPrototypeInfo();
             const hta::CVector massSize = protoInfo != nullptr ? protoInfo->m_massSize : hta::CVector(2.0f, 1.0f, 4.0f);
             const JPH::Vec3 halfExtents(
@@ -1068,8 +1761,12 @@ namespace kraken::fix::joltshadow {
                 std::max(massSize.y * 0.5f, 0.1f),
                 std::max(massSize.z * 0.5f, 0.1f));
 
+            JPH::RefConst<JPH::Shape> mirrorShape = BuildChassisCompoundShape(vehicle, pos, rot);
+            if (mirrorShape == nullptr)
+                mirrorShape = new JPH::BoxShape(halfExtents);
+
             JPH::BodyCreationSettings bodySettings(
-                new JPH::BoxShape(halfExtents), joltPos, joltRot,
+                mirrorShape.GetPtr(), joltPos, joltRot,
                 JPH::EMotionType::Kinematic, kMovingLayer);
 
             JPH::Body* body = bodyInterface.CreateBody(bodySettings);
@@ -1077,6 +1774,9 @@ namespace kraken::fix::joltshadow {
                 LOG_ERROR("Jolt: other-vehicle mirror body creation failed (out of bodies?)");
                 continue;
             }
+            // docs §23.11: lets VehiclePushbackContactListener map a contact straight back to
+            // the mirrored hta::ai::Vehicle* without a per-frame g_vehicleMirrors scan.
+            body->SetUserData(reinterpret_cast<uint64_t>(vehicle));
             g_vehicleMirrors.push_back(VehicleMirrorEntry{vehicle, body->GetID()});
             bodyInterface.AddBody(body->GetID(), JPH::EActivation::Activate);
         }
@@ -1199,8 +1899,8 @@ namespace kraken::fix::joltshadow {
     }
     // Must match the [jolt_harness] susp_frequency/susp_damping/friction_long/friction_lat
     // ConfigValue ranges in config.cpp - kept in sync by hand, there are only 4 of them.
-    static const float kAxisMin[4] = {0.3f, 0.05f, 0.2f, 0.2f};
-    static const float kAxisMax[4] = {8.0f, 1.5f,  3.0f, 3.0f};
+    static const float kAxisMin[4] = {0.5f, 0.2f, 0.2f, 0.2f};
+    static const float kAxisMax[4] = {2.0f, 3.0f, 3.0f, 3.0f};
 
     // Clamps every one of a candidate's 4 fields into kAxisMin/kAxisMax - called at EVERY one of
     // the 5 places a new candidate point is constructed (bootstrap vertex, reflect, expand,
@@ -1215,7 +1915,7 @@ namespace kraken::fix::joltshadow {
     // Initial simplex edge length per axis (bootstrap vertex a+1 = baseline with axis `a` pushed
     // out by this much) - reuses the exact step sizes the old coordinate descent probed with, so
     // the initial simplex covers the same neighborhood the previous search started from.
-    static const float kInitialSimplexStep[4] = {0.3f, 0.1f, 0.15f, 0.15f};
+    static const float kInitialSimplexStep[4] = {0.1f, 0.2f, 0.15f, 0.15f};
 
     // Standard Nelder-Mead coefficients - see the AutoTuneStage/AutoTunePhase comment above for
     // why the textbook defaults are used as-is rather than something bespoke for this problem.
@@ -1430,7 +2130,7 @@ namespace kraken::fix::joltshadow {
                 break;
         }
 
-        LOG_INFO("Autotune trial %u/%u starting (%s): susp=%.2fHz/%.2f friction=%.2f/%.2f",
+        LOG_INFO("Autotune trial %u/%u starting (%s): susp_mult=%.2fx/damp=%.2f friction=%.2f/%.2f",
             g_autotune.trialIndex, g_autotune.maxTrials, stageDesc,
             (double) g_autotune.candidate.suspensionFrequency, (double) g_autotune.candidate.suspensionDamping,
             (double) g_autotune.candidate.frictionLongScale, (double) g_autotune.candidate.frictionLatScale);
@@ -1619,7 +2319,7 @@ namespace kraken::fix::joltshadow {
         g_autotune.bestScore   = -1.0;
         g_autotune.initialized = true;
 
-        LOG_INFO("Autotune: starting Nelder-Mead simplex search, up to %u trial(s), baseline susp=%.2fHz/%.2f friction=%.2f/%.2f, "
+        LOG_INFO("Autotune: starting Nelder-Mead simplex search, up to %u trial(s), baseline susp_mult=%.2fx/damp=%.2f friction=%.2f/%.2f, "
                  "score = pos_rmse + %.2f*vel_rmse + %.2f*angle_rmse_deg (approximate weights, see docs section 8.4/8.5)",
             g_autotune.maxTrials,
             (double) baseline.suspensionFrequency, (double) baseline.suspensionDamping,
@@ -1724,6 +2424,11 @@ namespace kraken::fix::joltshadow {
     // loosened without this array being resized to match.
     static constexpr size_t kMaxAiShadowsPerFrame = 16;
 
+    // Forward-declared: defined alongside VehiclePushbackContactListener (docs §23.11), well
+    // after UpdateShadow in this file, but needs calling from UpdateShadow's Pass 2 below,
+    // right after the one place PhysicsSystem::Update() actually runs for this frame.
+    static void DrainPendingPushbacks();
+
     // Three-pass per-frame update (docs/jolt-integration-techanalysis.md §18.1/§18.4): the
     // single JPH::PhysicsSystem is shared by every shadow vehicle, so it must be stepped exactly
     // ONCE per real frame regardless of how many shadows (0..17, player + up to 16 AI) are active
@@ -1777,6 +2482,12 @@ namespace kraken::fix::joltshadow {
         if (anyLive) {
             MirrorOtherVehicles(playerVehicle, elapsedTime);
             StepPhysicsProfiled(elapsedTime);
+            // docs §23.11: safe to drain here - PhysicsSystem::Update() (inside
+            // StepPhysicsProfiled) has fully returned, so every worker thread that may have
+            // queued a contact via VehiclePushbackContactListener during this step has
+            // finished; back to single-threaded, safe to call into ODE (PhysicObj::AddImpulse
+            // etc.) again.
+            DrainPendingPushbacks();
         }
 
         // --- Pass 3 (post-step) ---
@@ -1860,6 +2571,94 @@ namespace kraken::fix::joltshadow {
     static uint8_t s_calcDamageTrampoline[16];
     static CalcDamageToVehiclesFn Real_CalcDamageToVehicles = nullptr;
 
+    // docs §23.11: is `v` a vehicle whose ODE body is CURRENTLY disabled+overwritten every
+    // frame by ApplyJoltToVehicle (i.e. a real dynamic body only inside Jolt, with no ODE-side
+    // physics of its own this frame)? Mirrors UpdateShadow's playerAllowApply/aiAllowApply
+    // gating exactly (same three config reads) rather than threading an extra bool through
+    // from there - this is called from a totally different call path (an ODE collision
+    // callback, invoked from inside scene->StepScene(), i.e. BEFORE UpdateShadow even runs
+    // this frame - see StepSceneHook) so there is no already-computed value to reuse.
+    static bool IsVehicleJoltAuthoritative(hta::ai::Vehicle* v) {
+        if (v == nullptr)
+            return false;
+        const kraken::Config& config = kraken::Config::Instance();
+        if (config.jolt_apply.value == 0)
+            return false;
+        if (v == GetPlayerVehicle())
+            return config.jolt_player_only.value == 0 || v->bIsControlledByPlayer();
+        return std::find(g_aiTargets.begin(), g_aiTargets.end(), v) != g_aiTargets.end();
+    }
+
+    // docs §23.11: closes the one direction the ghost-passthrough fix (§22.6/§22.11) never
+    // covered - a Jolt-DYNAMIC vehicle (player or Stage-3 AI shadow) hitting a plain-ODE/
+    // kinematically-mirrored one. Jolt's own solver already makes the KINEMATIC mirror push
+    // the Jolt-dynamic vehicle correctly (that's the "other vehicles push the player" behavior
+    // already working) - but a kinematic body can never itself receive a push, by definition,
+    // and on the ODE side `DisablePhysics()` (what ApplyJoltToVehicle calls every frame under
+    // apply=1) removes the Jolt-driven vehicle's body from ODE's own constraint solving
+    // entirely, so any dContact joint CollideVehiclePartAndVehiclePart creates against it
+    // produces no force on either party either. Nothing today makes the OTHER vehicle move.
+    //
+    // Deliberately approximate, same spirit as §23.9's accepted gaps: no real contact-solver
+    // access, so the push direction is taken as the straight line between the two vehicles'
+    // own GetPosition() centers, and applied through the mirrored vehicle's center of mass
+    // (AddImpulse, not AddImpulseAtPos) rather than at the true contact height - a fair
+    // approximation for a vehicle-body-sized hit, not a torque-inducing off-center one.
+    // Self-limiting rather than cooldown-rate-limited: each applied impulse reduces the
+    // closing speed between the two vehicles, so a sustained, already-equalized contact
+    // should stop re-triggering on its own once the closing speed drops back under the
+    // threshold - re-triggers only as long as (or whenever) the Jolt-driven side is still
+    // actively closing the gap, which is the physically-correct case to keep pushing.
+    //
+    // Gates on IsVehicleJoltAuthoritative itself (not just at each call site) because there
+    // are now two independent callers - see below - and a body being DYNAMIC in Jolt does NOT
+    // by itself mean it's driving the real vehicle right now: under apply=0 (shadow-only) the
+    // shadow chassis is still a real Dynamic body colliding with kinematic mirrors inside
+    // Jolt's own PhysicsSystem::Update, entirely independent of the `apply` flag - pushing the
+    // ODE-side mirrored vehicle from a collision that only exists in a read-only diagnostic
+    // shadow would be a real bug (a visible gameplay effect from a simulation nobody asked to
+    // be authoritative), not an approximation.
+    static void ApplyRamPushback(hta::ai::Vehicle* joltVehicle, hta::ai::Vehicle* mirroredVehicle, float closingSpeed) {
+        if (!IsVehicleJoltAuthoritative(joltVehicle))
+            return;
+
+        const kraken::Config& config = kraken::Config::Instance();
+        if (closingSpeed < config.jolt_pushback_min_dspeed.value)
+            return; // resting/pile-up contact noise, not a real hit
+
+        const hta::CVector delta = mirroredVehicle->GetPosition() - joltVehicle->GetPosition();
+        const float dist = delta.Length();
+        if (dist < 0.01f)
+            return; // degenerate (near-exactly-overlapping centers) - avoid an unstable direction
+
+        const hta::CVector pushDir = delta * (1.0f / dist);
+        const float joltMass = joltVehicle->GetMass();
+        const float mirroredMass = mirroredVehicle->GetMass();
+        if (mirroredMass <= 0.0f)
+            return;
+        const float reducedMass = (joltMass * mirroredMass) / std::max(joltMass + mirroredMass, 1.0f);
+        const float impulseMag = closingSpeed * reducedMass * config.jolt_pushback_scale.value;
+
+        mirroredVehicle->EnablePhysics(); // make sure a resting/auto-disabled body actually wakes to receive this
+        mirroredVehicle->AddImpulse(pushDir * impulseMag);
+
+        LOG_INFO("docs §23.11: ram pushback applied - jolt-driven=%p mirrored=%p closingSpeed=%.2f impulse=%.1f",
+            (void*) joltVehicle, (void*) mirroredVehicle, (double) closingSpeed, (double) impulseMag);
+    }
+
+    // docs §23.11: first detector tried - reuses the already-installed CalcDamageToVehiclesHook
+    // (docs §23.4), which already fires on every real vehicle-vs-vehicle ODE collision and
+    // already correlates (v1, v2) with a damage-relevant dSpeed. Kept as a cheap, best-effort
+    // extra layer, but empirically (live testing this session, apply=1, several minutes across
+    // both the natural AI pile-up and a dedicated ram_test approach) this hook NEVER fired with
+    // the player as a party while apply=1 was active, despite firing readily under apply=0 -
+    // i.e. whatever dispatches CollideVehiclePartAndVehiclePart appears to skip a body once
+    // ApplyJoltToVehicle's per-frame DisablePhysics() takes effect, unlike ai::NearCallback
+    // (confirmed in §22.3 to NOT respect body-enabled state). Not conclusively root-caused -
+    // would need more disassembly of the dispatch path than this pass budgeted - so this stays
+    // installed as a freebie, but VehiclePushbackContactListener below (registered directly on
+    // Jolt's own PhysicsSystem, the mechanism already proven to fire via "other vehicles push
+    // the player") is the detector actually relied on.
     static void __fastcall CalcDamageToVehiclesHook(hta::ai::Vehicle* v1, hta::ai::Vehicle* v2,
             void* contacts, float* dSpeed, void* damageInfo, void* contactPos) {
         Real_CalcDamageToVehicles(v1, v2, contacts, dSpeed, damageInfo, contactPos);
@@ -1870,6 +2669,106 @@ namespace kraken::fix::joltshadow {
             LOG_WARNING("docs §23.4: live ram-damage call involves the PLAYER vehicle (v1=%p v2=%p player=%p) dSpeed=%.2f",
                 (void*) v1, (void*) v2, (void*) player, dSpeed ? (double) *dSpeed : -1.0);
         }
+
+        if (dSpeed == nullptr)
+            return;
+        const bool v1JoltDriven = IsVehicleJoltAuthoritative(v1);
+        const bool v2JoltDriven = IsVehicleJoltAuthoritative(v2);
+        if (v1JoltDriven == v2JoltDriven)
+            return; // both or neither Jolt-driven - already handled natively either way, see docs §23.11
+        ApplyRamPushback(v1JoltDriven ? v1 : v2, v1JoltDriven ? v2 : v1, *dSpeed);
+    }
+
+    // docs §23.11: the real detector. Registered directly on Jolt's own PhysicsSystem
+    // (SetContactListener, see Apply() below), so it observes exactly the collision that
+    // already makes "other vehicles push the player" work - a Jolt-DYNAMIC vehicle chassis
+    // (player shadow or Stage-3 AI shadow, both tagged with their owning hta::ai::Vehicle* via
+    // Body::SetUserData at creation, see BuildShadow) touching a KINEMATIC mirror body (same
+    // tagging, see MirrorOtherVehicles). Motion type alone distinguishes the two sides - no
+    // need to re-derive "is this Jolt-driven" from config/g_aiTargets the way
+    // IsVehicleJoltAuthoritative does, since only Jolt-dynamic vehicle chassis are ever Dynamic
+    // and only mirrors are ever Kinematic in this physics world.
+    //
+    // OnContactAdded/OnContactPersisted can run concurrently on multiple JobSystem worker
+    // threads for different body pairs within the same PhysicsSystem::Update() call (per
+    // Jolt's own ContactListener contract) - so this must NOT call back into ODE (PhysicObj
+    // methods are not known to be thread-safe, and the main thread isn't touching ODE
+    // concurrently with Update() anyway, so there's no need to risk it). Instead it only
+    // queues a lightweight event under a mutex; DrainPendingPushbacks (called once, back on
+    // the main thread, right after StepPhysicsProfiled returns in UpdateShadow) does the
+    // actual ODE-side work single-threaded.
+    struct PendingPushback {
+        hta::ai::Vehicle* joltVehicle     = nullptr;
+        hta::ai::Vehicle* mirroredVehicle = nullptr;
+        float             closingSpeed    = 0.0f;
+    };
+    static std::mutex                   g_pendingPushbackMutex;
+    static std::vector<PendingPushback> g_pendingPushbacks;
+
+    class VehiclePushbackContactListener final : public JPH::ContactListener {
+    public:
+        void OnContactAdded(const JPH::Body& inBody1, const JPH::Body& inBody2,
+                const JPH::ContactManifold& inManifold, JPH::ContactSettings&) override {
+            HandleContact(inBody1, inBody2, inManifold);
+        }
+        void OnContactPersisted(const JPH::Body& inBody1, const JPH::Body& inBody2,
+                const JPH::ContactManifold& inManifold, JPH::ContactSettings&) override {
+            HandleContact(inBody1, inBody2, inManifold);
+        }
+
+    private:
+        static void HandleContact(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold) {
+            const bool body1Dynamic = inBody1.GetMotionType() == JPH::EMotionType::Dynamic;
+            const bool body2Dynamic = inBody2.GetMotionType() == JPH::EMotionType::Dynamic;
+            if (body1Dynamic == body2Dynamic)
+                return; // both or neither dynamic - native Jolt already resolves dynamic-vs-dynamic correctly; static/kinematic-vs-kinematic never needs a push
+            const JPH::Body& dynamicBody   = body1Dynamic ? inBody1 : inBody2;
+            const JPH::Body& kinematicBody = body1Dynamic ? inBody2 : inBody1;
+            if (kinematicBody.GetMotionType() != JPH::EMotionType::Kinematic)
+                return; // the non-dynamic side must specifically be a vehicle mirror, not a static body
+
+            hta::ai::Vehicle* joltVehicle     = reinterpret_cast<hta::ai::Vehicle*>(dynamicBody.GetUserData());
+            hta::ai::Vehicle* mirroredVehicle = reinterpret_cast<hta::ai::Vehicle*>(kinematicBody.GetUserData());
+            if (joltVehicle == nullptr || mirroredVehicle == nullptr)
+                return;
+
+            // mWorldSpaceNormal points from body1 toward resolving body2 out of body1 - flip
+            // it so it consistently points FROM the dynamic body TOWARD the mirror regardless
+            // of which one Jolt happened to assign as "body1" for this pair.
+            JPH::Vec3 normal = inManifold.mWorldSpaceNormal;
+            if (!body1Dynamic)
+                normal = -normal;
+
+            const float closingSpeed = dynamicBody.GetLinearVelocity().Dot(normal);
+            if (closingSpeed <= 0.0f)
+                return; // separating or tangential graze, not a push
+
+            std::lock_guard<std::mutex> lock(g_pendingPushbackMutex);
+            g_pendingPushbacks.push_back({joltVehicle, mirroredVehicle, closingSpeed});
+        }
+    };
+    static VehiclePushbackContactListener g_pushbackContactListener;
+
+    // A chassis is now a compound shape (docs §23.10) - a single real hit can generate one
+    // manifold per sub-shape against the same mirror, which would multiply one hit's impulse
+    // by however many parts happened to touch this step if applied independently. Keep only
+    // the strongest closing speed seen per (joltVehicle, mirroredVehicle) pair this frame.
+    static void DrainPendingPushbacks() {
+        std::vector<PendingPushback> events;
+        {
+            std::lock_guard<std::mutex> lock(g_pendingPushbackMutex);
+            events.swap(g_pendingPushbacks);
+        }
+        if (events.empty())
+            return;
+
+        std::map<std::pair<hta::ai::Vehicle*, hta::ai::Vehicle*>, float> strongest;
+        for (const PendingPushback& e : events) {
+            float& best = strongest[{e.joltVehicle, e.mirroredVehicle}];
+            best = std::max(best, e.closingSpeed);
+        }
+        for (const auto& [pair, closingSpeed] : strongest)
+            ApplyRamPushback(pair.first, pair.second, closingSpeed);
     }
 
     static void InstallRamDamageDiagnostic() {
@@ -1900,6 +2799,12 @@ namespace kraken::fix::joltshadow {
         }
 
         InstallRamDamageDiagnostic();
+        // docs §23.11: registers VehiclePushbackContactListener as the primary ram-pushback
+        // detector - see its comment for why this, not CalcDamageToVehiclesHook above, is the
+        // one actually relied on. Jolt keeps only one ContactListener pointer at a time;
+        // nothing else in this codebase calls SetContactListener, so this simple assignment
+        // can't clobber another registration.
+        kraken::fix::jolt::GetPhysicsSystem()->SetContactListener(&g_pushbackContactListener);
 
         if (config.jolt_apply.value != 0) {
             LOG_INFO("Feature enabled - Jolt WILL DRIVE the player's vehicle this run (player_only=%u, max_speed=%.0fm/s gate)",

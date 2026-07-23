@@ -233,7 +233,7 @@ SYSTEM_PROMPT = (
 )
 
 
-def call_ollama(url, model, messages, tools, timeout=180):
+def call_ollama(url, model, messages, tools, timeout=480):
     body = json.dumps({
         "model": model,
         "messages": messages,

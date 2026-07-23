@@ -95,11 +95,16 @@ namespace kraken {
         ConfigValue<uint32_t>                 jolt_player_only;
         ConfigValue<uint32_t>                 jolt_ai_count;
         ConfigValue<float>                    jolt_susp_frequency;
+        ConfigValue<float>                    jolt_susp_rest_fraction;
         ConfigValue<float>                    jolt_susp_damping;
+        ConfigValue<float>                    jolt_susp_reference_hz;
+        ConfigValue<uint32_t>                  jolt_wheel_proxy;
         ConfigValue<float>                    jolt_friction_long;
         ConfigValue<float>                    jolt_friction_lat;
         ConfigValue<uint32_t>                 jolt_autotune;
         ConfigValue<uint32_t>                 jolt_autotune_max_trials;
+        ConfigValue<float>                    jolt_pushback_min_dspeed;
+        ConfigValue<float>                    jolt_pushback_scale;
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;

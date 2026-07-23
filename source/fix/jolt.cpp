@@ -63,7 +63,16 @@ namespace kraken::fix::jolt {
         // extended and zero tire traction (vehicle slides instead of driving) whenever
         // surrounded by other vehicles.
         static constexpr JPH::ObjectLayer WHEEL_QUERY = 2;
-        static constexpr JPH::ObjectLayer NUM_LAYERS  = 2; // BPLayerInterfaceImpl's array size - WHEEL_QUERY is query-only, see above, so it's deliberately excluded
+        // docs §34: a REAL layer (unlike WHEEL_QUERY) for the auxiliary wheel-proxy bodies -
+        // small dynamic spheres, slider-constrained to each vehicle's chassis, that give Jolt's
+        // raycast-only wheels some physical presence for the one case they can't otherwise
+        // handle (a chassis tipped far enough that the wheel's own raycast no longer reaches
+        // the ground - see joltshadow.cpp's BuildWheelProxy). Restricted to NON_MOVING only,
+        // same reasoning as WHEEL_QUERY: these must brace against terrain, never against other
+        // vehicles' bodies or kinematic mirrors (which share MOVING) - a proxy sphere shoving a
+        // neighboring vehicle around would be its own new bug, not a fix.
+        static constexpr JPH::ObjectLayer WHEEL_PROXY = 3;
+        static constexpr JPH::ObjectLayer NUM_LAYERS  = 4; // BPLayerInterfaceImpl's array size - WHEEL_QUERY (2) is query-only and excluded, but WHEEL_PROXY (3) is a real body layer and needs a slot
     }
 
     namespace BroadPhaseLayers {
@@ -77,6 +86,7 @@ namespace kraken::fix::jolt {
         BPLayerInterfaceImpl() {
             m_objectToBroadPhase[Layers::NON_MOVING] = BroadPhaseLayers::NON_MOVING;
             m_objectToBroadPhase[Layers::MOVING]     = BroadPhaseLayers::MOVING;
+            m_objectToBroadPhase[Layers::WHEEL_PROXY] = BroadPhaseLayers::MOVING; // it's a real dynamic body, just a restricted-collision one
         }
 
         JPH::uint GetNumBroadPhaseLayers() const override {
@@ -106,6 +116,7 @@ namespace kraken::fix::jolt {
                 case Layers::NON_MOVING:  return layer2 == BroadPhaseLayers::MOVING;
                 case Layers::MOVING:      return true;
                 case Layers::WHEEL_QUERY: return layer2 == BroadPhaseLayers::NON_MOVING;
+                case Layers::WHEEL_PROXY: return layer2 == BroadPhaseLayers::NON_MOVING;
                 default:                  return false;
             }
         }
@@ -115,9 +126,14 @@ namespace kraken::fix::jolt {
     public:
         bool ShouldCollide(JPH::ObjectLayer object1, JPH::ObjectLayer object2) const override {
             switch (object1) {
-                case Layers::NON_MOVING:  return object2 == Layers::MOVING;
+                // docs §34: explicitly lists WHEEL_PROXY here too (not just relying on
+                // WHEEL_PROXY's own case below) since it's unconfirmed whether Jolt always
+                // queries this filter with the same (object1, object2) order - safer to make
+                // the NON_MOVING/WHEEL_PROXY relationship symmetric in both directions.
+                case Layers::NON_MOVING:  return object2 == Layers::MOVING || object2 == Layers::WHEEL_PROXY;
                 case Layers::MOVING:      return true;
                 case Layers::WHEEL_QUERY: return object2 == Layers::NON_MOVING;
+                case Layers::WHEEL_PROXY: return object2 == Layers::NON_MOVING;
                 default:                  return false;
             }
         }
@@ -176,6 +192,10 @@ namespace kraken::fix::jolt {
 
     JPH::PhysicsSystem* GetPhysicsSystem() {
         return g_physicsSystem;
+    }
+
+    uint32_t GetRoadsBodyRawId() {
+        return g_roadsBodyId.GetIndexAndSequenceNumber();
     }
 
     void StepPhysics(float inDeltaTime) {
@@ -446,6 +466,10 @@ namespace kraken::fix::jolt {
         int32_t classHistogram[32] = {};
         int32_t boxCount = 0, sphereCount = 0, triMeshCount = 0, capsuleCount = 0;
         int32_t skippedDynamicCount = 0, skippedOtherClassCount = 0;
+        // Geoms that had an exportable class but hit CreateBody()==nullptr (cMaxBodies
+        // exhausted) - aggregated instead of logged per-geom (docs §35), see the
+        // comment at the CreateBody call site for why.
+        int32_t skippedCapacityCount = 0;
         int32_t walkedCount = 0;
         int32_t nestedSpaceCount = 0;
     };
@@ -596,7 +620,13 @@ namespace kraken::fix::jolt {
 
                 JPH::Body* body = ctx.bodyInterface.CreateBody(bodySettings);
                 if (body == nullptr) {
-                    LOG_ERROR("Jolt: static obstacle body creation failed (out of bodies?)");
+                    // Aggregated, not logged per-geom (docs §35) - a level whose exportable
+                    // static count exceeds cMaxBodies can hit this tens of thousands of times in
+                    // one export call (live-confirmed: 21566 times on one real save), and logging
+                    // each one individually was itself a real cost (the resulting 21566-line spam
+                    // dwarfed the rest of that session's entire log). Same aggregate-then-summarize
+                    // pattern already used for skippedOtherClassCount below.
+                    ++ctx.skippedCapacityCount;
                     continue;
                 }
                 ctx.newBodies.push_back(body->GetID());
@@ -650,13 +680,22 @@ namespace kraken::fix::jolt {
                         "(docs §22.9/§22.13), counts below are only over what was actually walked",
                         ctx.walkedCount, topLevelCount);
         }
+        if (ctx.skippedCapacityCount > 0) {
+            // Same class of bug as docs §22.14 (cMaxBodies=8192 too small for a ~32861-obstacle
+            // real level, raised to 65536) recurring on an even bigger level (docs §35,
+            // 87082 exportable obstacles on the "Molokovoz" mountain-terrain save alone) -
+            // cMaxBodies needs raising again if this fires live.
+            LOG_WARNING("Jolt: static obstacle export - %d geom(s) of exportable class could not "
+                        "get a Jolt body (cMaxBodies capacity exhausted) - raise cMaxBodies (docs "
+                        "§22.14/§35)", ctx.skippedCapacityCount);
+        }
         LOG_INFO("Jolt: exported %d static obstacles (%d box, %d sphere, %d trimesh, %d capsule) - "
                  "%d geoms walked total (%d nested sub-space(s) recursed into, %d at top level per "
                  "dSpaceGetNumGeoms), %d dynamic geoms skipped, %d body-less geoms of unexported "
-                 "class skipped",
+                 "class skipped, %d skipped (capacity exhausted)",
                  exportedCount, ctx.boxCount, ctx.sphereCount, ctx.triMeshCount, ctx.capsuleCount,
                  ctx.walkedCount, ctx.nestedSpaceCount, topLevelCount, ctx.skippedDynamicCount,
-                 ctx.skippedOtherClassCount);
+                 ctx.skippedOtherClassCount, ctx.skippedCapacityCount);
         for (int32_t c = 0; c < 32; ++c) {
             const bool isSpaceClass = c >= dFirstSpaceClass && c <= dLastSpaceClass;
             if (ctx.classHistogram[c] > 0 && c != dBoxClass && c != dSphereClass && c != dTriMeshClass
@@ -724,13 +763,17 @@ namespace kraken::fix::jolt {
         g_objectVsBroadPhaseFilter = new ObjectVsBroadPhaseLayerFilterImpl();
         g_objectLayerPairFilter    = new ObjectLayerPairFilterImpl();
 
-        // cMaxBodies bumped again (docs §22.14) - 8192 (itself already a bump from an original
-        // 1024 placeholder) turned out to be a real, live-confirmed truncation bug on an actual
-        // game save: exported only 8129 of the level's static obstacles before hitting the cap,
-        // logging 24732 "out of bodies" errors for the rest - true candidate count on that one
-        // level alone was ~33000. Sized with real headroom above that measured number now,
-        // rather than another guess.
-        constexpr JPH::uint cMaxBodies            = 65536;
+        // cMaxBodies bumped again (docs §35) - 65536 (itself already a bump from 8192, docs
+        // §22.14, which was itself a bump from an original 1024 placeholder) turned out to be a
+        // real, live-confirmed truncation bug AGAIN, on a different, bigger real game save
+        // ("Molokovoz", mountain terrain): exported only 65516 of the level's static obstacles
+        // before hitting the cap, logging 21566 "out of bodies" errors for the rest - true
+        // candidate count on that level alone was 87082, nearly 3x the ~32861 that motivated the
+        // previous bump. Two real levels in a row have both exceeded whatever the current cap
+        // was sized for, so this time the headroom is sized generously above the larger of the
+        // two measured levels rather than just barely over it. Live-reconfirmed after this bump:
+        // same save now exports all 87082 with 0 capacity failures.
+        constexpr JPH::uint cMaxBodies            = 262144;
         constexpr JPH::uint cNumBodyMutexes        = 0; // 0 = Jolt default
         constexpr JPH::uint cMaxBodyPairs          = 16384;
         constexpr JPH::uint cMaxContactConstraints = 8192;

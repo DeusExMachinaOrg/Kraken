@@ -58,12 +58,17 @@ namespace kraken {
         this->jolt_apply                        = { "jolt_harness","apply",                          0,     true,  0,     1           };
         this->jolt_player_only                  = { "jolt_harness","player_only",                    1,     true,  0,     1           };
         this->jolt_ai_count                     = { "jolt_harness","ai_count",                       0,     true,  0,     16          };
-        this->jolt_susp_frequency               = { "jolt_harness","susp_frequency",                 1.5,   true,  0.3,   8.0         };
-        this->jolt_susp_damping                 = { "jolt_harness","susp_damping",                   0.5,   true,  0.05,  1.5         };
+        this->jolt_susp_frequency               = { "jolt_harness","susp_frequency",                 1.0,   true,  0.5,   2.0         };
+        this->jolt_susp_rest_fraction           = { "jolt_harness","susp_rest_fraction",             0.07,  true,  0.02,  0.4         };
+        this->jolt_susp_damping                 = { "jolt_harness","susp_damping",                   1.0,   true,  0.2,   3.0         };
+        this->jolt_susp_reference_hz            = { "jolt_harness","susp_reference_hz",               60.0,  true,  20.0,  144.0       };
+        this->jolt_wheel_proxy                   = { "jolt_harness","wheel_proxy",                     1,     true,  0,     1           };
         this->jolt_friction_long                = { "jolt_harness","friction_long",                  1.0,   true,  0.2,   3.0         };
         this->jolt_friction_lat                 = { "jolt_harness","friction_lat",                   1.0,   true,  0.2,   3.0         };
         this->jolt_autotune                     = { "jolt_harness","autotune",                       0,     true,  0,     1           };
         this->jolt_autotune_max_trials          = { "jolt_harness","autotune_max_trials",             24,    true,  1,     500         };
+        this->jolt_pushback_min_dspeed          = { "jolt_harness","pushback_min_dspeed",              0.8,   true,  0.0,   50.0        };
+        this->jolt_pushback_scale               = { "jolt_harness","pushback_scale",                   1.0,   true,  0.0,   5.0         };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -140,11 +145,16 @@ namespace kraken {
         this->LoadValue(&this->jolt_player_only);
         this->LoadValue(&this->jolt_ai_count);
         this->LoadValue(&this->jolt_susp_frequency);
+        this->LoadValue(&this->jolt_susp_rest_fraction);
         this->LoadValue(&this->jolt_susp_damping);
+        this->LoadValue(&this->jolt_susp_reference_hz);
+        this->LoadValue(&this->jolt_wheel_proxy);
         this->LoadValue(&this->jolt_friction_long);
         this->LoadValue(&this->jolt_friction_lat);
         this->LoadValue(&this->jolt_autotune);
         this->LoadValue(&this->jolt_autotune_max_trials);
+        this->LoadValue(&this->jolt_pushback_min_dspeed);
+        this->LoadValue(&this->jolt_pushback_scale);
     };
 
     void Config::Dump() {
@@ -199,11 +209,16 @@ namespace kraken {
         this->DumpValue(&this->jolt_player_only);
         this->DumpValue(&this->jolt_ai_count);
         this->DumpValue(&this->jolt_susp_frequency);
+        this->DumpValue(&this->jolt_susp_rest_fraction);
         this->DumpValue(&this->jolt_susp_damping);
+        this->DumpValue(&this->jolt_susp_reference_hz);
+        this->DumpValue(&this->jolt_wheel_proxy);
         this->DumpValue(&this->jolt_friction_long);
         this->DumpValue(&this->jolt_friction_lat);
         this->DumpValue(&this->jolt_autotune);
         this->DumpValue(&this->jolt_autotune_max_trials);
+        this->DumpValue(&this->jolt_pushback_min_dspeed);
+        this->DumpValue(&this->jolt_pushback_scale);
     };
 
     template<typename T>
