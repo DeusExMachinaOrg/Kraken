@@ -1814,7 +1814,22 @@ namespace kraken::fix::joltshadow {
                 const float ffl = fFriction.Length();
                 groundForcePreClampMag = ffl;
                 if (ffl > maxForce && ffl > 1e-3f) fFriction = fFriction * (maxForce / ffl);
-                const JPH::Vec3 fApply = upW * (suspForce + hardStopForce) + fFriction;
+                // docs §46: chassis-heave damping - the missing HALF of the suspension damper.
+                // The real damper opposes the RELATIVE velocity between chassis and wheel along the
+                // strut; suspForce's own cSusp*compVel term only captures the WHEEL side (compVel,
+                // integrated from tire load). The CHASSIS's own velocity at this corner reaches
+                // compVel only indirectly, lagged 1-2 frames through the tire-spring feedback loop -
+                // which under-damps the chassis pitch mode specifically vs real ODE's Hinge2 damper
+                // that acts on the true relative velocity directly (docs §42.5-45 left this gap at
+                // ~1.4x ODE's pitch range). Add the chassis-side term: resist the chassis's own
+                // downward velocity at the contact. Front dives + rear rises -> this resists both ->
+                // damps pitch. Clamped to maxForce so a hard-landing spike can't dominate (the §44
+                // hardStopForce impulse already handles those); the main suspForce/hardStop stay
+                // uncapped per §44's reasoning.
+                const float vChassisDown = wm::Dot(vpAt(cts[slots.ground].p), downW); // + = compressing
+                const float chassisDamp = std::clamp(cSusp * vChassisDown, -maxForce, maxForce);
+                const float upMag = std::max(0.0f, suspForce + hardStopForce + chassisDamp);
+                const JPH::Vec3 fApply = upW * upMag + fFriction;
                 const JPH::RVec3 at(cts[slots.ground].p.x, cts[slots.ground].p.y, cts[slots.ground].p.z);
                 bi.AddForce(state.bodyId, fApply, at);
             }
