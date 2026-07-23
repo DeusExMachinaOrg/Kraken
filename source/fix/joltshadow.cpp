@@ -663,6 +663,11 @@ namespace kraken::fix::joltshadow {
     // bodies - JPH's wheels are raycast-based), so accumulating a handful of them across a
     // long play session is a trivial, accepted cost for avoiding the use-after-free entirely
     // rather than guessing at the real fix.
+    // docs §40: forward declaration - defined below (near StepWheelModel), but BuildShadow (right
+    // here) needs to call it during initial construction, before its own definition appears.
+    static void InitWheelModelSuspension(JPH::PhysicsSystem* physics, ShadowState& state,
+                                         const hta::CVector& pos, const hta::Quaternion& rot);
+
     static bool BuildShadow(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label, uint32_t collisionGroupId) {
         const uint32_t numWheels = vehicle->GetNumWheels();
         if (numWheels == 0) {
@@ -1026,34 +1031,11 @@ namespace kraken::fix::joltshadow {
             state.wmSuspVel.assign(nw, 0.0f);
             state.wmOmega.assign(nw, 0.0f);
             state.wmRestLen.assign(nw, 0.0f);
-            // docs §39.2: init suspLen so each wheel starts exactly ON the ground (raycast down
-            // from the attachment). Full-droop init (=maxLen) put the wheels ~2.7m below the COM,
-            // BELOW the one-sided heightfield surface where CollideShape can't see them - the
-            // vehicle then fell through with zero wheel support. Starting the wheels at the
-            // surface gives support from frame ~1, before the chassis can drop onto its belly.
-            const JPH::RMat44 bxform = JPH::RMat44::sRotationTranslation(
-                JPH::Quat(rot.x, rot.y, rot.z, rot.w), JPH::RVec3(pos.x, pos.y, pos.z));
-            const JPH::BroadPhaseLayerFilter& bpF = physics->GetDefaultBroadPhaseLayerFilter(kWheelQueryLayer);
-            const JPH::DefaultObjectLayerFilter olF = physics->GetDefaultLayerFilter(kWheelQueryLayer);
-            for (size_t i = 0; i < nw; ++i) {
-                const JPH::WheelSettings* s = state.constraint->GetWheel((JPH::uint) i)->GetSettings();
-                const float maxLen = s ? s->mSuspensionMaxLength : 0.5f;
-                const float R = s ? s->mRadius : 0.3f;
-                float suspLen = maxLen; // airborne fallback
-                if (s != nullptr) {
-                    const JPH::RVec3 attachW  = bxform * s->mPosition;
-                    const JPH::Vec3  suspDirW = bxform.Multiply3x3(s->mSuspensionDirection).Normalized();
-                    const float rayLen = maxLen + R + 1.0f;
-                    JPH::RRayCast ray{ attachW, suspDirW * rayLen };
-                    JPH::RayCastResult hitR;
-                    if (physics->GetNarrowPhaseQuery().CastRay(ray, hitR, bpF, olF)) {
-                        const float d = rayLen * hitR.mFraction; // attachment -> ground distance
-                        suspLen = std::clamp(d - R, s->mSuspensionMinLength, maxLen); // wheel bottom at ground
-                    }
-                }
-                state.wmSuspLen[i] = suspLen;
-                state.wmRestLen[i] = suspLen; // spring zero-force point = where the wheel starts on the ground
-            }
+            // docs §40: start each wheel exactly ON the ground (raycast-init). Full-droop init
+            // (=maxLen) put the wheels ~2.7m below the COM, BELOW the one-sided heightfield surface
+            // where CollideShape can't see them - the vehicle then fell through with zero wheel
+            // support. See InitWheelModelSuspension (shared with the post-teleport re-init path).
+            InitWheelModelSuspension(physics, state, pos, rot);
             LOG_INFO("Shadow (%s): wheelmodel APPLY mode - VehicleConstraint built but NOT simulated; chassis driven by wheelmodel_core (%zu wheels)",
                 label, nw);
         }
@@ -1329,6 +1311,46 @@ namespace kraken::fix::joltshadow {
         }
     }
 
+    // docs §40: (re)initialise the wheelmodel suspension DOF so each wheel starts exactly ON the
+    // ground for the given chassis pose - a raycast down from each attachment sets both the
+    // current length AND the spring zero-force (rest) length, so comp=0 (no launch) and the wheel
+    // has support from frame 1 instead of the chassis dropping onto its belly through a one-sided
+    // heightfield. Also zeroes the per-wheel rates (suspVel/omega). Called from BuildShadow and
+    // after any teleport (TeleportPlayerShadow): a teleport moves the body but would otherwise
+    // leave wmSuspLen at the OLD pose's ground height, so the wheels graze/miss the new ground and
+    // the chassis sinks (seen live: a spawn-reset run sank the shadow 49m while ODE stayed put).
+    static void InitWheelModelSuspension(JPH::PhysicsSystem* physics, ShadowState& state,
+                                         const hta::CVector& pos, const hta::Quaternion& rot) {
+        if (physics == nullptr || state.constraint == nullptr)
+            return;
+        const size_t nw = std::min(state.wmSuspLen.size(), (size_t) state.constraint->GetWheels().size());
+        const JPH::RMat44 bxform = JPH::RMat44::sRotationTranslation(
+            JPH::Quat(rot.x, rot.y, rot.z, rot.w), JPH::RVec3(pos.x, pos.y, pos.z));
+        const JPH::BroadPhaseLayerFilter& bpF = physics->GetDefaultBroadPhaseLayerFilter(kWheelQueryLayer);
+        const JPH::DefaultObjectLayerFilter olF = physics->GetDefaultLayerFilter(kWheelQueryLayer);
+        for (size_t i = 0; i < nw; ++i) {
+            const JPH::WheelSettings* s = state.constraint->GetWheel((JPH::uint) i)->GetSettings();
+            const float maxLen = s ? s->mSuspensionMaxLength : 0.5f;
+            const float R = s ? s->mRadius : 0.3f;
+            float suspLen = maxLen; // airborne fallback
+            if (s != nullptr) {
+                const JPH::RVec3 attachW  = bxform * s->mPosition;
+                const JPH::Vec3  suspDirW = bxform.Multiply3x3(s->mSuspensionDirection).Normalized();
+                const float rayLen = maxLen + R + 1.0f;
+                JPH::RRayCast ray{ attachW, suspDirW * rayLen };
+                JPH::RayCastResult hitR;
+                if (physics->GetNarrowPhaseQuery().CastRay(ray, hitR, bpF, olF)) {
+                    const float d = rayLen * hitR.mFraction; // attachment -> ground distance
+                    suspLen = std::clamp(d - R, s->mSuspensionMinLength, maxLen); // wheel bottom at ground
+                }
+            }
+            state.wmSuspLen[i] = suspLen;
+            state.wmRestLen[i] = suspLen; // spring zero-force point = where the wheel starts on the ground
+            if (i < state.wmSuspVel.size()) state.wmSuspVel[i] = 0.0f;
+            if (i < state.wmOmega.size())   state.wmOmega[i]   = 0.0f;
+        }
+    }
+
     // docs §39.2: the APPLY path. Drives the Jolt chassis body with the ported wheelmodel_core
     // forces + an explicit suspension-travel DOF, instead of a JPH::VehicleConstraint (which was
     // NOT added to the simulation for this state - see BuildShadow). Called once per physics step
@@ -1482,10 +1504,17 @@ namespace kraken::fix::joltshadow {
             float compVel = state.wmSuspVel[i];
             // chassis support: only the compressed spring pushes up (a drooped strut just hangs)
             const float suspForce = std::max(0.0f, kSusp * std::max(comp, 0.0f) + cSusp * compVel);
-            // wheel DOF: tyre pushes wheel up (increase comp), spring resists; integrate (semi-implicit)
-            const float accel = (normalLoad - (kSusp * comp + cSusp * compVel)) / mUnsprung;
-            compVel += accel * dt;
-            comp    += compVel * dt;
+            // Wheel (unsprung) DOF, semi-implicit Euler with IMPLICIT damping. Explicit damping
+            // (the old `accel = (normalLoad - (kSusp*comp + cSusp*compVel))/mUnsprung; compVel +=
+            // accel*dt`) is only conditionally stable - it needs cSusp < 2*mUnsprung/dt (= 4000
+            // N.s/m at mUnsprung=20, dt=0.01); past that the damper term flips sign and grows
+            // ~|1-cSusp/mUnsprung*dt|x each step. Live at cSusp=5000 this blew up as suspF
+            // oscillating 0<->366kN with comp swinging -1.0<->+0.35 and flung the body 175m (docs
+            // §40). Implicit damping is unconditionally stable for any cSusp, so the damper can be
+            // tuned freely: v_new = (v + dt*(normalLoad - kSusp*comp)/m) / (1 + dt*cSusp/m).
+            const float springAccel = (normalLoad - kSusp * comp) / mUnsprung;
+            compVel = (compVel + springAccel * dt) / (1.0f + (cSusp / mUnsprung) * dt);
+            comp   += compVel * dt; // symplectic: integrate position with the just-updated velocity
             const float compMin = restLen - maxLen; // most-drooped (negative)
             const float compMax = travel;           // most-compressed
             if (comp < compMin) { comp = compMin; if (compVel < 0.0f) compVel = 0.0f; }
@@ -3173,6 +3202,13 @@ namespace kraken::fix::joltshadow {
             JPH::EActivation::Activate);
         bodyInterface.SetLinearVelocity(g_playerShadow.bodyId, JPH::Vec3::sZero());
         bodyInterface.SetAngularVelocity(g_playerShadow.bodyId, JPH::Vec3::sZero());
+        // docs §40: in wheelmodel mode the suspension DOF caches per-wheel ground heights
+        // (wmSuspLen/wmRestLen) from the last build pose. Moving the body without re-seating them
+        // leaves the wheels grazing/missing the new ground so the chassis sinks - re-raycast them
+        // onto the ground at the destination pose (also zeroes the per-wheel rates, matching the
+        // body velocity we just zeroed).
+        if (g_playerShadow.wheelModelMode)
+            InitWheelModelSuspension(physics, g_playerShadow, pos, rot);
         return true;
     }
 

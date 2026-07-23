@@ -79,7 +79,7 @@ namespace kraken {
         this->jolt_wm_react_scale                = { "wheelmodel","react_scale",      1.0f,      true, 0.0f,     10.0f   };
         this->jolt_wm_own_spin                   = { "wheelmodel","own_spin",         1,         true, 0,        1       };
         this->jolt_wm_motor_gain                 = { "wheelmodel","motor_gain",       200.0f,    true, 0.0f,     1e6f    };
-        this->jolt_wm_drive_torque               = { "wheelmodel","drive_torque",     300.0f,    true, 0.0f,     1e7f    };
+        this->jolt_wm_drive_torque               = { "wheelmodel","drive_torque",     250.0f,    true, 0.0f,     1e7f    };
         this->jolt_wm_max_g                      = { "wheelmodel","max_g",            6.0f,      true, 1.0f,     100.0f  };
         this->jolt_wm_susp_stiffness             = { "wheelmodel","susp_stiffness",   30000.0f,  true, 1.0f,     1e8f    };
         this->jolt_wm_susp_damping               = { "wheelmodel","susp_damping",     3000.0f,   true, 0.0f,     1e7f    };
