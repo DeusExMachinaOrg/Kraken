@@ -142,6 +142,16 @@ namespace kraken {
         ConfigValue<uint32_t>                 jolt_autotune_max_trials;
         ConfigValue<float>                    jolt_pushback_min_dspeed;
         ConfigValue<float>                    jolt_pushback_scale;
+        // docs §52 (Этап 0): gates per-frame hot-path DIAGNOSTICS (dBodyGetNumJoints ramming
+        // probes in ApplyJoltToVehicle, etc.) that must NOT be paid for during a perf-profiling
+        // run. Default 0 (off) - a clean [jolt_profile] measurement should not include the cost
+        // of instrumentation that only exists to answer already-answered structural questions.
+        ConfigValue<uint32_t>                 jolt_hotpath_diag;
+        // docs §54.4 (Этап 1, шаг -1F): opt in to actually destroying abandoned shadow
+        // bodies/constraints (deferred to just after PhysicsSystem::Update) instead of the
+        // historical leak-forever-on-rebuild behaviour. Default 0 - see DrainPendingJoltDestroys
+        // for why this is opt-in rather than simply switched on.
+        ConfigValue<uint32_t>                 jolt_deferred_destroy;
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;

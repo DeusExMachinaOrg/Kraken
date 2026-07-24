@@ -206,7 +206,28 @@ namespace kraken::fix::jolt {
             if (g_staticsExportPendingFrames == 0)
                 ExportStaticObstaclesToJolt();
         }
-        g_physicsSystem->Update(inDeltaTime, 1, g_tempAllocator, g_jobSystem);
+        // docs §54 (Этап 1, шаг -1E): the return value used to be discarded. Jolt does not throw,
+        // assert (in Release) or log when it runs out of body pairs / contact constraints / step
+        // listeners - it returns a bitmask here and silently drops the excess work, so the only
+        // symptom is physics quietly going wrong under load (bodies interpenetrating or falling
+        // through the world in a crowd). Logged once per distinct error mask rather than per
+        // frame: these conditions persist for as long as the scene is dense, and a per-frame log
+        // would itself become a performance problem (the same aggregate-then-report discipline
+        // used for the static-export capacity failures, docs §35).
+        const JPH::EPhysicsUpdateError err =
+            g_physicsSystem->Update(inDeltaTime, 1, g_tempAllocator, g_jobSystem);
+        if (err != JPH::EPhysicsUpdateError::None) {
+            static JPH::EPhysicsUpdateError s_lastReportedError = JPH::EPhysicsUpdateError::None;
+            if (err != s_lastReportedError) {
+                s_lastReportedError = err;
+                LOG_ERROR("Jolt: PhysicsSystem::Update reported error mask 0x%X%s%s%s%s - simulation work was DROPPED this step (raise the corresponding limit in Apply())",
+                    (unsigned) err,
+                    ((JPH::uint) err & (JPH::uint) JPH::EPhysicsUpdateError::ManifoldCacheFull) ? " ManifoldCacheFull" : "",
+                    ((JPH::uint) err & (JPH::uint) JPH::EPhysicsUpdateError::BodyPairCacheFull)  ? " BodyPairCacheFull"  : "",
+                    ((JPH::uint) err & (JPH::uint) JPH::EPhysicsUpdateError::ContactConstraintsFull) ? " ContactConstraintsFull" : "",
+                    "");
+            }
+        }
     }
 
     // Stage 0 - static geometry export (docs/jolt-integration-techanalysis.md §5). Landscape
@@ -750,7 +771,13 @@ namespace kraken::fix::jolt {
         JPH::Factory::sInstance = new JPH::Factory();
         JPH::RegisterTypes();
 
-        g_tempAllocator = new JPH::TempAllocatorImpl(16 * 1024 * 1024);
+        // docs §54 (Этап 1, шаг -1E): 16MB -> 48MB, raised BEFORE/with cMaxContactConstraints
+        // below, not after. JPH::TempAllocatorImpl::Allocate has no graceful fallback - it
+        // std::abort()s the process when the linear buffer is exhausted - and PhysicsSystem's
+        // per-step constraint buffer is sized mMaxConstraints * cMaxConstraintSize (~472 bytes on
+        // 32-bit), so raising the constraint cap without raising this first turns a capacity
+        // overflow from "dropped contacts" into an instant hard abort.
+        g_tempAllocator = new JPH::TempAllocatorImpl(48 * 1024 * 1024);
 
         uint32_t threads = config.jolt_threads.value;
         if (threads == 0) {
@@ -773,10 +800,19 @@ namespace kraken::fix::jolt {
         // was sized for, so this time the headroom is sized generously above the larger of the
         // two measured levels rather than just barely over it. Live-reconfirmed after this bump:
         // same save now exports all 87082 with 0 capacity failures.
+        // docs §54 (Этап 1, шаг -1E): raised together with the TempAllocator above, ahead of
+        // giving every wheel its own body+constraint (~380 extra bodies / 380 extra SixDOF
+        // constraints on a 76-vehicle scene). These two are NOT "bodies" limits - they bound the
+        // per-step contact workload, which is what actually grows when wheels stop being raycasts
+        // and start being real colliding bodies. Overflowing either is silent: Jolt reports it via
+        // the EPhysicsUpdateError return value of Update() (now logged, see StepPhysics) and just
+        // DROPS the excess contacts - i.e. the symptom is "vehicles occasionally sink through the
+        // ground in a crowd" with nothing in the log, the same failure class as the cMaxBodies
+        // truncation bugs above (§22.14/§35) that twice went unnoticed for a whole session.
         constexpr JPH::uint cMaxBodies            = 262144;
         constexpr JPH::uint cNumBodyMutexes        = 0; // 0 = Jolt default
-        constexpr JPH::uint cMaxBodyPairs          = 16384;
-        constexpr JPH::uint cMaxContactConstraints = 8192;
+        constexpr JPH::uint cMaxBodyPairs          = 65536;
+        constexpr JPH::uint cMaxContactConstraints = 16384;
 
         g_physicsSystem = new JPH::PhysicsSystem();
         g_physicsSystem->Init(

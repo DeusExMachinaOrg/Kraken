@@ -678,6 +678,298 @@ namespace kraken::fix::joltshadow {
     static void InitWheelModelSuspension(JPH::PhysicsSystem* physics, ShadowState& state,
                                          const hta::CVector& pos, const hta::Quaternion& rot);
 
+    // ------------------------------------------------------------------------------------------
+    // docs §54.4 (Этап 1, шаг -1F): deferred destruction of abandoned Jolt bodies/constraints.
+    //
+    // This file's standing rule is leak-forever on rebuild (see BuildShadow's comment): an earlier
+    // version tore the old constraint/body down inline and produced a repeatable access violation
+    // inside JPH::VehicleConstraint::OnStep on a worker thread, so nothing has been destroyed
+    // since. That was an acceptable trade while a rebuild cost exactly ONE small body. It stops
+    // being acceptable once every wheel is its own body on its own constraint: a rebuild then
+    // abandons 1 + N bodies and N constraints, and rebuilds happen on every vehicle swap, every
+    // tuning change and every torn-off wheel.
+    //
+    // The safe window is the one DrainPendingPushbacks (docs §23.11) already established and
+    // documents: back on the main thread, immediately AFTER PhysicsSystem::Update() has fully
+    // returned, when no worker job can still be touching a constraint. Enqueue from anywhere,
+    // destroy only there.
+    //
+    // Ordering matters and is the most likely cause of the original crash: a VehicleConstraint is
+    // ALSO a PhysicsStepListener, so it must stop being called (RemoveStepListener) before it
+    // stops being a constraint (RemoveConstraint), and only then may the bodies it references be
+    // removed and destroyed. In wheelmodel mode the constraint is never registered at all (see
+    // BuildShadow's `if (!state.wheelModelMode)` branch), which is why `registered` is tracked
+    // rather than assumed.
+    //
+    // Gated OFF by default ([jolt_harness] deferred_destroy). Turning it on is an experiment
+    // against an unexplained historical crash, not a settled fix - the leak-forever path stays
+    // the default until this is proven live under vehicle swaps.
+    struct PendingJoltDestroy {
+        std::vector<JPH::BodyID>                bodies;
+        std::vector<JPH::Ref<JPH::Constraint>>  constraints;
+        bool                                    constraintsRegistered = false;
+    };
+    static std::mutex                      g_pendingDestroyMutex;
+    static std::vector<PendingJoltDestroy> g_pendingDestroys;
+
+    static void EnqueueJoltDestroy(PendingJoltDestroy&& item) {
+        if (kraken::Config::Instance().jolt_deferred_destroy.value == 0)
+            return; // leak-forever (historical default): abandon, never destroy
+        if (item.bodies.empty() && item.constraints.empty())
+            return;
+        // docs §54.5: HARD restriction, established by live bisection, not by theory. Destroying a
+        // rebuilt shadow is safe in wheelmodel mode and reliably fatal on the VehicleConstraint
+        // path (4/4 runs, 0xE06D7363, inside the drain). The difference between the two is that
+        // the VehicleConstraint path also builds wheel proxies - a dynamic sphere plus a
+        // SliderConstraint per wheel, neither of which is stored anywhere, so nothing can enqueue
+        // them alongside the chassis they reference. Sweeping live constraints for references to
+        // the doomed bodies (implemented in the drain) did NOT fix it, so at least one more
+        // untracked reference to a destroyed object exists and has not been identified.
+        //
+        // Rather than keep guessing at an unexplained crash on a code path that Этап 1 deletes
+        // outright (wheel proxies and the whole non-simulated VehicleConstraint container go away
+        // when wheels become real bodies), the queue simply refuses to accept work it cannot prove
+        // it owns. When Этап 1's topology lands, wheel bodies and their SixDOF constraints ARE
+        // tracked per ShadowState, so they can be enqueued explicitly and this restriction lifted
+        // deliberately, with a live test, instead of by assumption.
+        if (item.constraintsRegistered) {
+            static bool s_warnedOnce = false;
+            if (!s_warnedOnce) {
+                s_warnedOnce = true;
+                LOG_WARNING("docs §54.5: deferred_destroy=1 ignored for the VehicleConstraint path - "
+                            "untracked wheel-proxy bodies/constraints still reference the chassis and "
+                            "destroying it crashes (reproduced 4/4). Falling back to leak-forever here. "
+                            "Only the wheelmodel path (jolt_wheelmodel=2) actually destroys.");
+            }
+            return;
+        }
+        std::lock_guard<std::mutex> lock(g_pendingDestroyMutex);
+        g_pendingDestroys.push_back(std::move(item));
+    }
+
+    // Called once per frame from UpdateShadow, right after StepPhysicsProfiled returns - the same
+    // "physics step has fully finished, single-threaded again" point DrainPendingPushbacks uses.
+    static void DrainPendingJoltDestroys() {
+        std::vector<PendingJoltDestroy> items;
+        {
+            std::lock_guard<std::mutex> lock(g_pendingDestroyMutex);
+            items.swap(g_pendingDestroys);
+        }
+        if (items.empty())
+            return;
+
+        JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+        if (physics == nullptr)
+            return;
+        JPH::BodyInterface& bodyInterface = physics->GetBodyInterface();
+
+        size_t destroyedBodies = 0, destroyedConstraints = 0, sweptConstraints = 0;
+        for (PendingJoltDestroy& item : items) {
+            // 1. stop it being called back, 2. stop it being solved, 3. only then free bodies.
+            for (JPH::Ref<JPH::Constraint>& c : item.constraints) {
+                if (c == nullptr)
+                    continue;
+                if (item.constraintsRegistered) {
+                    JPH::VehicleConstraint* vc = dynamic_cast<JPH::VehicleConstraint*>(c.GetPtr());
+                    if (vc != nullptr)
+                        physics->RemoveStepListener(vc);
+                    physics->RemoveConstraint(c.GetPtr());
+                }
+                ++destroyedConstraints;
+            }
+            item.constraints.clear(); // Ref<> release: frees whatever no longer has an owner
+
+            // docs §54.5 - THE crash that this whole mechanism tripped over, found live and
+            // deterministically reproducible: destroying a body that some OTHER, still-registered
+            // constraint references leaves that constraint holding a freed Body*, and Jolt dies
+            // the next time it touches it. In this file the untracked references are the
+            // wheel-proxy sliders (BuildWheelProxy adds a SliderConstraint per wheel between the
+            // chassis body and a proxy sphere, and stores NEITHER anywhere), so a rebuild in the
+            // VehicleConstraint path would free the chassis out from under 4-6 live sliders.
+            // Live evidence: with wheelmodel=2 (no proxies are ever built) the drain succeeded;
+            // with wheelmodel=0 (proxies exist) the process died with 0xE06D7363 inside this
+            // function every single run. This is also the most plausible explanation for the
+            // original, never-root-caused Stage 1 teardown crash (see BuildShadow's comment).
+            //
+            // Rather than require every future call site to remember to enqueue every related
+            // constraint, sweep for them: Jolt can enumerate all live constraints, and both
+            // constraint shapes used here expose the bodies they reference. O(constraints) and
+            // only on a rebuild, which is rare by construction.
+            if (!item.bodies.empty()) {
+                const JPH::Constraints all = physics->GetConstraints();
+                for (const JPH::Ref<JPH::Constraint>& c : all) {
+                    if (c == nullptr)
+                        continue;
+                    bool referencesDoomedBody = false;
+                    if (const JPH::TwoBodyConstraint* tb = dynamic_cast<const JPH::TwoBodyConstraint*>(c.GetPtr())) {
+                        const JPH::Body* b1 = tb->GetBody1();
+                        const JPH::Body* b2 = tb->GetBody2();
+                        for (const JPH::BodyID& id : item.bodies)
+                            if ((b1 != nullptr && b1->GetID() == id) || (b2 != nullptr && b2->GetID() == id))
+                                referencesDoomedBody = true;
+                    } else if (const JPH::VehicleConstraint* vc = dynamic_cast<const JPH::VehicleConstraint*>(c.GetPtr())) {
+                        const JPH::Body* vb = vc->GetVehicleBody();
+                        for (const JPH::BodyID& id : item.bodies)
+                            if (vb != nullptr && vb->GetID() == id)
+                                referencesDoomedBody = true;
+                    }
+                    if (!referencesDoomedBody)
+                        continue;
+                    if (JPH::VehicleConstraint* vcNonConst = dynamic_cast<JPH::VehicleConstraint*>(c.GetPtr()))
+                        physics->RemoveStepListener(vcNonConst);
+                    physics->RemoveConstraint(c.GetPtr());
+                    ++sweptConstraints;
+                }
+            }
+
+            for (const JPH::BodyID& id : item.bodies) {
+                if (id.IsInvalid())
+                    continue;
+                if (bodyInterface.IsAdded(id))
+                    bodyInterface.RemoveBody(id);
+                bodyInterface.DestroyBody(id);
+                ++destroyedBodies;
+            }
+        }
+
+        LOG_INFO("docs §54.4: deferred destroy drained - %zu body(ies), %zu constraint(s) freed, "
+                 "%zu dangling constraint(s) swept (see §54.5 - these would have been a use-after-free)",
+            destroyedBodies, destroyedConstraints, sweptConstraints);
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // docs §54 (Этап 1, шаг -1A/-1D): one-shot per-vehicle audit of the two facts the whole
+    // wheel-as-a-body topology rests on, neither of which has ever been verified against the real
+    // game data:
+    //
+    //   (A) The chassis-local axis convention. BuildShadow below hard-codes suspension = -Y,
+    //       steering axis = +Y, wheel forward = +Z (see its own comment: "NOT independently
+    //       confirmed by disassembly ... would need dJointGetHinge2Axis1/Axis2 read back in
+    //       body-local space"). Everything about a SixDOF strut frame - which axis translates,
+    //       which rotates for steering, which is the spin axis - is derived from that guess, so a
+    //       wrong guess would not produce an obvious error, it would produce a subtly wrong
+    //       vehicle. ODE itself holds the ground truth: Hinge2 axis1 is the chassis-side axis
+    //       (the one softened by dParamSuspensionERP/CFM, i.e. the suspension travel + steering
+    //       axis) and axis2 is the wheel-side axle. Both come back in WORLD space, so they are
+    //       rotated into the chassis body frame here before being compared to the convention.
+    //   (D) The real spread of suspension stiffness/damping across prototypes. If kSusp is on the
+    //       order of 1e6 N/m while an unsprung wheel body weighs ~11kg, the mass ratio against a
+    //       300-3000kg chassis will make a SixDOF strut spongy at Jolt's default 10 velocity
+    //       iterations, and the constraint will need SetNumVelocityStepsOverride. That has to be
+    //       known from real data before the topology is written, not discovered afterwards.
+    //
+    // Deliberately a pure logger: it reads ODE, computes angles, writes lines. It changes no
+    // state and is called exactly once per vehicle from BuildShadow, so it costs nothing on the
+    // hot path and can stay in the tree as documentation of what the real data actually was.
+    using DJointGetHinge2VecAuditFn = void(__fastcall*)(void* joint, float* result);
+    static const auto AuditDJointGetHinge2Axis1 = (DJointGetHinge2VecAuditFn) (0x007d0040);
+    static const auto AuditDJointGetHinge2Axis2 = (DJointGetHinge2VecAuditFn) (0x007d00f0); // RVA 0x3d00f0, sibling of Axis1 - same __fastcall(joint, float[3]) shape
+    using DJointGetBodyAuditFn = void* (__fastcall*)(void* joint, int index);
+    static const auto AuditDJointGetBody = (DJointGetBodyAuditFn) (0x007c5150);
+    using DBodyGetQuaternionAuditFn = const float* (__fastcall*)(void* body);
+    static const auto AuditDBodyGetQuaternion = (DBodyGetQuaternionAuditFn) (0x007c4740); // RVA 0x3c4740, returns ODE's {w,x,y,z}
+
+    // Angle between two unit-ish vectors, in degrees, folded to [0,90] - the convention check
+    // cares whether an axis LIES ALONG the expected direction, not which of the two senses it
+    // points in (ODE's axis1 sign depends on how AttachToPhysicObj happened to build the joint).
+    static float AuditAxisAngleDeg(const JPH::Vec3& a, const JPH::Vec3& b) {
+        const float la = a.Length(), lb = b.Length();
+        if (la < 1.0e-6f || lb < 1.0e-6f)
+            return -1.0f;
+        const float c = std::clamp(std::fabs(a.Dot(b) / (la * lb)), 0.0f, 1.0f);
+        return JPH::RadiansToDegrees(std::acos(c));
+    }
+
+    static void LogHinge2AxisAudit(hta::ai::Vehicle* vehicle, const char* label,
+                                   const JPH::Vec3& assumedSuspDir, const JPH::Vec3& assumedAxle) {
+        const uint32_t numWheels = vehicle->GetNumWheels();
+        void* chassisBody = nullptr;
+        for (uint32_t i = 0; i < numWheels && chassisBody == nullptr; ++i) {
+            const hta::ai::Vehicle::WheelRuntimeInfo& info = vehicle->m_wheels[i];
+            if (info.m_bWheelPresent && info.m_wheel != nullptr && info.m_wheel->m_jointID != nullptr)
+                chassisBody = AuditDJointGetBody(info.m_wheel->m_jointID, 0); // body1 = chassis
+        }
+        if (chassisBody == nullptr) {
+            LOG_WARNING("docs §54 axis-audit (%s): no wheel has a live Hinge2 joint yet - convention UNVERIFIED for this vehicle", label);
+            return;
+        }
+
+        const float* q = AuditDBodyGetQuaternion(chassisBody);
+        if (q == nullptr)
+            return;
+        // ODE stores {w,x,y,z}; JPH::Quat takes (x,y,z,w). Conjugate rotates world -> body-local.
+        const JPH::Quat chassisRot(q[1], q[2], q[3], q[0]);
+        const JPH::Quat worldToLocal = chassisRot.Conjugated();
+
+        float worstSuspDeg = 0.0f, worstAxleDeg = 0.0f, worstPerpDeg = 0.0f;
+        for (uint32_t i = 0; i < numWheels; ++i) {
+            const hta::ai::Vehicle::WheelRuntimeInfo& info = vehicle->m_wheels[i];
+            hta::ai::Wheel* wheel = info.m_wheel;
+            if (!info.m_bWheelPresent || wheel == nullptr || wheel->m_jointID == nullptr)
+                continue;
+
+            float a1[4] = {}, a2[4] = {};
+            AuditDJointGetHinge2Axis1(wheel->m_jointID, a1); // chassis side: suspension travel + steering
+            AuditDJointGetHinge2Axis2(wheel->m_jointID, a2); // wheel side: the axle
+
+            const JPH::Vec3 axis1Local = worldToLocal * JPH::Vec3(a1[0], a1[1], a1[2]);
+            const JPH::Vec3 axis2Local = worldToLocal * JPH::Vec3(a2[0], a2[1], a2[2]);
+
+            const float suspDeg = AuditAxisAngleDeg(axis1Local, assumedSuspDir);
+            const float axleDeg = AuditAxisAngleDeg(axis2Local, assumedAxle);
+            // Do the two axes stay perpendicular? A SixDOF strut frame needs axis1 (translate +
+            // steer) and axis2 (spin) orthogonal; if a prototype violates that, one constraint
+            // cannot represent it and the topology needs a separate hub body + hinge.
+            const float perpDeg = 90.0f - AuditAxisAngleDeg(axis1Local, axis2Local);
+
+            const bool steerable = wheel->m_steering != hta::ai::Wheel::STEERING_NO;
+            if (suspDeg > worstSuspDeg) worstSuspDeg = suspDeg;
+            // A STEERED wheel's axle is supposed to deviate from the chassis X axis - by exactly
+            // the current steer angle, since it rotates about axis1. Live-confirmed on the first
+            // run of this audit: every steer=0 wheel read 0.03-0.10 deg while steered ones read
+            // whatever the AI happened to be commanding (up to 45 deg, e.g. axis2_local =
+            // (-0.707, 0.001, -0.707)). Comparing a steered axle against the unsteered convention
+            // therefore measures the steering, not the convention, and an earlier version of this
+            // check reported a spurious "VIOLATED" on 55 of 66 vehicles because of it. The
+            // convention gate is the UNSTEERED wheels; for steered ones the meaningful structural
+            // invariant is orthogonality to axis1 (checked separately via perpDeg below), which
+            // holds regardless of steer angle.
+            if (!steerable && axleDeg > worstAxleDeg) worstAxleDeg = axleDeg;
+            if (perpDeg > worstPerpDeg) worstPerpDeg = perpDeg;
+
+            const hta::ai::WheelPrototypeInfo* proto = wheel->GetPrototypeInfo();
+            const float cfm = proto != nullptr ? proto->m_suspensionCFM : 0.0f;
+            const float erp = proto != nullptr ? proto->m_suspensionERP : 0.0f;
+            const float range = proto != nullptr ? proto->m_suspensionRange : 0.0f;
+            const float referenceH = 1.0f / std::max(kraken::Config::Instance().jolt_susp_reference_hz.value, 1.0f);
+            const float kSusp = cfm > 1.0e-8f ? erp / (referenceH * cfm) : 0.0f;
+            const float cSusp = cfm > 1.0e-8f ? (1.0f - erp) / cfm : 0.0f;
+
+            LOG_INFO("docs §54 axis-audit (%s) w=%u: axis1_local=(%.3f,%.3f,%.3f) vs assumedSusp -> %.2f deg | "
+                     "axis2_local=(%.3f,%.3f,%.3f) vs assumedAxle -> %.2f deg | axis1^axis2 off-perp %.2f deg || "
+                     "kSusp=%.0f N/m cSusp=%.0f Ns/m range=%.3f R=%.3f mWheel=%.1f driven=%d steer=%d",
+                label, i,
+                (double) axis1Local.GetX(), (double) axis1Local.GetY(), (double) axis1Local.GetZ(), (double) suspDeg,
+                (double) axis2Local.GetX(), (double) axis2Local.GetY(), (double) axis2Local.GetZ(), (double) axleDeg,
+                (double) perpDeg,
+                (double) kSusp, (double) cSusp, (double) range,
+                (double) wheel->GetRadius(), (double) wheel->GetMass(),
+                wheel->m_driven ? 1 : 0, wheel->m_steering != hta::ai::Wheel::STEERING_NO ? 1 : 0);
+        }
+
+        // The single line to grep for. Threshold 1 deg per the plan: anything above it means the
+        // hard-coded convention is wrong and the SixDOF frame must be built from the real axes.
+        // Three independent gates, all of which must hold for a one-SixDOF-per-wheel strut:
+        //   susp - the softened Hinge2 axis really is chassis-local Y (the translate+steer axis);
+        //   axle - UNSTEERED wheels really do spin about chassis-local X;
+        //   perp - axle stays orthogonal to the strut axis (true at any steer angle), which is
+        //          what makes a single constraint able to represent the whole strut.
+        LOG_INFO("docs §54 axis-audit SUMMARY (%s): worst susp %.2f deg, worst axle (unsteered only) %.2f deg, worst off-perp %.2f deg -> convention %s",
+            label, (double) worstSuspDeg, (double) worstAxleDeg, (double) worstPerpDeg,
+            (worstSuspDeg <= 1.0f && worstAxleDeg <= 1.0f && worstPerpDeg <= 1.0f)
+                ? "CONFIRMED" : "**VIOLATED - build the strut frame from real axes**");
+    }
+
     static bool BuildShadow(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label, uint32_t collisionGroupId) {
         const uint32_t numWheels = vehicle->GetNumWheels();
         if (numWheels == 0) {
@@ -737,6 +1029,29 @@ namespace kraken::fix::joltshadow {
             LOG_ERROR("Shadow chassis body creation failed (%s, out of bodies?)", label);
             return false;
         }
+
+        // docs §54.4 (шаг -1F): hand whatever this ShadowState previously owned to the deferred
+        // destroy queue BEFORE overwriting the handles - this is the last point at which the old
+        // body/constraint are still reachable. Enqueueing (rather than destroying here) preserves
+        // the file's hard rule that nothing is torn down inside the frame; the queue is drained
+        // after PhysicsSystem::Update returns. No-op unless [jolt_harness] deferred_destroy=1, in
+        // which case this is exactly the historical leak-forever behaviour.
+        // Placed after the new body is known to exist so a failed rebuild doesn't destroy a
+        // still-working shadow.
+        if (!state.bodyId.IsInvalid() || state.constraint != nullptr) {
+            PendingJoltDestroy old;
+            if (!state.bodyId.IsInvalid())
+                old.bodies.push_back(state.bodyId);
+            if (state.constraint != nullptr) {
+                old.constraints.push_back(state.constraint);
+                // wheelmodel mode never calls AddConstraint/AddStepListener (see below), so the
+                // old constraint is only "registered" when the previous build was the
+                // VehicleConstraint path.
+                old.constraintsRegistered = !state.wheelModelMode;
+            }
+            EnqueueJoltDestroy(std::move(old));
+        }
+
         state.bodyId = body->GetID();
         // docs §23.11: lets VehiclePushbackContactListener map a contact straight back to the
         // hta::ai::Vehicle* that owns this DYNAMIC body, without a per-frame lookup - same
@@ -773,6 +1088,14 @@ namespace kraken::fix::joltshadow {
         // target-rest-fraction formula, which is no longer the primary path; kGravity is kept
         // for the rare defensive fallback inside the wheel loop.
         constexpr float kGravity = 9.81f;
+
+        // docs §54 (Этап 1, шаг -1A/-1D): verify - once per vehicle, against live ODE - the
+        // chassis-local axis convention the loop below is about to hard-code, and dump the real
+        // per-prototype suspension constants. See LogHinge2AxisAudit's own comment for why this
+        // has to happen before the wheel-as-a-body topology is written rather than after.
+        // The two assumed vectors passed here are exactly the ones the loop assigns to
+        // ws->mSuspensionDirection and (implicitly, as mWheelUp x mWheelForward) the axle.
+        LogHinge2AxisAudit(vehicle, label, JPH::Vec3(0.0f, -1.0f, 0.0f), JPH::Vec3(1.0f, 0.0f, 0.0f));
 
         for (uint32_t i = 0; i < numWheels; ++i) {
             const hta::ai::Vehicle::WheelRuntimeInfo& info = vehicle->m_wheels[i];
@@ -2440,7 +2763,8 @@ namespace kraken::fix::joltshadow {
         // against a captured structural baseline rather than a raw >0 check - only an EXCESS over
         // that baseline means something extra (a contact joint) got attached. Rising-edge only
         // (not logged every frame of a sustained contact) to avoid log spam.
-        if (vehicle->m_body != nullptr && vehicle->m_body->_id != nullptr) {
+        if (kraken::Config::Instance().jolt_hotpath_diag.value != 0
+            && vehicle->m_body != nullptr && vehicle->m_body->_id != nullptr) {
             const int numJoints = dBodyGetNumJoints(vehicle->m_body->_id);
             if (state.chassisBaselineJointCount < 0) {
                 state.chassisBaselineJointCount = numJoints;
@@ -2495,7 +2819,8 @@ namespace kraken::fix::joltshadow {
             // still-open question (does wheel-ground contact go through ai::NearCallback at all,
             // or a separate CollideWheelAndLandscape/CollideWheelAndAsphalt path that bypasses it)
             // almost immediately, rather than waiting for a rare ramming event.
-            if (wheel->m_body != nullptr && wheel->m_body->_id != nullptr) {
+            if (kraken::Config::Instance().jolt_hotpath_diag.value != 0
+                && wheel->m_body != nullptr && wheel->m_body->_id != nullptr) {
                 const int numJoints = dBodyGetNumJoints(wheel->m_body->_id);
                 if (state.wheelBaselineJointCount[i] < 0) {
                     state.wheelBaselineJointCount[i] = numJoints;
@@ -2579,6 +2904,17 @@ namespace kraken::fix::joltshadow {
         double                                 applyVehicleMs    = 0.0; // sum of ApplyJoltToVehicle() wall time this interval - ALL calls
         uint64_t                               applyVehicleCalls = 0;  // count of ApplyJoltToVehicle() calls this interval (only the ones that actually ran, i.e. allowApply==true)
         uint64_t                               frames            = 0;  // UpdateShadow() invocations this interval - one per real game frame, see JoltProfileFrameEnd's call site
+        // docs §52 (Этап 0): the full per-frame cost breakdown needed to reconcile §17/§18.3/§26.2
+        // and to see where time actually goes. odeStep is the baseline Jolt must beat; joltTotal is
+        // the whole per-frame Jolt-side overhead; wheelModel and mirror are its two biggest
+        // main-thread (non-parallelized) components. CRUCIAL context: in wheelmodel APPLY mode
+        // (wheelmodel=2, the current config) ApplyJoltToVehicle NEVER runs (UpdateOneVehiclePostStep
+        // gates it on !wheelModelMode), so applyVehicleMs is 0 and the dominant cost is wheelModelMs
+        // (per-wheel CollideShape on the main thread) - which the original profiler didn't measure.
+        double                                 odeStepMs         = 0.0; // scene->StepScene() wall time - the ODE cost to beat
+        double                                 joltTotalMs       = 0.0; // whole UpdateShadow() wall time - total per-frame Jolt-side cost
+        double                                 wheelModelMs      = 0.0; // sum of StepWheelModel() across all vehicles this interval
+        double                                 mirrorMs          = 0.0; // MirrorOtherVehicles() wall time this interval
     };
     static JoltProfileState g_joltProfile;
 
@@ -2635,14 +2971,24 @@ namespace kraken::fix::joltshadow {
         const double physicsAvgMs  = g_joltProfile.physicsUpdateMs / (double) g_joltProfile.frames;
         const double applyAvgMs    = g_joltProfile.applyVehicleMs  / (double) g_joltProfile.frames;
         const double callsPerFrame = (double) g_joltProfile.applyVehicleCalls / (double) g_joltProfile.frames;
+        const double odeStepAvgMs  = g_joltProfile.odeStepMs    / (double) g_joltProfile.frames;
+        const double joltTotalAvgMs= g_joltProfile.joltTotalMs  / (double) g_joltProfile.frames;
+        const double wheelModelAvg = g_joltProfile.wheelModelMs / (double) g_joltProfile.frames;
+        const double mirrorAvgMs   = g_joltProfile.mirrorMs     / (double) g_joltProfile.frames;
 
-        LOG_INFO("[jolt_profile] physics_update_avg_ms=%.2f applyvehicle_avg_ms=%.2f applyvehicle_calls_per_frame=%.2f frames=%llu",
-            physicsAvgMs, applyAvgMs, callsPerFrame, (unsigned long long) g_joltProfile.frames);
+        // docs §52: ode_step vs jolt_total are the headline A/B numbers; the rest is the Jolt-side
+        // breakdown. jolt_total includes physics_update + wheelmodel + mirror + applyvehicle + glue.
+        LOG_INFO("[jolt_profile] ode_step_avg_ms=%.2f jolt_total_avg_ms=%.2f | physics_update_avg_ms=%.2f wheelmodel_avg_ms=%.2f mirror_avg_ms=%.2f applyvehicle_avg_ms=%.2f applyvehicle_calls_per_frame=%.2f frames=%llu",
+            odeStepAvgMs, joltTotalAvgMs, physicsAvgMs, wheelModelAvg, mirrorAvgMs, applyAvgMs, callsPerFrame, (unsigned long long) g_joltProfile.frames);
 
         g_joltProfile.physicsUpdateMs   = 0.0;
         g_joltProfile.applyVehicleMs    = 0.0;
         g_joltProfile.applyVehicleCalls = 0;
         g_joltProfile.frames            = 0;
+        g_joltProfile.odeStepMs         = 0.0;
+        g_joltProfile.joltTotalMs       = 0.0;
+        g_joltProfile.wheelModelMs      = 0.0;
+        g_joltProfile.mirrorMs          = 0.0;
         g_joltProfile.lastLogTime       = now;
     }
     // ------------------------------------------------------------------------------------------
@@ -2719,7 +3065,17 @@ namespace kraken::fix::joltshadow {
         // no proxy, no constraint driver input) - the forces must be applied BEFORE this frame's
         // single StepPhysicsProfiled (pass 2), so it happens here in the pre-step.
         if (state.wheelModelMode) {
-            StepWheelModel(vehicle, state, label, dt);
+            // docs §52: StepWheelModel is the dominant main-thread cost in wheelmodel mode
+            // (per-wheel CollideShape, serial, one call per vehicle/frame) - profiled separately
+            // since it's the single biggest suspect for the AI-scaling slowdown, and it's NOT
+            // covered by StepPhysicsProfiled/ApplyJoltToVehicleProfiled.
+            if (kraken::Config::Instance().testharness_perfmon.value != 0) {
+                const auto w0 = std::chrono::steady_clock::now();
+                StepWheelModel(vehicle, state, label, dt);
+                g_joltProfile.wheelModelMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count();
+            } else {
+                StepWheelModel(vehicle, state, label, dt);
+            }
             return true;
         }
 
@@ -3574,6 +3930,13 @@ namespace kraken::fix::joltshadow {
 
         const kraken::Config& config = kraken::Config::Instance();
 
+        // docs §52: whole-UpdateShadow wall time = total per-frame Jolt-side cost. Captured here at
+        // the top and accumulated just before JoltProfileFrameEnd (also at the bottom) so this
+        // frame's jolt_total lands in the same interval bucket as its ode_step.
+        const bool prof = config.testharness_perfmon.value != 0;
+        const std::chrono::steady_clock::time_point joltT0 =
+            prof ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+
         hta::ai::Vehicle* playerVehicle = GetPlayerVehicle();
 
         // Stage 3 requires player_only=0 - player_only=1 (the default) means "only the
@@ -3609,7 +3972,13 @@ namespace kraken::fix::joltshadow {
         for (size_t i = 0; i < aiShadowCount; ++i)
             anyLive = anyLive || aiLive[i];
         if (anyLive) {
-            MirrorOtherVehicles(playerVehicle, elapsedTime);
+            if (prof) {
+                const auto m0 = std::chrono::steady_clock::now();
+                MirrorOtherVehicles(playerVehicle, elapsedTime);
+                g_joltProfile.mirrorMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - m0).count();
+            } else {
+                MirrorOtherVehicles(playerVehicle, elapsedTime);
+            }
             StepPhysicsProfiled(elapsedTime);
             // docs §23.11: safe to drain here - PhysicsSystem::Update() (inside
             // StepPhysicsProfiled) has fully returned, so every worker thread that may have
@@ -3617,6 +3986,9 @@ namespace kraken::fix::joltshadow {
             // finished; back to single-threaded, safe to call into ODE (PhysicObj::AddImpulse
             // etc.) again.
             DrainPendingPushbacks();
+            // docs §54.4 (шаг -1F): same safe window - the step has fully returned, no worker job
+            // can still hold a constraint, and we are single-threaded again.
+            DrainPendingJoltDestroys();
         }
 
         // --- Pass 3 (post-step) ---
@@ -3635,6 +4007,12 @@ namespace kraken::fix::joltshadow {
             }
         }
 
+        // docs §52: accumulate this frame's total Jolt-side wall time BEFORE JoltProfileFrameEnd
+        // (which may flush+reset the interval this very frame) so it lands in the same bucket as
+        // this frame's ode_step/physics_update/etc.
+        if (prof)
+            g_joltProfile.joltTotalMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - joltT0).count();
+
         // Every vehicle this frame (player + any AI shadows above) has already run through
         // StepPhysicsProfiled/ApplyJoltToVehicleProfiled - this is the one place per real game
         // frame (UpdateShadow runs exactly once per StepSceneHook) to count the frame and
@@ -3651,7 +4029,17 @@ namespace kraken::fix::joltshadow {
     // grep that nothing else in Kraken patches this exact call site (fix::testharness patches
     // a different one, VA 0x5F438D, for ai::DynamicScene::CollideScene).
     static void __fastcall StepSceneHook(hta::ai::DynamicScene* scene, void*, float elapsedTime) {
-        scene->StepScene(elapsedTime);
+        // docs §52 (Этап 0): time the real ODE world step separately - this is the baseline cost
+        // Jolt must ultimately beat once ODE is removed. Accumulated into the same [jolt_profile]
+        // interval as the Jolt-side numbers (UpdateShadow flushes it). When perfmon=0 this is a
+        // single uint config read + the untouched original call, no timing.
+        if (kraken::Config::Instance().testharness_perfmon.value != 0) {
+            const auto o0 = std::chrono::steady_clock::now();
+            scene->StepScene(elapsedTime);
+            g_joltProfile.odeStepMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - o0).count();
+        } else {
+            scene->StepScene(elapsedTime);
+        }
         UpdateShadow(elapsedTime);
     }
 
@@ -3756,6 +4144,15 @@ namespace kraken::fix::joltshadow {
     // be authoritative), not an approximation.
     static void ApplyRamPushback(hta::ai::Vehicle* joltVehicle, hta::ai::Vehicle* mirroredVehicle, float closingSpeed) {
         if (!IsVehicleJoltAuthoritative(joltVehicle))
+            return;
+        // CalcDamageToVehiclesHook's v1/v2 come straight from the native CalcDamageToVehicles
+        // call - confirmed live (crash repro, docs: reproducible AV in ai::PhysicObj::GetRotation
+        // with this==nullptr, called via GetPosition() below) that the real game calls it with
+        // one of the two vehicle pointers null for some real collision case. joltVehicle is
+        // already guaranteed non-null by IsVehicleJoltAuthoritative above (it returns false for
+        // nullptr); mirroredVehicle has no such guarantee - DrainPendingPushbacks' caller already
+        // null-checks it (HandleContact), but CalcDamageToVehiclesHook's caller didn't.
+        if (mirroredVehicle == nullptr)
             return;
 
         const kraken::Config& config = kraken::Config::Instance();

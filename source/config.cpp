@@ -86,6 +86,8 @@ namespace kraken {
         this->jolt_autotune_max_trials          = { "jolt_harness","autotune_max_trials",             24,    true,  1,     500         };
         this->jolt_pushback_min_dspeed          = { "jolt_harness","pushback_min_dspeed",              0.8,   true,  0.0,   50.0        };
         this->jolt_pushback_scale               = { "jolt_harness","pushback_scale",                   1.0,   true,  0.0,   5.0         };
+        this->jolt_hotpath_diag                 = { "jolt_harness","hotpath_diag",                     0,     true,  0,     1           };
+        this->jolt_deferred_destroy             = { "jolt_harness","deferred_destroy",                0,     true,  0,     1           };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -189,6 +191,8 @@ namespace kraken {
         this->LoadValue(&this->jolt_autotune_max_trials);
         this->LoadValue(&this->jolt_pushback_min_dspeed);
         this->LoadValue(&this->jolt_pushback_scale);
+        this->LoadValue(&this->jolt_hotpath_diag);
+        this->LoadValue(&this->jolt_deferred_destroy);
     };
 
     void Config::Dump() {
@@ -270,6 +274,8 @@ namespace kraken {
         this->DumpValue(&this->jolt_autotune_max_trials);
         this->DumpValue(&this->jolt_pushback_min_dspeed);
         this->DumpValue(&this->jolt_pushback_scale);
+        this->DumpValue(&this->jolt_hotpath_diag);
+        this->DumpValue(&this->jolt_deferred_destroy);
     };
 
     template<typename T>
