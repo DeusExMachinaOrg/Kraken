@@ -4662,6 +4662,15 @@ namespace kraken::fix::joltshadow {
             if (kinematicBody.GetMotionType() != JPH::EMotionType::Kinematic)
                 return; // the non-dynamic side must specifically be a vehicle mirror, not a static body
 
+            // docs §58: a WHEEL body's UserData is a tagged handle ('WHL\0' in the high dword),
+            // NOT an hta::ai::Vehicle*. Reinterpreting it would hand the pushback path a garbage
+            // pointer and then dereference it. This guard has to sit BEFORE the casts, and it has
+            // to cover both sides: a wheel can meet a kinematic mirror as easily as a chassis can.
+            // Wheels are excluded from pushback entirely by design - a wheel's interaction with
+            // another vehicle is the tyre model's business, not the ram-pushback path's.
+            if (IsWheelUserData(dynamicBody.GetUserData()) || IsWheelUserData(kinematicBody.GetUserData()))
+                return;
+
             hta::ai::Vehicle* joltVehicle     = reinterpret_cast<hta::ai::Vehicle*>(dynamicBody.GetUserData());
             hta::ai::Vehicle* mirroredVehicle = reinterpret_cast<hta::ai::Vehicle*>(kinematicBody.GetUserData());
             if (joltVehicle == nullptr || mirroredVehicle == nullptr)
