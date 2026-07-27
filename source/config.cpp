@@ -64,7 +64,10 @@ namespace kraken {
         this->jolt_susp_reference_hz            = { "jolt_harness","susp_reference_hz",               60.0,  true,  20.0,  144.0       };
         this->jolt_wheel_proxy                   = { "jolt_harness","wheel_proxy",                     1,     true,  0,     1           };
         this->jolt_collision_cylinder            = { "jolt_harness","collision_cylinder",               0,     true,  0,     1           };
-        this->jolt_wheelmodel                    = { "jolt_harness","wheelmodel",                       0,     true,  0,     2           };
+        this->jolt_wheelmodel                    = { "jolt_harness","wheelmodel",                       0,     true,  0,     4           };
+        this->jolt_wm4_compress_fraction         = { "jolt_harness","wm4_compress_fraction",           0.5f,  true,  0.0f,  1.0f        };
+        this->jolt_wm4_joint_at_mount            = { "jolt_harness","wm4_joint_at_mount",              0,     true,  0,     1           };
+        this->jolt_wm4_chassis_mass_excl_wheels  = { "jolt_harness","wm4_chassis_mass_excl_wheels",    1,     true,  0,     1           };
         this->jolt_wm_tyre_stiffness             = { "wheelmodel","tyre_stiffness",   120000.0f, true, 1.0f,     1e9f    };
         this->jolt_wm_tyre_thickness             = { "wheelmodel","tyre_thickness",   0.1f,      true, 0.0f,     10.0f   };
         this->jolt_wm_tyre_damping               = { "wheelmodel","tyre_damping",     0.5f,      true, 0.0f,     10.0f   };
@@ -170,6 +173,9 @@ namespace kraken {
         this->LoadValue(&this->jolt_wheel_proxy);
         this->LoadValue(&this->jolt_collision_cylinder);
         this->LoadValue(&this->jolt_wheelmodel);
+        this->LoadValue(&this->jolt_wm4_chassis_mass_excl_wheels);
+        this->LoadValue(&this->jolt_wm4_joint_at_mount);
+        this->LoadValue(&this->jolt_wm4_compress_fraction);
         this->LoadValue(&this->jolt_wm_tyre_stiffness);
         this->LoadValue(&this->jolt_wm_tyre_thickness);
         this->LoadValue(&this->jolt_wm_tyre_damping);
@@ -253,6 +259,9 @@ namespace kraken {
         this->DumpValue(&this->jolt_wheel_proxy);
         this->DumpValue(&this->jolt_collision_cylinder);
         this->DumpValue(&this->jolt_wheelmodel);
+        this->DumpValue(&this->jolt_wm4_chassis_mass_excl_wheels);
+        this->DumpValue(&this->jolt_wm4_joint_at_mount);
+        this->DumpValue(&this->jolt_wm4_compress_fraction);
         this->DumpValue(&this->jolt_wm_tyre_stiffness);
         this->DumpValue(&this->jolt_wm_tyre_thickness);
         this->DumpValue(&this->jolt_wm_tyre_damping);

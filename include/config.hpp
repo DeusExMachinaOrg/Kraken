@@ -100,7 +100,30 @@ namespace kraken {
         ConfigValue<float>                    jolt_susp_reference_hz;
         ConfigValue<uint32_t>                  jolt_wheel_proxy;
         ConfigValue<uint32_t>                 jolt_collision_cylinder;
-        ConfigValue<uint32_t>                 jolt_wheelmodel;            // docs §39: spring_wheel model on the Jolt vehicle. 0=off, 1=log-only eval, 2=apply (drive chassis, no VehicleConstraint)
+        ConfigValue<uint32_t>                 jolt_wheelmodel;            // docs §39: spring_wheel model on the Jolt vehicle. 0=off, 1=log-only eval, 2=apply (drive chassis, no VehicleConstraint), 4=wheel bodies (docs §58, Этап 1)
+        // docs §58 (Этап 1, шаг 2): splits the suspension travel range into compression and droop
+        // headroom for the SixDOF TranslationZ limits, relative to the SPAWN pose. 0.5 puts the
+        // spawn point in the middle of travel. The compiled default of the lost build is not
+        // recoverable (MSVC loads float config defaults from .rdata via xmm rather than as
+        // immediates), so 0.5 here is the value its kraken.ini carried; the effective clamp to
+        // [0.05, 0.95] lives in the code that reads it, exactly as the recovered build did it.
+        ConfigValue<float>                    jolt_wm4_compress_fraction;
+        // docs §75: where the SixDOF anchor sits. 0 (default, and what the recovered build
+        // shipped) anchors at the WHEEL CENTRE, which is what makes the travel limits and the
+        // motor target "relative to spawn" coherent. 1 restores the plan's original wording,
+        // anchoring at the chassis mount - kept as the lever back to it. NOTE the plan §2.2 and
+        // the recovered binary disagree here and the binary is newer.
+        ConfigValue<uint32_t>                 jolt_wm4_joint_at_mount;
+        // docs §95.4/§96 (task #126): whether mode 4 takes the wheel bodies' mass back OUT of the
+        // chassis body. 1 (default) is the CORRECT total; 0 restores the double count and exists
+        // only to measure what the fix changed. ai::Vehicle::GetMass (RVA 0x1d5bd0, disassembled)
+        // returns the chassis body's mass PLUS every wheel body's mass, while ODE's own chassis
+        // body is set from _CalcMassForBody, which excludes wheels - so handing GetMass() to the
+        // Jolt chassis and then adding real wheel bodies counts the wheels twice. The lost build
+        // shipped that bug for months: Bug01 168 kg against ODE's 132 (+27%), Molokovoz 211 vs
+        // 167 (+26%), Scout01 106 vs 100 (+6%). Mode 2 builds no wheel bodies and was always
+        // correct, which is why docs §86's step-7 comparison was confounded.
+        ConfigValue<uint32_t>                 jolt_wm4_chassis_mass_excl_wheels;
         // docs §39: wheelmodel_core (Pacejka contact) params - same [wheelmodel] names as spring_wheel so tuning transfers.
         ConfigValue<float>                    jolt_wm_tyre_stiffness;
         ConfigValue<float>                    jolt_wm_tyre_thickness;
