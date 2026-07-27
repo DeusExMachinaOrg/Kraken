@@ -1,0 +1,88 @@
+format strings      : 187
+still in the branch : 100
+GONE from the branch: 62
+unmatchable (short) : 25
+
+== docs §22.14  (1 line)
+   Jolt: static obstacle export - %d geom(s) of exportable class could not get a Jolt body (cMaxBodies capacity exhausted) - raise cMaxBodies (docs §22.1...
+== docs §22.3  (2 lines)
+   Shadow apply (%s): chassis had %d ODE joint(s) attached (baseline %d structural) before this frame's DisablePhysics (docs §22.3 ramming risk observed ...
+   Shadow apply (%s): wheel %zu had %d ODE joint(s) attached (baseline %d structural) before this frame's DisablePhysics (docs §22.3/§7 wheel-ground cont...
+== docs §22.9  (2 lines)
+   Jolt: static obstacle export - walked only %d geoms but dSpaceGetNumGeoms reports %d at the top level alone - list walk may be missing something (docs...
+   Jolt: static obstacle export - %d body-less geom(s) of unexported ODE class %d (docs §22.9/§22.13 - classes confirmed by disassembly: 0=sphere, 1=box,...
+== docs §33  (1 line)
+   docs §33: real ODE chassis (%s) has %d total geom(s) directly attached (%d transform(s)) - compare against BuildChassisCompoundShape's own part/geom c...
+== docs §58  (2 lines)
+   docs §58 (%s): mode 4 - built %zu wheel bodies + SixDOF constraints (chassisMass=%.1f, massFloor=%.2f) | docs §95.4 wheelMass=%.1f chassisMassFinal=%....
+   docs §58: wheel body (%s) w=%zu springF=%.0fN stopF=%.0fN travel=%.4f (limits %.4f..%.4f rel spawn) kSusp=%.0f sagPredicted=%.4f | frameTrav=%.4f..%.4...
+== docs §59  (1 line)
+   docs §59/63: harvest (%s) wheelsWithContact=%u contactPoints=%u overflow=%u (of %u) | maxNormalF=%.0fN bound(k_t*tau)=%.0fN ratio=%.2f%s
+== docs §60  (1 line)
+   docs §60 (%s): wheel %zu predicted static sag %.3fm EXCEEDS compression headroom %.3fm (range %.3f, fraction %.2f) - it will rest on the bump stop onc...
+== docs §66  (2 lines)
+   docs §66: tyre band (%s) w=%zu fnGround=%.0fN fnTotal=%.0fN pen=%.5f penRaw=%.5f tau=%.5f pen/tau=%.2f | recs tyre=%u rim=%u survived=%u stale=%u dist...
+   docs §66: tyre band SUM (%s) fnGroundSum=%.0fN fnTotalSum=%.0fN weight=%.0fN carried=%.2f | penSum=%.5f recs tyre=%u rim=%u stale=%u
+== docs §67  (2 lines)
+   docs §67: spin (%s) w=%zu driven=%d omega=%.2f rad/s surfaceSpeed=%.2f m/s spinSign=%+.0f motorTq=%.0fNm cmdTq=%.0fNm
+   docs §67: drivetrain (%s) gear=%d rpm=%.0f driveTorque=%.0fNm perWheel=%.0fNm driven=%u throttle=%.2f spin=%d | PRE-STEP brake=%.2f handBrake=%d
+== docs §68  (1 line)
+   docs §68: steer (%s) w=%zu steerable=%d commanded=%.3f rad measured=%.3f rad err=%.2f deg steerSign=%+.0f steerTq=%.0fNm cap=%.0fNm sat=%.2f
+== docs §69  (1 line)
+   docs §69: tilt (%s) jolt=%.1f deg ode=%.1f deg delta=%+.1f deg upDelta=%.2f deg
+== docs §70  (1 line)
+   docs §70: slip (%s) w=%zu grounded=%d kappa=%.3f fnGround=%.0fN omega=%.2f
+== docs §70.1  (1 line)
+   docs §70.1: slipdense (%s) f=%llu w=%zu grounded=%d kappa=%.3f fnGround=%.0f omega=%.2f | ftGround=%.0fN target=%.1f limit=%.0fNm motorNm=%.0f tyreNm=...
+== docs §71  (1 line)
+   docs §71: drivetrain inertia gear=%d ratio=%.2f I_refl=%.1f kg*m^2 (disc %.2f)
+== docs §75  (1 line)
+   docs §75: constraint frame (%s) w=%zu axle.fwd=%+.4f (%.2f deg off perpendicular) | anchorOffsetFromWheelCentre=%.4f m (restLen)
+== docs §78  (1 line)
+   docs §78: attdense (%s) f=%llu joltTilt=%.2f odeTilt=%.2f upDelta=%.2f wBody=(%.2f,%.2f,%.2f) |w|=%.2f grounded=%u
+== docs §82  (2 lines)
+   docs §82: resync (%s) #%u dt=%.2fs upMax=%.3f deg posMax=%.3f m odeTiltPath=%.3f deg gain=%.4f
+   docs §82: resync RESIDUAL (%s) #%u pos=%.4f m up=%.4f deg
+== docs §87  (1 line)
+   docs §87: resync landing (player) w=%zu pre=%.4f post=%.4f m R=%.3f dY=%.4f dRotDeg=%.2f |corr|=%.4f m
+== docs §93  (1 line)
+   docs §93: chassis inertia (%s) mass=%.1f | JOLT(compound) = (%.1f, %.1f, %.1f) | ODE(box %.2fx%.2fx%.2f) = (%.1f, %.1f, %.1f) | ratio = (%.2f, %.2f, %...
+== docs §95.4  (1 line)
+   docs §95.4 (%s): wheel mass %.1f is >=90%% of vehicle mass %.1f - NOT subtracting; the shadow stays heavier than ODE for this vehicle
+== (untagged)  (36 lines)
+   crashdiag: could not create %s (err %lu)
+   crashdiag: minidump %s -> %s
+   === CRASH === code=0x%08X addr=%p (%s) thread=%lu ourFrames=%d
+   === HANG === no frame progress for %.1fs (heartbeat stuck at %llu, main thread %lu)
+   Main thread eip=0x%08X (%s) esp=0x%08X ebp=0x%08X
+   crashdiag: GetThreadContext failed (err %lu)
+   crashdiag: SuspendThread failed (err %lu)
+   crashdiag: armed (hang watchdog %.1fs, minidump %s)
+   TempAllocator: Out of memory trying to allocate %u bytes
+   Jolt: exported %d static obstacles (%d box, %d sphere, %d trimesh, %d capsule) - %d geoms walked total (%d nested sub-space(s) recursed into, %d at to...
+   Jolt: speculative contact distance = %.4f m
+   Shadow (%s): wheel %zu compound shape failed: %s
+   Autotune: player vehicle changed mid-run (likely testharness autoload swapping in the real save) - discarding the %u trial(s) run so far and restartin...
+   Autotune: player vehicle changed mid-run - scenario.csv is user-provided so it's left untouched, but restarting the search bookkeeping against the new...
+   Autotune (docs section 8.5/16/20.3) enabled - will run a Nelder-Mead simplex search over suspension/friction using testharness's scripted-replay proto...
+   Child already exists: %s
+   ChildNodeFromXmlNode: node w/ same name already exists as a child: '%s', address = %p
+   ChildNodeFromXmlNode: Cannot load node: name = %s
+   ChildNodeFromXmlFile: invalid 'extern' format: %s
+   ChildNodeFromXmlFile: %s
+   ChildNodeFromXmlFile: Prefabs node should be root node in %s
+   ChildNodeFromXmlFile: cannot find %s in %s
+   Mismatching define %s.
+   Client reported version %d.%d.%d, library version is %d.%d.%d.
+   intptr_t(kv) % alignof(KeyValue) == 0
+   Material %u is beyond material list (size: %u)
+   Triangle %d is degenerate!
+   Vertex index %u is beyond vertex list (size: %u)
+   Supporting max %d materials per mesh
+   Triangle material %u is beyond material list (size: %u)
+   Brake: %.1f, HandBrake: %.1f
+   SlipLateral: %.1f, SlipLong: %.2f
+   Hull building failed, point %d had an error of %g (relative to tolerance: %g)
+   Internal error: Too many points in hull (%u), max allowed %d
+   Gear: %d, Clutch: %.1f, EngineRPM: %.0f, V: %.1f km/h
+   outEdges[i].mEndIdx == outEdges[(i + 1) % outEdges.size()].mStartIdx
