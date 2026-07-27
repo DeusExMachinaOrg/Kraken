@@ -21,6 +21,7 @@
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
+#include <Jolt/Physics/Collision/Shape/CompoundShape.h> // docs §59: SubShapeID -> sub-shape index decode
 #include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 #include <Jolt/Physics/Vehicle/VehicleConstraint.h>
 #include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
@@ -144,6 +145,38 @@ namespace kraken::fix::joltshadow {
     static inline bool     IsWheelUserData(uint64_t ud)   { return (ud & kWheelUserDataMask) == kWheelUserDataTag; }
     static inline uint32_t WheelUserDataSlot(uint64_t ud) { return (uint32_t) ((ud >> 16) & 0xFFFFu); }
     static inline uint32_t WheelUserDataIndex(uint64_t ud){ return (uint32_t) (ud & 0xFFFFu); }
+
+    // docs §59/§63 (Этап 1, шаг 3): the harvest buffer. The narrow phase runs on worker threads
+    // and the step listener runs in a different job in the SAME step, so the contact data has to
+    // cross that boundary without a lock and without allocating. A fixed per-wheel record array
+    // with an atomic counter is the whole mechanism.
+    //
+    // Double-buffered by step PARITY, not by copying: JobStepListeners runs BEFORE
+    // JobFindCollisions within a step, so during step N the listener must read what the narrow
+    // phase of step N-1 wrote. Writer uses buf[step & 1], reader uses buf[(step ^ 1) & 1].
+    //
+    // `count` is deliberately allowed to run past kMaxHarvestRecs: the excess is the overflow
+    // figure, and a counter that saturated would hide exactly the condition worth knowing about.
+    static constexpr uint32_t kMaxHarvestRecs   = 16;  // per wheel per step; 1-4 expected on flat ground
+    static constexpr uint32_t kMaxHarvestWheels = 16;
+    static constexpr uint32_t kMaxVehicleSlots  = 129; // player (slot 0) + AI shadows
+
+    struct WheelHarvestRec {
+        JPH::Vec3 point;   // world-space contact point on the SURFACE side
+        JPH::Vec3 normal;  // unit, pointing OUT of the surface toward the wheel
+        float     depth;   // manifold penetration depth - diagnostics only; the band reprojects
+        uint32_t  sub;     // 0 = TYRE (radius R), 1 = RIM (radius R - tau)
+    };
+    struct WheelHarvest {
+        std::atomic<uint32_t> count;
+        WheelHarvestRec       rec[kMaxHarvestRecs];
+    };
+    static WheelHarvest g_wheelHarvest[2][kMaxVehicleSlots][kMaxHarvestWheels];
+
+    // Advanced exactly once per physics step, on the MAIN thread, immediately before Update().
+    // Never inside a listener: there is one listener per vehicle, so per-listener flipping would
+    // advance a shared counter once per vehicle per step instead of once per step.
+    static std::atomic<uint32_t> g_harvestStep{0};
 
     static constexpr uint32_t kMaxWheelsPerVehicleGroupFilter = 16; // generous upper bound - largest real vehicle seen so far (6-wheel truck) is well under this
     static JPH::GroupFilterTable* g_wheelGroupFilter = nullptr; // built once, shared/leaked forever across every rebuild - same convention as g_collisionTester below
@@ -1168,13 +1201,13 @@ namespace kraken::fix::joltshadow {
             bcs.mAngularDamping = 0.0f;
             bcs.mFriction       = 0.0f;
             bcs.mRestitution    = 0.0f;
-            // STEP 2 ONLY. The end state has mIsSensor false and decides tyre-versus-rim per
-            // contact pair in the callback; that callback does not exist until step 3. Until it
-            // does, solid wheel bodies would carry the vehicle in parallel with the mode-2 chassis
-            // forces that are still running - two supports for one vehicle. Sensor here keeps the
-            // bodies present, constrained and measurable while contributing no contact force,
-            // which is exactly what plan §7 step 2 asks for. REMOVE THIS at step 3.
-            bcs.mIsSensor = true;
+            // NOT a sensor body. Step 2 set this flag as scaffolding; step 3 replaced it with the
+            // real mechanism, which is a PER-PAIR decision in the contact callback
+            // (HarvestWheelContact): the tyre sphere is made a sensor for each contact so the
+            // solver draws no force from it, while the rim stays a real contact with friction and
+            // restitution zeroed. A body-wide sensor flag cannot express that split - it would
+            // take the rim's non-penetration guarantee away with it.
+            bcs.mIsSensor = false;
 
             JPH::Body* wheelBody = bi.CreateBody(bcs);
             if (wheelBody == nullptr) {
@@ -3323,6 +3356,18 @@ namespace kraken::fix::joltshadow {
     // Thin wrapper around kraken::fix::jolt::StepPhysics - identical call/args/return (none) to
     // the call it replaces; only measures wall time when profiling is on.
     static void StepPhysicsProfiled(float elapsedTime) {
+        // docs §59/§63 (Этап 1, шаг 3): advance the harvest parity exactly here - once per step,
+        // on the main thread, immediately BEFORE the step runs. Not inside a listener: there is
+        // one listener per vehicle, so per-listener flipping would advance a shared counter once
+        // per vehicle per step. The write buffer for the step about to run becomes
+        // g_harvestStep&1, and the listener inside that step reads the other one, which is what
+        // the previous step's narrow phase filled - JobStepListeners runs before
+        // JobFindCollisions, so a listener can never read its own step's contacts.
+        const uint32_t writeParity = g_harvestStep.fetch_add(1, std::memory_order_relaxed) + 1;
+        for (uint32_t s = 0; s < kMaxVehicleSlots; ++s)
+            for (uint32_t w = 0; w < kMaxHarvestWheels; ++w)
+                g_wheelHarvest[writeParity & 1u][s][w].count.store(0, std::memory_order_relaxed);
+
         if (kraken::Config::Instance().testharness_perfmon.value == 0) {
             kraken::fix::jolt::StepPhysics(elapsedTime);
             return;
@@ -4643,15 +4688,78 @@ namespace kraken::fix::joltshadow {
     class VehiclePushbackContactListener final : public JPH::ContactListener {
     public:
         void OnContactAdded(const JPH::Body& inBody1, const JPH::Body& inBody2,
-                const JPH::ContactManifold& inManifold, JPH::ContactSettings&) override {
+                const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings) override {
+            HarvestWheelContact(inBody1, inBody2, inManifold, ioSettings);
             HandleContact(inBody1, inBody2, inManifold);
         }
         void OnContactPersisted(const JPH::Body& inBody1, const JPH::Body& inBody2,
-                const JPH::ContactManifold& inManifold, JPH::ContactSettings&) override {
+                const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings) override {
+            HarvestWheelContact(inBody1, inBody2, inManifold, ioSettings);
             HandleContact(inBody1, inBody2, inManifold);
         }
 
     private:
+        // docs §59/§63 (Этап 1, шаг 3): the write half of the harvest. Runs on Jolt worker
+        // threads, concurrently, with body mutexes held - so it does exactly three things: read
+        // the tagged UserData, decode which sub-shape was hit, and append a record. No game call,
+        // no BodyInterface, no allocation, no lock.
+        //
+        // This is also where the TYRE/RIM decision lives, PER PAIR rather than on the body. The
+        // tyre sphere is made a sensor for this contact so the solver produces no force from it -
+        // the band force is the model's job - while the rim stays a real contact with friction
+        // and restitution zeroed, so it can only ever stop the wheel sinking through the world.
+        static void HarvestWheelContact(const JPH::Body& inBody1, const JPH::Body& inBody2,
+                const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings) {
+            const bool w1 = IsWheelUserData(inBody1.GetUserData());
+            const bool w2 = IsWheelUserData(inBody2.GetUserData());
+            if (w1 == w2)
+                return;   // neither is a wheel, or (impossible by group filter) both are
+
+            const JPH::Body&  wheel = w1 ? inBody1 : inBody2;
+            const uint64_t    ud    = wheel.GetUserData();
+            const uint32_t    slot  = WheelUserDataSlot(ud);
+            const uint32_t    idxW  = WheelUserDataIndex(ud);
+            if (slot >= kMaxVehicleSlots || idxW >= kMaxHarvestWheels)
+                return;
+
+            // A SubShapeID is a bit-packed PATH through the shape hierarchy, never a raw index -
+            // comparing it against 0 or 1 would be wrong in a way that happens to look right for
+            // simple shapes. Decode it properly.
+            uint32_t sub = 0;
+            const JPH::Shape* shape = wheel.GetShape();
+            if (shape != nullptr && shape->GetSubType() == JPH::EShapeSubType::StaticCompound) {
+                const JPH::CompoundShape* compound = static_cast<const JPH::CompoundShape*>(shape);
+                JPH::SubShapeID remainder;
+                sub = compound->GetSubShapeIndexFromID(w1 ? inManifold.mSubShapeID1 : inManifold.mSubShapeID2, remainder);
+            }
+
+            if (sub == 0) {
+                ioSettings.mIsSensor = true;             // TYRE: the band owns this force
+            } else {
+                ioSettings.mCombinedFriction    = 0.0f;  // RIM: non-penetration only, never grip
+                ioSettings.mCombinedRestitution = 0.0f;
+            }
+            // Deliberately NOT touching mInvMassScale*/mInvInertiaScale* - ContactListener.h
+            // requires those stay constant over a pair's lifetime.
+
+            // The normal points from body 1 out toward body 2. We want it pointing OUT of the
+            // surface TOWARD the wheel, regardless of which side Jolt called body 1.
+            const JPH::Vec3 normal = w1 ? -inManifold.mWorldSpaceNormal : inManifold.mWorldSpaceNormal;
+            const JPH::RVec3 base  = inManifold.mBaseOffset;
+
+            WheelHarvest& buf = g_wheelHarvest[g_harvestStep.load(std::memory_order_relaxed) & 1u][slot][idxW];
+            const auto& pts = w1 ? inManifold.mRelativeContactPointsOn2 : inManifold.mRelativeContactPointsOn1;
+            for (const JPH::Vec3& rel : pts) {
+                const uint32_t at = buf.count.fetch_add(1, std::memory_order_relaxed);
+                if (at >= kMaxHarvestRecs)
+                    continue;   // counted as overflow, not stored - the count is the diagnostic
+                buf.rec[at].point  = JPH::Vec3(base + rel);
+                buf.rec[at].normal = normal;
+                buf.rec[at].depth  = inManifold.mPenetrationDepth;
+                buf.rec[at].sub    = sub;
+            }
+        }
+
         static void HandleContact(const JPH::Body& inBody1, const JPH::Body& inBody2, const JPH::ContactManifold& inManifold) {
             const bool body1Dynamic = inBody1.GetMotionType() == JPH::EMotionType::Dynamic;
             const bool body2Dynamic = inBody2.GetMotionType() == JPH::EMotionType::Dynamic;
