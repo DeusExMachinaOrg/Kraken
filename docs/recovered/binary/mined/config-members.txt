@@ -1,0 +1,43 @@
+recovered 40 config entries
+
+section        key                              default                min                    max                    member
+testharness    ram_test_offset                  0 / 0                  0 / 0                  1 / 1.4013e-45         +0x350
+0x101d7ce8     0x101d7c7c                       0 / 0                  0 / 0                  1 / 1.4013e-45         +0x368
+0x101d7ce8     0x101d7cf0                       0 / 0                  0 / 0                  64 / 8.96831e-44       +0x380
+jolt_harness   0x101d7d08                       0 / 0                  0 / 0                  1 / 1.4013e-45         +0x398
+jolt_harness   0x101d7d10                       0 / 0                  0 / 0                  1 / 1.4013e-45         +0x3b0
+jolt_harness   player_only                      1 / 1.4013e-45         0 / 0                  1 / 1.4013e-45         +0x3c8
+jolt_harness   ai_count                         0 / 0                  0 / 0                  128 / 1.79366e-43      +0x3e0
+jolt_harness   susp_frequency                   0 / 0                  0 / 0                  128 / 1.79366e-43      +0x3f8
+jolt_harness   susp_rest_fraction               0 / 0                  0 / 0                  128 / 1.79366e-43      +0x410
+jolt_harness   susp_damping                     0 / 0                  0 / 0                  128 / 1.79366e-43      +0x428
+jolt_harness   susp_reference_hz                0 / 0                  0 / 0                  128 / 1.79366e-43      +0x440
+jolt_harness   wheel_proxy                      1 / 1.4013e-45         0 / 0                  1 / 1.4013e-45         +0x458
+jolt_harness   collision_cylinder               0 / 0                  0 / 0                  1 / 1.4013e-45         +0x470
+jolt_harness   wm4_hardcore                     1 / 1.4013e-45         0 / 0                  1 / 1.4013e-45         +0x4a0
+jolt_harness   wm4_spin                         1 / 1.4013e-45         0 / 0                  1 / 1.4013e-45         +0x4b8
+jolt_harness   wm4_steer                        1 / 1.4013e-45         0 / 0                  1 / 1.4013e-45         +0x4d0
+jolt_harness   wm4_joint_at_mount               0 / 0                  0 / 0                  1 / 1.4013e-45         +0x4e8
+jolt_harness   wm4_contact_torque_cap           0 / 0                  0 / 0                  1 / 1.4013e-45         +0x500
+jolt_harness   wm4_resync_period                0 / 0                  0 / 0                  1 / 1.4013e-45         +0x518
+jolt_harness   wm4_resync_reseat                1 / 1.4013e-45         0 / 0                  1 / 1.4013e-45         +0x530
+jolt_harness   wm4_resync_keep_gear             1 / 1.4013e-45         0 / 0                  1 / 1.4013e-45         +0x548
+jolt_harness   wm4_inertia_from_box             0 / 0                  0 / 0                  1 / 1.4013e-45         +0x560
+jolt_harness   wm4_chassis_mass_excl_wheels     1 / 1.4013e-45         0 / 0                  1 / 1.4013e-45         +0x578
+0x101d7e64     crash_dump                       1 / 1.4013e-45         0 / 0                  1 / 1.4013e-45         +0x5d8
+0x101d7e64     hang_timeout_sec                 1 / 1.4013e-45         0 / 0                  1 / 1.4013e-45         +0x5f0
+0x101d7e64     selftest                         0 / 0                  0 / 0                  2 / 2.8026e-45         +0x608
+jolt_harness   wheelmodel                       0 / 0                  0 / 0                  4 / 5.60519e-45        +0x620
+jolt_harness   wm4_compress_fraction            0 / 0                  0 / 0                  4 / 5.60519e-45        +0x488
+jolt_harness   wm4_max_dt                       0 / 0                  0 / 0                  4 / 5.60519e-45        +0x590
+jolt_harness   spec_contact_dist                0 / 0                  0 / 0                  4 / 5.60519e-45        +0x5c0
+jolt_harness   wm4_max_substeps                 4 / 5.60519e-45        1 / 1.4013e-45         16 / 2.24208e-44       +0x5a8
+wheelmodel     tyre_stiffness                   4 / 5.60519e-45        1 / 1.4013e-45         16 / 2.24208e-44       +0x638
+wheelmodel     tyre_thickness                   4 / 5.60519e-45        1 / 1.4013e-45         16 / 2.24208e-44       +0x650
+wheelmodel     tyre_damping                     4 / 5.60519e-45        1 / 1.4013e-45         16 / 2.24208e-44       +0x668
+wheelmodel     hard_core_lambda                 4 / 5.60519e-45        1 / 1.4013e-45         16 / 2.24208e-44       +0x680
+wheelmodel     0x101d7f34                       4 / 5.60519e-45        1 / 1.4013e-45         16 / 2.24208e-44       +0x698
+wheelmodel     0x101d7f3c                       4 / 5.60519e-45        1 / 1.4013e-45         16 / 2.24208e-44       +0x6b0
+wheelmodel     0x101d7f44                       4 / 5.60519e-45        1 / 1.4013e-45         16 / 2.24208e-44       +0x6c8
+wheelmodel     0x101d7f4c                       4 / 5.60519e-45        1 / 1.4013e-45         16 / 2.24208e-44       +0x6e0
+wheelmodel     slip_floor                       4 / 5.60519e-45        1 / 1.4013e-45         16 / 2.24208e-44       +0x6f8

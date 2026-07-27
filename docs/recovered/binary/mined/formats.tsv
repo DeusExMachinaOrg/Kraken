@@ -1,0 +1,187 @@
+0x101d753c	.rdata	%s+0x%zx
+0x101d755c	.rdata	  #%d 0x%p (%s)
+0x101d7614	.rdata	kraken_%s_%04u%02u%02u_%02u%02u%02u.dmp
+0x101d763c	.rdata	crashdiag: could not create %s (err %lu)
+0x101d7678	.rdata	crashdiag: minidump %s -> %s
+0x101d7698	.rdata	=== CRASH === code=0x%08X addr=%p (%s) thread=%lu ourFrames=%d
+0x101d76f4	.rdata	Access violation %s address 0x%p
+0x101d7718	.rdata	Registers: eip=0x%08X esp=0x%08X ebp=0x%08X eax=0x%08X ebx=0x%08X ecx=0x%08X edx=0x%08X esi=0x%08X edi=0x%08X
+0x101d77c8	.rdata	=== HANG === no frame progress for %.1fs (heartbeat stuck at %llu, main thread %lu)
+0x101d781c	.rdata	Main thread eip=0x%08X (%s) esp=0x%08X ebp=0x%08X
+0x101d7870	.rdata	crashdiag: GetThreadContext failed (err %lu)
+0x101d78a0	.rdata	crashdiag: SuspendThread failed (err %lu)
+0x101d79b4	.rdata	crashdiag: armed (hang watchdog %.1fs, minidump %s)
+0x101d9364	.rdata	--- Common Gadget #%d (1st mod: %s), RawPrice: %d ---
+0x101d93e8	.rdata	--- Weapon Gadget id #%d (1st mod: %s), RawPrice: %d ---
+0x101d9470	.rdata	Override price provided: %d
+0x101d94c0	.rdata	[Base: %d, Shells: %d] Dur: %.2f, MaxDur: %.2f, CompoundGun Condition: %.2f (condition ignored)
+0x101d9520	.rdata	[Base: %d, Shells: %d] Dur: %.2f, MaxDur: %.2f, Gun Condition: %.2f (condition ignored)
+0x101d9578	.rdata	Part '%s' has ~0 max durability and is not CHASSIS, so will not be correctly processed
+0x101d95d0	.rdata	[Final: %.0f, Base: %d] Dur: %.2f, MaxDur: %.2f, PriceCoeff: %.2f
+0x101d9630	.rdata	----- Vanilla Schwarz: %d, Base Price: %d, dur_coeff: %.2f (~%.2f/%.2f) -----
+0x101d9698	.rdata	----- %s -----
+0x101d96a8	.rdata	--- [%s] %s ---
+0x101d96c0	.rdata	[Final: %.0f, Base: %d] HP: %.2f, MaxHP: %.2f, PriceCoeff: %.2f
+0x101d9710	.rdata	Only cab+cargo+chassis: %d
+0x101d9730	.rdata	[WeaponGadgets final: %d, Base: %d] WeaponGadgetMaxSchwarzPart (from base vehicle): %.2f
+0x101d9790	.rdata	[CommonGadgets final: %d, Base: %d] CommonGadgetMaxSchwarzPart (from base vehicle): %.2f
+0x101d97ec	.rdata	[Wares final: %d, Base: %d] WaresMaxSchwarzPart: %.2f
+0x101d9828	.rdata	----- New Schwarz: %d (Schwarz Parts: CAB %d + BASKET %d + CHASSIS %d + GUNS %d + GADGETS %d + WARES %d) -----
+0x101d9b0c	.rdata	ram_test: %s, ignoring trigger
+0x101d9b30	.rdata	ram_test: will spawn player %.1fm behind other vehicle %p and drive into it per scenario.csv
+0x101d9c64	.rdata	God mode: applying to player vehicle %p
+0x101d9c90	.rdata	perf: fps=%.1f avg_frame_ms=%.3f min_ms=%.3f max_ms=%.3f frames=%llu window=%.1fs
+0x101d9cf8	.rdata	Vehicle switch: no ai::Player instance yet, ignoring '%s'
+0x101d9d34	.rdata	Vehicle switch: no ai::CServer instance yet, ignoring '%s'
+0x101d9d70	.rdata	Vehicle switch: unknown vehicle prototype '%s'
+0x101d9da0	.rdata	Vehicle switch: changed player vehicle to prototype '%s' (id=%d)
+0x101d9dfc	.rdata	Debug: tearing wheel 0 off target vehicle at t=%.3f
+0x101d9ed4	.rdata	Auto-load: CMiracle3d this=%p vtable=%p, loading '%s'
+0x101d9f0c	.rdata	Auto-load: LoadSavedGame returned %d
+0x101da080	.rdata	Perf monitor enabled - logging wall-clock fps/frame-time every %.1fs
+0x101da254	.rdata	TempAllocator: Out of memory trying to allocate %u bytes
+0x101da5c8	.rdata	Assert failed: %s:%u: (%s) %s
+0x101da628	.rdata	Jolt: PhysicsSystem::Update reported error mask 0x%X%s%s%s%s - simulation work was DROPPED this step (raise the corresponding limit in Apply())
+0x101da6b8	.rdata	Landscape heightfield export skipped: sampleCount=%d heights=%p
+0x101da6f8	.rdata	Jolt heightfield shape creation failed: %s
+0x101da760	.rdata	Jolt: exported landscape heightfield as a static body (%dx%d samples, %.1f world units/cell, height range [%.1f, %.1f])
+0x101da808	.rdata	Jolt: road export produced zero triangles (nodes=%d, skipped=%d) - hook may be firing before CalcNodeData runs
+0x101da878	.rdata	Jolt road mesh shape creation failed: %s
+0x101da8e0	.rdata	Jolt: exported roads as a static body (%d/%d nodes, %zu verts, %zu tris, %d skipped)
+0x101da938	.rdata	Jolt: static obstacle export - hit max sub-space recursion depth (%d), stopping this branch
+0x101da994	.rdata	Jolt: static box shape creation failed: %s
+0x101da9c0	.rdata	Jolt: static sphere shape creation failed: %s
+0x101da9f0	.rdata	Jolt: static trimesh shape creation failed: %s
+0x101daa20	.rdata	Jolt: static capsule shape creation failed: %s
+0x101daa98	.rdata	Jolt: static obstacle export - walked only %d geoms but dSpaceGetNumGeoms reports %d at the top level alone - list walk may be missing something (docs §22.9/§22.13), counts below are only over what was actually walked
+0x101dab78	.rdata	Jolt: static obstacle export - %d geom(s) of exportable class could not get a Jolt body (cMaxBodies capacity exhausted) - raise cMaxBodies (docs §22.14/§35)
+0x101dac18	.rdata	Jolt: exported %d static obstacles (%d box, %d sphere, %d trimesh, %d capsule) - %d geoms walked total (%d nested sub-space(s) recursed into, %d at top level per dSpaceGetNumGeoms), %d dynamic geoms skipped, %d body-less geoms of unexported class skipped, %d skipped (capacity exhausted)
+0x101dad38	.rdata	Jolt: static obstacle export - %d body-less geom(s) of unexported ODE class %d (docs §22.9/§22.13 - classes confirmed by disassembly: 0=sphere, 1=box, 2=capsule, 7=trimesh, 11-14=space (recursed into, not "unexported"); others not confirmed against this binary, treat the raw ID as a lead not a fact)
+0x101dae94	.rdata	Jolt: speculative contact distance = %.4f m
+0x101daec0	.rdata	Jolt Physics initialized (threads=%u, maxBodies=%u)
+0x101dbe80	.rdata	Shadow: no usable vehicle-part geoms for compound chassis shape (parts=%d geoms=%d) - falling back to bounding box
+0x101dbf00	.rdata	Shadow: compound chassis shape creation failed (%s) - falling back to bounding box
+0x101dbf58	.rdata	Shadow: compound chassis shape built - %d part(s), %d geom(s) (%d box, %d sphere, %d capsule, %d skipped)
+0x101dbfc8	.rdata	Shadow (%s): wheel proxy body creation failed for wheel=%u (out of bodies?)
+0x101dc018	.rdata	Shadow (%s): wheel=%u exceeds kMaxWheelsPerVehicleGroupFilter=%u - self-collision exclusion not applied for this wheel, relying on geometric separation only
+0x101dc0b8	.rdata	Shadow (%s): wheel proxy built for wheel=%u - engages only beyond %.3fm from attachment (wheel's own raycast already covers up to there), extra reach margin %.1fm
+0x101dc168	.rdata	docs §71: drivetrain inertia gear=%d ratio=%.2f I_refl=%.1f kg*m^2 (disc %.2f)
+0x101dc1b8	.rdata	Shadow (%s): wheel %zu compound shape failed: %s
+0x101dc1ec	.rdata	Shadow (%s): wheel %zu body creation failed (out of bodies?)
+0x101dc230	.rdata	docs §75: constraint frame (%s) w=%zu axle.fwd=%+.4f (%.2f deg off perpendicular) | anchorOffsetFromWheelCentre=%.4f m (restLen)
+0x101dc2b8	.rdata	docs §60 (%s): wheel %zu predicted static sag %.3fm EXCEEDS compression headroom %.3fm (range %.3f, fraction %.2f) - it will rest on the bump stop once grounded
+0x101dc360	.rdata	docs §95.4 (%s): wheel mass %.1f is >=90%% of vehicle mass %.1f - NOT subtracting; the shadow stays heavier than ODE for this vehicle
+0x101dc3e8	.rdata	docs §58 (%s): mode 4 - built %zu wheel bodies + SixDOF constraints (chassisMass=%.1f, massFloor=%.2f) | docs §95.4 wheelMass=%.1f chassisMassFinal=%.1f total=%.1f
+0x101dc490	.rdata	Shadow (%s): waiting to settle before building wheel proxies - frame=%llu speed=%.3fm/s consecutiveSlow=%u
+0x101dc500	.rdata	Shadow (%s): wheel proxies built post-settle (speed=%.3fm/s, frame=%llu, settled=%d, viaTimeout=%d)
+0x101dc690	.rdata	docs §54.4: deferred destroy drained - %zu body(ies), %zu constraint(s) freed, %zu dangling constraint(s) swept (see §54.5 - these would have been a use-after-free)
+0x101dc738	.rdata	docs §54 axis-audit (%s): no wheel has a live Hinge2 joint yet - convention UNVERIFIED for this vehicle
+0x101dc7a8	.rdata	docs §54 axis-audit (%s) w=%u: axis1_local=(%.3f,%.3f,%.3f) vs assumedSusp -> %.2f deg | axis2_local=(%.3f,%.3f,%.3f) vs assumedAxle -> %.2f deg | axis1^axis2 off-perp %.2f deg || kSusp=%.0f N/m cSusp=%.0f Ns/m range=%.3f R=%.3f mWheel=%.1f driven=%d steer=%d
+0x101dc8f0	.rdata	docs §54 axis-audit SUMMARY (%s): worst susp %.2f deg, worst axle (unsteered only) %.2f deg, worst off-perp %.2f deg -> convention %s
+0x101dc978	.rdata	Shadow build skipped (%s): vehicle has no wheels
+0x101dc9ac	.rdata	Shadow chassis shape creation failed (%s): %s
+0x101dc9dc	.rdata	Shadow chassis body creation failed (%s, out of bodies?)
+0x101dca18	.rdata	docs §93: chassis inertia (%s) mass=%.1f | JOLT(compound) = (%.1f, %.1f, %.1f) | ODE(box %.2fx%.2fx%.2f) = (%.1f, %.1f, %.1f) | ratio = (%.2f, %.2f, %.2f)
+0x101dcab4	.rdata	Shadow build skipped (%s): no present wheels found on vehicle
+0x101dcaf8	.rdata	Shadow (%s): no driven wheels detected, shadow vehicle will coast only
+0x101dcb40	.rdata	Shadow (%s): wheelmodel APPLY mode - VehicleConstraint built but NOT simulated; chassis driven by wheelmodel_core (%zu wheels)
+0x101dcbc0	.rdata	Shadow vehicle #%u built (%s): %u wheels (%d driven axle(s)), mass=%.1f, chassis=%.2fx%.2fx%.2f, susp_mult=%.2fx/damp=%.2f, friction=%.2f/%.2f
+0x101dcc50	.rdata	Shadow divergence (%s): pos=%.3fm vel=%.3fm/s angle=%.1fdeg (jolt com=[%.1f %.1f %.1f] ode com=[%.1f %.1f %.1f])
+0x101dccc8	.rdata	docs §32: no-contact raycast (%s) wheel=%zu bodyPos=(%.2f,%.2f,%.2f) localMPos=(%.3f,%.3f,%.3f) origin=(%.2f,%.2f,%.2f) dir=(%.3f,%.3f,%.3f) normalRayLen=%.3f groundFoundAt=%.3f shortfallBeyondTravel=%.3f hitBody=%u hitLayer=%u hitMotion=%d hitIsSelfChassis=%d
+0x101dcdd0	.rdata	docs §32: no-contact raycast (%s) wheel=%zu origin=(%.2f,%.2f,%.2f) dir=(%.3f,%.3f,%.3f) normalRayLen=%.3f - NO GROUND FOUND within %.1fm along this ray at all
+0x101dce90	.rdata	docs §39.1: wheelmodel eval (%s) wheel=%zu - no manifold contacts
+0x101dced8	.rdata	docs §39.1: wheelmodel eval (%s) wheel=%zu hits=%d groundSlot=%d pen=%.3f F_ground=(%.0f,%.0f,%.0f) |F|=%.0f fpar=%.0f (m=%.1f dt=%.4f)
+0x101dcf68	.rdata	docs §44: wm bottomed-out (%s) w=%zu frames=%d preClampFriction=%.0f maxForce=%.0f suspForce=%.0f hardStop=%.0f comp=%.3f compMax=%.3f pen=%.3f
+0x101dd000	.rdata	docs §43: wm apply (%s) w=%zu drv=%d n=%d gSlot=%d pen=%.3f comp=%.3f suspF=%.0f omega=%.1f thr=%.2f fwd=(%.2f,%.2f,%.2f) Fg=(%.0f,%.0f,%.0f) fpar=%.0f gear=%d rpm=%.0f maxTq=%.0f muReal=%.3f compMax=%.3f mUnsprung=%.1f soilMu=%.3f
+0x101dd0f0	.rdata	docs §51 torque-trace (%s): alphaY fric=%.3f vert=%.3f hardStop=%.3f obstSide=%.3f | torqueY fric=%.0f vert=%.0f hardStop=%.0f obstSide=%.0f | vAngY=%.3f tiltDeg=%.1f
+0x101dd198	.rdata	docs §70.1: slipdense (%s) f=%llu w=%zu grounded=%d kappa=%.3f fnGround=%.0f omega=%.2f | ftGround=%.0fN target=%.1f limit=%.0fNm motorNm=%.0f tyreNm=%.0f inertia=%.2f limRot=%.0f/%.0f/%.0f omegaPre=%.2f posN=%.0f/%.0f/%.0f susp=%.4f springN=%.0f
+0x101dd2b8	.rdata	docs §59/63: harvest (%s) wheelsWithContact=%u contactPoints=%u overflow=%u (of %u) | maxNormalF=%.0fN bound(k_t*tau)=%.0fN ratio=%.2f%s
+0x101dd348	.rdata	docs §58: wheel body (%s) w=%zu springF=%.0fN stopF=%.0fN travel=%.4f (limits %.4f..%.4f rel spawn) kSusp=%.0f sagPredicted=%.4f | frameTrav=%.4f..%.4f frameStopN=%.0f
+0x101dd3f8	.rdata	docs §66: tyre band (%s) w=%zu fnGround=%.0fN fnTotal=%.0fN pen=%.5f penRaw=%.5f tau=%.5f pen/tau=%.2f | recs tyre=%u rim=%u survived=%u stale=%u distMax=%.2fR
+0x101dd4a0	.rdata	docs §68: steer (%s) w=%zu steerable=%d commanded=%.3f rad measured=%.3f rad err=%.2f deg steerSign=%+.0f steerTq=%.0fNm cap=%.0fNm sat=%.2f
+0x101dd530	.rdata	docs §70: slip (%s) w=%zu grounded=%d kappa=%.3f fnGround=%.0fN omega=%.2f
+0x101dd580	.rdata	docs §67: spin (%s) w=%zu driven=%d omega=%.2f rad/s surfaceSpeed=%.2f m/s spinSign=%+.0f motorTq=%.0fNm cmdTq=%.0fNm
+0x101dd5f8	.rdata	docs §67: drivetrain (%s) gear=%d rpm=%.0f driveTorque=%.0fNm perWheel=%.0fNm driven=%u throttle=%.2f spin=%d | PRE-STEP brake=%.2f handBrake=%d
+0x101dd690	.rdata	docs §66: tyre band SUM (%s) fnGroundSum=%.0fN fnTotalSum=%.0fN weight=%.0fN carried=%.2f | penSum=%.5f recs tyre=%u rim=%u stale=%u
+0x101dd718	.rdata	docs §78: attdense (%s) f=%llu joltTilt=%.2f odeTilt=%.2f upDelta=%.2f wBody=(%.2f,%.2f,%.2f) |w|=%.2f grounded=%u
+0x101dd790	.rdata	docs §87: resync landing (player) w=%zu pre=%.4f post=%.4f m R=%.3f dY=%.4f dRotDeg=%.2f |corr|=%.4f m
+0x101dd7f8	.rdata	docs §23.6: driver input (%s) realThrottle=%.2f brake=%.2f handBrake=%d steerRad=%.3f
+0x101dd850	.rdata	docs §32: Jolt SHADOW chassis pitch (%s) forward=(%.3f, %.3f, %.3f)
+0x101dd898	.rdata	docs §69: tilt (%s) jolt=%.1f deg ode=%.1f deg delta=%+.1f deg upDelta=%.2f deg
+0x101dd918	.rdata	docs §32.4: Jolt SHADOW chassis lowest corner (%s) = (%.2f,%.2f,%.2f) clearanceToGround=%.3f%s
+0x101dd978	.rdata	docs §23.5: wheel state (%s) wheel=%zu contact=%d suspLen=%.3f (range %.3f-%.3f, %.0f%% compressed) angVel=%.2f
+0x101dd9f8	.rdata	docs §38.11: wheel=%zu ON surface=%s contactNormal=(%.3f,%.3f,%.3f) worldAxle=(%.3f,%.3f,%.3f)
+0x101dda58	.rdata	docs §38.11: wheel=%zu NO contact, worldAxle=(%.3f,%.3f,%.3f)
+0x101dda98	.rdata	docs §30: REAL ODE chassis COM (%s) body=%p = (%.3f, %.3f, %.3f) forward=(%.3f, %.3f, %.3f)
+0x101ddaf8	.rdata	docs §33: real ODE chassis geom (%s) #%d = transform, inner class=%d pos=(%.3f,%.3f,%.3f)
+0x101ddb58	.rdata	docs §33: real ODE chassis geom (%s) #%d = transform, inner class=%d
+0x101ddba0	.rdata	docs §33: real ODE chassis geom (%s) #%d = class %d (not a transform) pos=(%.3f,%.3f,%.3f) radius=%.3f
+0x101ddc08	.rdata	docs §33: real ODE chassis (%s) has %d total geom(s) directly attached (%d transform(s)) - compare against BuildChassisCompoundShape's own part/geom count in the build log
+0x101ddcb8	.rdata	docs §28: REAL ODE wheel state (%s) wheel=%u displacement=%.4f range=%.3f (%.0f%% compressed, signed) foreAft=%.3f localZ=%.3f cfm=%.6f erp=%.4f
+0x101ddd50	.rdata	Shadow apply (%s): non-finite Jolt state, skipping this frame (leaving ODE in control)
+0x101ddda8	.rdata	Shadow apply (%s): Jolt speed %.1f m/s exceeds %.1f m/s cap, skipping this frame (leaving ODE in control)
+0x101dde18	.rdata	Shadow apply (%s): chassis had %d ODE joint(s) attached (baseline %d structural) before this frame's DisablePhysics (docs §22.3 ramming risk observed live)
+0x101ddeb8	.rdata	Shadow apply (%s): wheel %zu had %d ODE joint(s) attached (baseline %d structural) before this frame's DisablePhysics (docs §22.3/§7 wheel-ground contact-joint check)
+0x101ddf68	.rdata	[jolt_profile] ode_step_avg_ms=%.2f jolt_total_avg_ms=%.2f | physics_update_avg_ms=%.2f wheelmodel_avg_ms=%.2f mirror_avg_ms=%.2f applyvehicle_avg_ms=%.2f applyvehicle_calls_per_frame=%.2f | contact_pairs_per_frame=%.1f contact_points_per_frame=%.1f active_bodies_per_frame=%.1f substeps_per_frame=%.2f | frames=%llu
+0x101de0a8	.rdata	Shadow (%s): a wheel present at build time is now gone/replaced, rebuilding
+0x101de0f8	.rdata	docs §82: resync (%s) #%u dt=%.2fs upMax=%.3f deg posMax=%.3f m odeTiltPath=%.3f deg gain=%.4f
+0x101de158	.rdata	docs §82: resync RESIDUAL (%s) #%u pos=%.4f m up=%.4f deg
+0x101de198	.rdata	Stage 3: selected %u AI vehicle(s) for Jolt shadow (requested %u)
+0x101de2e0	.rdata	Autotune: %s after %u trial(s). Best score=%.4f - susp_frequency=%.2f susp_damping=%.2f friction_long=%.2f friction_lat=%.2f
+0x101de360	.rdata	Autotune: to keep these, set in kraken.ini [jolt_harness]: susp_frequency=%.2f susp_damping=%.2f friction_long=%.2f friction_lat=%.2f
+0x101de490	.rdata	bootstrap %d/5 (%s)
+0x101de4c0	.rdata	shrink %d/4
+0x101de4d0	.rdata	Autotune trial %u/%u starting (%s): susp_mult=%.2fx/damp=%.2f friction=%.2f/%.2f
+0x101de524	.rdata	Autotune trial %u result: score=%.4f (best so far=%.4f)
+0x101de708	.rdata	Autotune: starting Nelder-Mead simplex search, up to %u trial(s), baseline susp_mult=%.2fx/damp=%.2f friction=%.2f/%.2f, score = pos_rmse + %.2f*vel_rmse + %.2f*angle_rmse_deg (approximate weights, see docs section 8.4/8.5)
+0x101de7e8	.rdata	Autotune: player vehicle changed mid-run (likely testharness autoload swapping in the real save) - discarding the %u trial(s) run so far and restarting the search against the new vehicle's spawn point
+0x101de8b8	.rdata	Autotune: player vehicle changed mid-run - scenario.csv is user-provided so it's left untouched, but restarting the search bookkeeping against the new vehicle (discarding %u trial(s) run so far)
+0x101de990	.rdata	docs §23.11: ram pushback applied - jolt-driven=%p mirrored=%p closingSpeed=%.2f impulse=%.1f
+0x101de9f0	.rdata	docs §23.4: live ram-damage call involves the PLAYER vehicle (v1=%p v2=%p player=%p) dSpeed=%.2f
+0x101deac0	.rdata	docs §39 SelfTest[1] flat: F=(%.1f,%.1f,%.1f) -> %s
+0x101deaf8	.rdata	docs §39 SelfTest[3] wall-climb: F=(%.1f,%.1f,%.1f) fpar=%.2f -> %s
+0x101deb40	.rdata	docs §39 SelfTest[4] classify: ground=%d obstacle=%d -> %s
+0x101deb7c	.rdata	docs §39 wheelmodel_core SelfTest overall: %s
+0x101dec18	.rdata	Feature enabled - Jolt WILL DRIVE the player's vehicle this run (player_only=%u, max_speed=%.0fm/s gate)
+0x101ded0c	.rdata	Stage 3: up to %u AI vehicle(s) will also be shadowed%s
+0x101ded48	.rdata	Autotune (docs section 8.5/16/20.3) enabled - will run a Nelder-Mead simplex search over suspension/friction using testharness's scripted-replay protocol once a save is loaded (up to %u trials)
+0x101dee10	.rdata	Suspension/friction tuning: susp_frequency=%.2fHz susp_damping=%.2f friction_long=%.2f friction_lat=%.2f (from kraken.ini, autotune disabled)
+0x101df330	.rdata	%Y-%m-%d %H:%M:%S
+0x101df354	.rdata	%s%-8s %s %s - %s%s
+0x101df488	.rdata	Child already exists: %s
+0x101df4e8	.rdata	ChildNodeFromXmlNode: node w/ same name already exists as a child: '%s', address = %p
+0x101df548	.rdata	ChildNodeFromXmlNode: Cannot load node: name = %s
+0x101df57c	.rdata	ChildNodeFromXmlFile: invalid 'extern' format: %s
+0x101df5b0	.rdata	ChildNodeFromXmlFile: %s
+0x101df5d4	.rdata	ChildNodeFromXmlFile: Prefabs node should be root node in %s
+0x101df614	.rdata	ChildNodeFromXmlFile: cannot find %s in %s
+0x101df640	.rdata	Object%d
+0x101df828	.rdata	Mismatching define %s.
+0x101df8b0	.rdata	Client reported version %d.%d.%d, library version is %d.%d.%d.
+0x101dfd8c	.rdata	Worker %d
+0x101e1c74	.rdata	intptr_t(kv) % alignof(KeyValue) == 0
+0x101e3954	.rdata	Material %u is beyond material list (size: %u)
+0x101e44ac	.rdata	Triangle %d is degenerate!
+0x101e44c8	.rdata	Vertex index %u is beyond vertex list (size: %u)
+0x101e44fc	.rdata	Supporting max %d materials per mesh
+0x101e4524	.rdata	Triangle material %u is beyond material list (size: %u)
+0x101e6ed0	.rdata	Forward: %.1f, Right: %.1f
+0x101e6eeb	.rdata	Brake: %.1f, HandBrake: %.1f
+0x101e6f08	.rdata	Gear: %d, Clutch: %.1f
+0x101e6f1f	.rdata	EngineRPM: %.0f, V: %.1f km/h
+0x101e6f40	.rdata	W: %.1f, S: %.2f
+0x101e6f51	.rdata	SlipLateral: %.1f, SlipLong: %.2f
+0x101e6f73	.rdata	FrLateral: %.1f, FrLong: %.1f
+0x101e8890	.rdata	Hull building failed, point %d had an error of %g (relative to tolerance: %g)
+0x101e8980	.rdata	Internal error: Too many points in hull (%u), max allowed %d
+0x101ea1e0	.rdata	Forward: %.1f, LRatio: %.1f, RRatio: %.1f, Brake: %.1f
+0x101ea217	.rdata	Gear: %d, Clutch: %.1f, EngineRPM: %.0f, V: %.1f km/h
+0x101eaadc	.rdata	Error: %s
+0x101ed890	.rdata	outEdges[i].mEndIdx == outEdges[(i + 1) % outEdges.size()].mStartIdx
+0x104698dc	.reloc	%0X0_0f0
+0x1046fcff	.reloc	0%0d0k0r0
+0x1046ff43	.reloc	3%3c3j3q3
+0x10476091	.reloc	4%4c4j4q4
+0x10476add	.reloc	3%3a3h3o3
+0x10477da1	.reloc	7%7A8H8O8P9W9^9
+0x1047c89d	.reloc	1%141E1L1S1Z1a1p1
