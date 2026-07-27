@@ -196,11 +196,55 @@ namespace kraken::fix::joltshadow {
     }
 
     // Per-vehicle Jolt state - one instance for the player, plus one per Stage 3 AI vehicle.
+    // docs §57 (Этап 1, шаг 1): the per-wheel settings, extracted out of JPH::WheelSettingsWV into
+    // a plain POD this file owns. Step 1's whole contract is ZERO behaviour change: nothing reads
+    // this yet, it is filled from the SAME locals the WheelSettingsWV assignments use so the two
+    // cannot drift, and the VehicleConstraint keeps driving everything exactly as before. Step 2
+    // builds real wheel bodies off this array, and plan §5 item 19 deletes WheelSettingsWV once
+    // nothing needs it.
+    //
+    // The field set is deliberately NOT the plan's list. The plan (§5 item 19) names
+    // `float R, width, minLen, maxLen, kSusp, cSusp, mU, mass, inertia`, but the shipped Stage 1
+    // build carried no `inertia` here - it lived in two separate per-wheel float vectors - and it
+    // DID carry `tau`, the tyre band half-thickness, which the plan does not mention. Both facts
+    // come from the recovered layout (docs/recovered/SPEC.md, steps 1-2 cluster: the 112-byte
+    // stride is proven by the compiler's divide-by-112 idiom at two independent call sites). This
+    // is the plan being superseded by what actually shipped, not a liberty.
+    //
+    // tau and the two sign fields are left at their defaults here on purpose: they are WRITTEN by
+    // the step-2 body build and the step-5/6 spin and steer work respectively, not by extraction.
+    // A field this struct cannot yet fill honestly is better left obviously unset than filled with
+    // a plausible value that later code silently trusts.
+    struct WheelSetup {
+        JPH::Vec3 attachPos;                 // chassis-local suspension attachment (= WheelRuntimeInfo::m_initialPos)
+        JPH::Vec3 suspDir   {0.0f, -1.0f, 0.0f}; // chassis-local suspension travel direction ("down")
+        JPH::Vec3 steerAxis {0.0f,  1.0f, 0.0f}; // chassis-local steering axis ("up")
+        JPH::Vec3 axleLocal {1.0f,  0.0f, 0.0f}; // chassis-local axle = wheelUp x wheelForward at zero steer
+
+        float radius   = 0.3f;   // hta::ai::Wheel::GetRadius()
+        float width    = 0.2f;   // hta::ai::Wheel::GetWidth()
+        float minLen   = 0.05f;  // INVENTED, not data - see the comment at the assignment below
+        float maxLen   = 0.25f;  // minLen + WheelPrototypeInfo::m_suspensionRange
+        float kSusp    = 0.0f;   // N/m,   docs §31: derived from the real ODE CFM/ERP
+        float cSusp    = 0.0f;   // N*s/m, same derivation
+        float tau      = 0.0f;   // tyre band half-thickness (m) - written by the step-2 body build
+        float unsprungMass = 0.0f; // the wheel's own mass, hta::ai::Wheel::GetMass()
+
+        // Both derived rather than assumed, at steps 5 and 6. +-1. Zero here means "not yet
+        // derived", which is a value neither step can produce, so it cannot be mistaken for one.
+        float spinSign  = 0.0f;
+        float steerSign = 0.0f;
+
+        bool driven   = false;
+        bool steering = false;
+    };
+
     struct ShadowState {
         hta::ai::Vehicle*       vehicle    = nullptr; // vehicle this state was last successfully built for
         JPH::BodyID             bodyId;
         JPH::VehicleConstraint* constraint = nullptr;
         std::vector<hta::ai::Wheel*> wheelOrder; // parallel to constraint's internal wheel array, index-for-index
+        std::vector<WheelSetup> wheelSetup;      // docs §57: parallel to wheelOrder, rebuilt in the same loop
         std::vector<uint32_t>   wheelSourceIndex; // parallel to wheelOrder: the vehicle->m_wheels[] index each entry was captured from at build time - lets ShadowWheelsStillPresent detect a wheel that's since been detached/replaced (see its comment)
         uint64_t                frameCounter    = 0;
         uint32_t                builtGeneration = 0; // g_tuningGeneration at the time this state's shadow was (re)built
@@ -1074,6 +1118,8 @@ namespace kraken::fix::joltshadow {
         std::vector<uint32_t>& wheelSourceIndex = state.wheelSourceIndex; // parallel to wheelOrder - see its field comment
         wheelOrder.clear();
         wheelOrder.reserve(numWheels);
+        state.wheelSetup.clear();               // docs §57: parallel to wheelOrder, refilled below
+        state.wheelSetup.reserve(numWheels);
         wheelSourceIndex.clear();
         wheelSourceIndex.reserve(numWheels);
         state.wheelBaselineJointCount.clear();      // re-captured lazily in ApplyJoltToVehicle (docs §22.3)
@@ -1123,6 +1169,16 @@ namespace kraken::fix::joltshadow {
             // per-wheel suspension-travel data (vehicleparts.xml).
             const hta::ai::WheelPrototypeInfo* wheelProto = wheel->GetPrototypeInfo();
             const float suspensionRange = wheelProto != nullptr ? std::max(wheelProto->m_suspensionRange, 0.05f) : 0.2f;
+            // The 0.05 is INVENTED and it is worth saying so at the assignment rather than in a
+            // doc nobody opens. `m_suspensionRange` is the one real number here; the split of it
+            // into a min and a max exists only because Jolt's VehicleConstraint demands a pair.
+            // The reference has nothing to derive that split from: docs §94.2 disassembled all
+            // six dJointSetHinge2Param calls in ai::Wheel::AttachToPhysicObj and found
+            // dParamLoStop/dParamHiStop set on AXIS 1 - the steering angle (0/0 when the wheel
+            // does not steer, +-pi when it does) - and nothing at all bounding suspension travel.
+            // ODE's suspension is a pure CFM/ERP soft constraint with no stop whatsoever. So this
+            // constant is a convention to be settled by measurement, never an argument to be won
+            // from the reference, and any code that treats it as real data is mistaken.
             ws->mSuspensionMinLength = 0.05f;
             ws->mSuspensionMaxLength = 0.05f + suspensionRange;
 
@@ -1200,6 +1256,33 @@ namespace kraken::fix::joltshadow {
             ws->mMaxSteerAngle = (wheel->m_steering != hta::ai::Wheel::STEERING_NO) ? kApproxMaxSteerAngleRadians : 0.0f;
             if (!wheel->m_driven)
                 ws->mMaxBrakeTorque = 0.0f; // approximate: brakes on driven wheels only
+
+            // docs §57 (Этап 1, шаг 1): snapshot the same values into the POD array, from the SAME
+            // locals the WheelSettings above were just assigned from - not re-derived, so the two
+            // cannot drift. Kept adjacent to those assignments on purpose: when step 2 starts
+            // building real bodies off this array and plan §5 item 19 eventually deletes
+            // WheelSettingsWV, the diff is a deletion rather than a re-derivation, and anything
+            // that was only ever true of the WheelSettings path fails loudly instead of silently.
+            //
+            // Note `ws->mSuspensionSpring.mStiffness` rather than the local `stiffness`: the
+            // tuning multipliers are part of what the constraint actually runs with, so the POD
+            // has to carry the post-multiplier value or step 2's bodies would be built against a
+            // different spring than the one being replaced.
+            WheelSetup setup;
+            setup.attachPos     = ws->mPosition;
+            setup.suspDir       = ws->mSuspensionDirection;
+            setup.steerAxis     = ws->mSteeringAxis;
+            setup.axleLocal     = ws->mWheelUp.Cross(ws->mWheelForward);
+            setup.radius        = ws->mRadius;
+            setup.width         = ws->mWidth;
+            setup.minLen        = ws->mSuspensionMinLength;
+            setup.maxLen        = ws->mSuspensionMaxLength;
+            setup.kSusp         = ws->mSuspensionSpring.mStiffness;
+            setup.cSusp         = ws->mSuspensionSpring.mDamping;
+            setup.unsprungMass  = wheel->GetMass();
+            setup.driven        = wheel->m_driven;
+            setup.steering      = wheel->m_steering != hta::ai::Wheel::STEERING_NO;
+            state.wheelSetup.push_back(setup);
 
             vehicleSettings.mWheels.push_back(ws);
             wheelOrder.push_back(wheel);
