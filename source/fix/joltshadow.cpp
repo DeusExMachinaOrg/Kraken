@@ -324,6 +324,10 @@ namespace kraken::fix::joltshadow {
         // Ixx is about the axle, Ir about the two radial axes.
         std::vector<float>              wmDiscInertiaX;
         std::vector<float>              wmDiscInertiaR;
+        // docs §59: the parallel harvest listener for this vehicle. Registered on first build and
+        // then re-pointed rather than re-registered - see BuildWheelBodies for why the OLD one is
+        // deliberately left registered on a rebuild instead of being removed.
+        class VehicleStepListener* stepListener = nullptr;
         std::vector<uint32_t>   wheelSourceIndex; // parallel to wheelOrder: the vehicle->m_wheels[] index each entry was captured from at build time - lets ShadowWheelsStillPresent detect a wheel that's since been detached/replaced (see its comment)
         uint64_t                frameCounter    = 0;
         uint32_t                builtGeneration = 0; // g_tuningGeneration at the time this state's shadow was (re)built
@@ -1093,6 +1097,90 @@ namespace kraken::fix::joltshadow {
                 ? "CONFIRMED" : "**VIOLATED - build the strut frame from real axes**");
     }
 
+    // docs §59/§63 (Этап 1, шаг 3): the read half of the harvest. One instance per vehicle,
+    // registered on the PhysicsSystem, so Jolt runs them in parallel across vehicles.
+    //
+    // What it may touch is not a style preference, it is Jolt's access grant inside
+    // JobStepListeners: positions are READ-ONLY (the broadphase is updating concurrently),
+    // velocities are read/write, bodies may be activated but not deactivated. So reading a cached
+    // Body* is legal and any BodyInterface call is not - resolving a BodyID through the interface
+    // in here deadlocks against locks this job already holds. Hence the cached pointers, taken at
+    // build time, and the rule that each listener touches only its own chassis and its own wheels:
+    // that is exactly the non-overlapping subset Jolt requires for the parallel run to be sound.
+    //
+    // At step 3 it applies NO force. It reprojects each harvested contact into a penetration,
+    // decides which records survive, and records what it saw. Step 4 turns that into force.
+    class VehicleStepListener final : public JPH::PhysicsStepListener {
+    public:
+        // Filled at build time. Deliberately a POD snapshot rather than a ShadowState* - the AI
+        // shadows live in a std::vector that clears and refills on re-init, so a pointer into it
+        // can outlive what it described.
+        struct WheelTick {
+            JPH::Body* body   = nullptr;
+            float      radius = 0.3f;
+            float      tau    = 0.01f;
+        };
+        JPH::Body* chassis = nullptr;
+        uint32_t   slot    = 0;
+        uint32_t   wheelCount = 0;
+        WheelTick  wheels[kMaxHarvestWheels];
+
+        // Diagnostics for the §59/§63 line, written here and read by the main thread after
+        // Update() has fully returned. Plain values, not atomics: only this listener writes them,
+        // and the only reader runs when no worker is live.
+        uint32_t lastWheelsWithContact = 0;
+        uint32_t lastContactPoints     = 0;
+        uint32_t lastOverflow          = 0;
+        uint32_t lastSurvived          = 0;
+
+        void OnStep(const JPH::PhysicsStepListenerContext& inContext) override {
+            (void) inContext;   // step 3 applies no force, so dt is unused until step 4
+            // Read the buffer the PREVIOUS step's narrow phase filled - see StepPhysicsProfiled
+            // for why the parity is advanced on the main thread and why this is the other one.
+            const uint32_t readParity = (g_harvestStep.load(std::memory_order_relaxed) ^ 1u) & 1u;
+
+            uint32_t withContact = 0, points = 0, overflow = 0, survived = 0;
+            for (uint32_t w = 0; w < wheelCount && w < kMaxHarvestWheels; ++w) {
+                const WheelTick& wt = wheels[w];
+                if (wt.body == nullptr)
+                    continue;
+                WheelHarvest& buf = g_wheelHarvest[readParity][slot][w];
+                const uint32_t n    = buf.count.load(std::memory_order_relaxed);
+                const uint32_t used = std::min(n, kMaxHarvestRecs);
+                if (n > kMaxHarvestRecs)
+                    overflow += n - kMaxHarvestRecs;
+                if (n > 0)
+                    ++withContact;
+                points += n;
+
+                const JPH::RVec3 centre = wt.body->GetCenterOfMassPosition();
+                for (uint32_t r = 0; r < used; ++r) {
+                    const WheelHarvestRec& rec = buf.rec[r];
+                    // Only the TYRE sub-shape feeds the band. A RIM record is harvested and
+                    // counted, but must never produce band force: the solver already resolves the
+                    // rim contact, so using it here would apply the normal load twice.
+                    if (rec.sub != 0)
+                        continue;
+                    // Reproject rather than trusting the manifold's own penetration depth: for a
+                    // sphere against a locally planar triangle this is exact, and it makes
+                    // lift-off self-handling - penRaw goes negative and the record simply drops,
+                    // with no OnContactRemoved bookkeeping to get wrong.
+                    const float penRaw = wt.radius - JPH::Vec3(centre - JPH::RVec3(rec.point)).Dot(rec.normal);
+                    if (penRaw <= 0.0f)
+                        continue;
+                    ++survived;
+                    // Step 4 clamps this to tau and turns it into force here. Deliberately not
+                    // doing that yet: step 3's contract is that the harvest is proven to carry
+                    // real contacts before anything acts on them.
+                }
+            }
+            lastWheelsWithContact = withContact;
+            lastContactPoints     = points;
+            lastOverflow          = overflow;
+            lastSurvived          = survived;
+        }
+    };
+
     // docs §58 (Этап 1, шаг 2): one real dynamic body per wheel, hung off the chassis by one
     // JPH::SixDOFConstraint. Called only under [jolt_harness] wheelmodel==4, and only after the
     // chassis body is live and InitWheelModelSuspension has filled wmRestLen - that is what
@@ -1341,6 +1429,24 @@ namespace kraken::fix::joltshadow {
                             "subtracting; the shadow stays heavier than ODE for this vehicle",
                     label, (double) totalWheelMass, (double) chassisMass);
             }
+        }
+
+        // docs §59: register the parallel harvest listener now that this vehicle owns bodies. On a
+        // REBUILD the old listener is deliberately left registered and simply re-pointed rather
+        // than removed: RemoveStepListener during a rebuild is the same teardown-ordering hazard
+        // that BuildShadow's comment documents as a real, repeatable worker-thread crash, and this
+        // file's standing answer to that hazard is to leak rather than to unregister.
+        if (state.stepListener == nullptr) {
+            state.stepListener = new VehicleStepListener();
+            physics->AddStepListener(state.stepListener);
+        }
+        state.stepListener->chassis    = chassisBody;
+        state.stepListener->slot       = collisionGroupId;
+        state.stepListener->wheelCount = (uint32_t) std::min<size_t>(state.wheelBodies.size(), kMaxHarvestWheels);
+        for (uint32_t w = 0; w < state.stepListener->wheelCount; ++w) {
+            state.stepListener->wheels[w].body   = physics->GetBodyLockInterfaceNoLock().TryGetBody(state.wheelBodies[w]);
+            state.stepListener->wheels[w].radius = state.wheelSetup[w].radius;
+            state.stepListener->wheels[w].tau    = state.wheelSetup[w].tau;
         }
 
         // The engagement check is inside the line: chassisMassFinal + wheelMass must equal
@@ -3548,6 +3654,22 @@ namespace kraken::fix::joltshadow {
             LogDivergence(vehicle, state, label);
             LogWheelState(vehicle, state, label);
             LogRealOdeWheelState(vehicle, label);
+            // docs §59/§63 (Этап 1, шаг 3): the harvest health line. Read here rather than in the
+            // listener because here no worker thread is live - PhysicsSystem::Update has fully
+            // returned by the time this pass runs, which is what makes plain (non-atomic) reads
+            // of the listener's counters correct.
+            //
+            // maxNormalF and the bound both read 0.0 at step 3 BY DESIGN: no force is produced
+            // yet. That is the step's whole point - prove the harvest carries real contacts before
+            // anything acts on them - so a zero here is a pass, not a missing feature. The fields
+            // are present now so the line's shape does not change when step 4 fills them.
+            if (state.wheelBodyMode && state.stepListener != nullptr) {
+                LOG_INFO("docs §59/63: harvest (%s) wheelsWithContact=%u contactPoints=%u overflow=%u (of %u)"
+                         " | survived=%u maxNormalF=%.0fN bound(k_t*tau)=%.0fN ratio=%.2f%s",
+                    label, state.stepListener->lastWheelsWithContact, state.stepListener->lastContactPoints,
+                    state.stepListener->lastOverflow, state.stepListener->wheelCount,
+                    state.stepListener->lastSurvived, 0.0, 0.0, 0.0, "");
+            }
         }
     }
 
