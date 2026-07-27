@@ -32,6 +32,7 @@
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 #include <Jolt/Physics/Collision/GroupFilterTable.h>
 #include <Jolt/Physics/Constraints/SliderConstraint.h>
+#include <Jolt/Physics/Constraints/SixDOFConstraint.h> // docs §58 (Этап 1, шаг 2): the wheel strut
 
 #include "hta/ai/CServer.hpp"
 #include "hta/ai/DynamicScene.hpp"
@@ -104,6 +105,11 @@ namespace kraken::fix::joltshadow {
     // layer (unlike WHEEL_QUERY above), also restricted to NON_MOVING only, for the auxiliary
     // wheel-proxy bodies built by BuildWheelProxy below.
     static constexpr JPH::ObjectLayer kWheelProxyLayer = 3;
+    // docs §58 (Этап 1, шаг 2): the real wheel BODIES. Must match kraken::fix::jolt::Layers::WHEEL
+    // (jolt.cpp) - same duplicate-rather-than-export convention as the three above. Unlike the
+    // proxy layer this one reaches MOVING too, because a real wheel has to be able to hit another
+    // vehicle; its own chassis and sibling wheels are excluded by the collision GROUP instead.
+    static constexpr JPH::ObjectLayer kWheelLayer = 4;
 
     // docs §37 item 3: explicit chassis-vs-own-wheel-proxy collision exclusion, hardening
     // BuildWheelProxy's previously sole safeguard (mLimitsMin keeping the proxy geometrically
@@ -124,6 +130,21 @@ namespace kraken::fix::joltshadow {
     // on Layers::WHEEL and DO see each other, and at full droop or under a hard steer two wheels
     // of the same vehicle can overlap - so every wheel-vs-sibling-wheel pair has to be disabled
     // too, not just chassis-vs-wheel.
+    // docs §58 (Этап 1, шаг 2): a wheel body's Jolt UserData. The contact callback runs on worker
+    // threads inside PhysicsSystem::Update with the body mutexes held, so it must identify a wheel
+    // with no lookup and no lock at all - a tagged handle read straight off the Body is the only
+    // shape that satisfies that. High dword is the literal 'WHL\0' so an untagged body (or one
+    // whose UserData some other subsystem owns) can never be mistaken for a wheel; the low dword
+    // packs the vehicle slot and the wheel index.
+    static constexpr uint64_t kWheelUserDataTag  = 0x57484C00ull << 32; // 'WHL\0'
+    static constexpr uint64_t kWheelUserDataMask = 0xFFFFFFFFull << 32;
+    static inline uint64_t MakeWheelUserData(uint32_t slot, uint32_t wheelIndex) {
+        return kWheelUserDataTag | (uint64_t) ((slot & 0xFFFFu) << 16) | (uint64_t) (wheelIndex & 0xFFFFu);
+    }
+    static inline bool     IsWheelUserData(uint64_t ud)   { return (ud & kWheelUserDataMask) == kWheelUserDataTag; }
+    static inline uint32_t WheelUserDataSlot(uint64_t ud) { return (uint32_t) ((ud >> 16) & 0xFFFFu); }
+    static inline uint32_t WheelUserDataIndex(uint64_t ud){ return (uint32_t) (ud & 0xFFFFu); }
+
     static constexpr uint32_t kMaxWheelsPerVehicleGroupFilter = 16; // generous upper bound - largest real vehicle seen so far (6-wheel truck) is well under this
     static JPH::GroupFilterTable* g_wheelGroupFilter = nullptr; // built once, shared/leaked forever across every rebuild - same convention as g_collisionTester below
     static JPH::GroupFilterTable* GetWheelGroupFilter() {
@@ -256,6 +277,20 @@ namespace kraken::fix::joltshadow {
         JPH::VehicleConstraint* constraint = nullptr;
         std::vector<hta::ai::Wheel*> wheelOrder; // parallel to constraint's internal wheel array, index-for-index
         std::vector<WheelSetup> wheelSetup;      // docs §57: parallel to wheelOrder, rebuilt in the same loop
+
+        // docs §58 (Этап 1, шаг 2): the real wheel bodies and their struts. Parallel to
+        // wheelOrder. Empty unless [jolt_harness] wheelmodel==4 - wheelBodyMode records that,
+        // separately from wheelModelMode, because at step 2 BOTH are true: the bodies exist and
+        // are constrained, while the chassis is still driven by the old StepWheelModel force
+        // path. They only diverge at step 4, when the forces move onto these bodies.
+        bool                            wheelBodyMode = false;
+        std::vector<JPH::BodyID>        wheelBodies;
+        std::vector<JPH::Constraint*>   wheelConstraints;
+        // The as-built disc inertia, kept so the step-5 spin work and the reflected-drivetrain
+        // term can reuse it per gear instead of re-deriving it from mass and radius each time.
+        // Ixx is about the axle, Ir about the two radial axes.
+        std::vector<float>              wmDiscInertiaX;
+        std::vector<float>              wmDiscInertiaR;
         std::vector<uint32_t>   wheelSourceIndex; // parallel to wheelOrder: the vehicle->m_wheels[] index each entry was captured from at build time - lets ShadowWheelsStillPresent detect a wheel that's since been detached/replaced (see its comment)
         uint64_t                frameCounter    = 0;
         uint32_t                builtGeneration = 0; // g_tuningGeneration at the time this state's shadow was (re)built
@@ -1025,6 +1060,264 @@ namespace kraken::fix::joltshadow {
                 ? "CONFIRMED" : "**VIOLATED - build the strut frame from real axes**");
     }
 
+    // docs §58 (Этап 1, шаг 2): one real dynamic body per wheel, hung off the chassis by one
+    // JPH::SixDOFConstraint. Called only under [jolt_harness] wheelmodel==4, and only after the
+    // chassis body is live and InitWheelModelSuspension has filled wmRestLen - that is what
+    // places each wheel, so the order is not incidental.
+    //
+    // What step 2 deliberately does NOT do: apply any force. The old StepWheelModel path keeps
+    // driving the chassis exactly as in mode 2 (plan §7 step 2: «силы ядра не применяются»), and
+    // the wheel bodies ride along as sensors. Anyone reading this expecting the vehicle to sink
+    // once the bodies appear is wrong - if it sinks, that is a real defect, not the step working
+    // as designed.
+    static void BuildWheelBodies(JPH::PhysicsSystem* physics, JPH::Body* chassisBody,
+            ShadowState& state, const char* label, uint32_t collisionGroupId) {
+        using EAx = JPH::SixDOFConstraintSettings::EAxis;
+        JPH::BodyInterface& bi = physics->GetBodyInterface();
+        const kraken::Config& cfg = kraken::Config::Instance();
+
+        const JPH::RMat44 chassisXform = chassisBody->GetWorldTransform();
+        const JPH::Quat   chassisRot   = chassisBody->GetRotation();
+        // The PRE-subtraction mass: this is `max(vehicle->GetMass(), 100.0f)`, and GetMass()
+        // already includes the wheels (docs §95.4). Both the per-wheel mass floor and tau are
+        // deliberately derived from it BEFORE the §96 subtraction below, because a threshold
+        // guarding a wheel/vehicle ratio wants the whole-vehicle mass as its basis - and taking
+        // it after would make the floor depend on the very sum it helps compute.
+        const float chassisMass  = 1.0f / std::max(chassisBody->GetMotionProperties()->GetInverseMass(), 1.0e-8f);
+        const float massFloorDiv = 40.0f;      // plan §2.1's guard against a pathological mass ratio
+        const float massFloor    = chassisMass / massFloorDiv;
+        const float gAbs         = std::max(std::fabs(cfg.gravity.value), 0.1f);
+        const float kTyre        = std::max(cfg.jolt_wm_tyre_stiffness.value, 1.0f);
+        const size_t nWheels     = state.wheelSetup.size();
+        const float cornerMass   = chassisMass / std::max<float>((float) nWheels, 1.0f);
+
+        // docs §66.9, applied PRE-EMPTIVELY rather than after it bites again. This file never
+        // tears down an abandoned body (see BuildShadow's comment: doing so produced a repeatable
+        // worker-thread crash), so a rebuild leaves the previous wheel bodies alive in the world
+        // forever. That is tolerable for a chassis, but a leaked WHEEL still carries its 'WHL\0'
+        // UserData with the same slot and index - so the step-3 contact harvest would pick up the
+        // ghost alongside the real wheel and silently double its contacts. Untagging on
+        // abandonment is what makes the leak harmless: the body stays, but nothing can mistake it
+        // for a wheel again. Cheap, and the alternative is a contamination bug with no symptom.
+        for (JPH::BodyID old : state.wheelBodies) {
+            if (!old.IsInvalid())
+                bi.SetUserData(old, 0);
+        }
+        state.wheelBodies.clear();
+        state.wheelConstraints.clear();
+        state.wmDiscInertiaX.clear();
+        state.wmDiscInertiaR.clear();
+
+        float totalWheelMass = 0.0f;
+
+        for (size_t i = 0; i < nWheels; ++i) {
+            WheelSetup& ws = state.wheelSetup[i];
+
+            const JPH::RVec3 worldAttach  = chassisXform * ws.attachPos;
+            const JPH::Vec3  worldSuspDir = (chassisRot * ws.suspDir).Normalized();
+            // wmRestLen is the raycast-seeded spring zero-force length, so the wheel spawns where
+            // the ground actually is rather than at mid-travel. Fall back to the middle of travel
+            // only if the seed is missing - a wheel placed at full droop would start below the
+            // one-sided heightfield surface (docs §40).
+            const float restLen = (i < state.wmRestLen.size() && state.wmRestLen[i] > 0.0f)
+                ? state.wmRestLen[i] : 0.5f * (ws.minLen + ws.maxLen);
+            const JPH::RVec3 wheelCentreWorld = worldAttach + worldSuspDir * restLen;
+
+            // The tyre band's half-thickness. Sized so the band can carry roughly three times a
+            // corner's static weight before it saturates: k_t * tau is the force at full
+            // penetration, so tau = 3*m_corner*g / k_t. Clamped from below so it never degenerates
+            // and from above so the RIM sphere stays a meaningful fraction of the tyre.
+            ws.tau = std::clamp(3.0f * cornerMass * gAbs / kTyre, 0.01f, 0.15f * ws.radius);
+
+            // TYRE (sub-shape 0, radius R) and RIM (sub-shape 1, radius R-tau), concentric. The
+            // band between them is where the tyre force lives; the rim is what stops the wheel
+            // sinking through the world if the band ever saturates. Both are solid geometry here;
+            // which of them acts as a sensor is a PER-PAIR decision taken in the contact callback
+            // at step 3, never a property of the body.
+            JPH::StaticCompoundShapeSettings compound;
+            compound.AddShape(JPH::Vec3::sZero(), JPH::Quat::sIdentity(), new JPH::SphereShape(ws.radius));
+            compound.AddShape(JPH::Vec3::sZero(), JPH::Quat::sIdentity(),
+                              new JPH::SphereShape(std::max(ws.radius - ws.tau, 0.01f)));
+            JPH::ShapeSettings::ShapeResult compoundResult = compound.Create();
+            if (compoundResult.HasError()) {
+                LOG_WARNING("Shadow (%s): wheel %zu compound shape failed: %s",
+                    label, i, compoundResult.GetError().c_str());
+                return;
+            }
+
+            const float bodyMass = std::max(ws.unsprungMass, massFloor);
+            totalWheelMass += bodyMass;   // the FLOORED mass - this is the sum §96 subtracts
+
+            // Spawned with the CHASSIS rotation, not identity, so wheel-local equals chassis-local
+            // at build time and the constraint frame below can be expressed in either.
+            JPH::BodyCreationSettings bcs(compoundResult.Get(), wheelCentreWorld, chassisRot,
+                                          JPH::EMotionType::Dynamic, kWheelLayer);
+            bcs.mOverrideMassProperties = JPH::EOverrideMassProperties::MassAndInertiaProvided;
+            bcs.mMassPropertiesOverride.mMass = bodyMass;
+            // A DISC about its own axle, not a sphere: (1/2 mR^2) about local X (= the axle),
+            // (1/4 mR^2) about the two radial axes.
+            const float halfMR2 = 0.5f * bodyMass * ws.radius * ws.radius;
+            bcs.mMassPropertiesOverride.mInertia =
+                JPH::Mat44::sScale(JPH::Vec3(halfMR2, 0.5f * halfMR2, 0.5f * halfMR2));
+            // Jolt's default cap is 0.25*pi*60 ~= 47 rad/s, which silently clips wheel spin at
+            // roughly 85 km/h with R=0.5 in Release with no assert.
+            bcs.mMaxAngularVelocity = 300.0f;
+            // The defaults of 0.05 would add parasitic braking on top of the tyre model, and
+            // body friction/restitution would double-count what the tyre model already provides.
+            bcs.mLinearDamping  = 0.0f;
+            bcs.mAngularDamping = 0.0f;
+            bcs.mFriction       = 0.0f;
+            bcs.mRestitution    = 0.0f;
+            // STEP 2 ONLY. The end state has mIsSensor false and decides tyre-versus-rim per
+            // contact pair in the callback; that callback does not exist until step 3. Until it
+            // does, solid wheel bodies would carry the vehicle in parallel with the mode-2 chassis
+            // forces that are still running - two supports for one vehicle. Sensor here keeps the
+            // bodies present, constrained and measurable while contributing no contact force,
+            // which is exactly what plan §7 step 2 asks for. REMOVE THIS at step 3.
+            bcs.mIsSensor = true;
+
+            JPH::Body* wheelBody = bi.CreateBody(bcs);
+            if (wheelBody == nullptr) {
+                LOG_WARNING("Shadow (%s): wheel %zu body creation failed (out of bodies?)", label, i);
+                return;
+            }
+
+            // A tagged handle the contact callback can read with no lookup and no lock: high
+            // dword is the literal 'WHL\0', low dword packs the vehicle slot and the wheel index.
+            wheelBody->SetUserData(MakeWheelUserData(collisionGroupId, (uint32_t) i));
+            // Without this Jolt merges manifolds from different SubShapeIDs whose normals are
+            // near-equal, and the TYRE/RIM distinction disappears with no symptom at all - the
+            // whole banded-contact scheme dies quietly.
+            wheelBody->SetUseManifoldReduction(false);
+            if (i + 1 <= kMaxWheelsPerVehicleGroupFilter) {
+                wheelBody->SetCollisionGroup(JPH::CollisionGroup(
+                    GetWheelGroupFilter(), collisionGroupId, (JPH::CollisionGroup::SubGroupID) (i + 1)));
+            } else {
+                LOG_WARNING("Shadow (%s): wheel %zu exceeds kMaxWheelsPerVehicleGroupFilter=%u - "
+                            "self-collision exclusion not applied for this wheel",
+                    label, i, kMaxWheelsPerVehicleGroupFilter);
+            }
+            bi.AddBody(wheelBody->GetID(), JPH::EActivation::Activate);
+
+            // --- the strut ---
+            JPH::SixDOFConstraintSettings six;
+            six.mSpace = JPH::EConstraintSpace::WorldSpace;
+            // docs §75: the anchor sits at the WHEEL CENTRE by default, NOT at the chassis mount.
+            // Plan §2.2 says the mount; the shipped build disagreed and the binary is newer. The
+            // wheel centre is what makes the translation limits and the motor target below
+            // coherent as "relative to spawn" - anchoring at the mount would need absolute
+            // [minLen, maxLen] limits instead. wm4_joint_at_mount is the lever back to the plan.
+            const JPH::RVec3 anchor = (cfg.jolt_wm4_joint_at_mount.value != 0) ? worldAttach : wheelCentreWorld;
+            six.mPosition1 = six.mPosition2 = anchor;
+
+            // Frame: X = the axle, Y = chassis forward orthonormalised against it, so Jolt's
+            // Z = X x Y comes out as the strut/kingpin axis. Gram-Schmidt rather than trusting
+            // the two to be perpendicular: they are per-prototype data, and Jolt asserts on a
+            // degenerate frame.
+            const JPH::Vec3 axleWorld = (chassisRot * ws.axleLocal).Normalized();
+            const JPH::Vec3 fwdWorld  = (chassisRot * JPH::Vec3(0.0f, 0.0f, 1.0f)).Normalized();
+            JPH::Vec3 yAxis = fwdWorld - axleWorld * fwdWorld.Dot(axleWorld);
+            yAxis = (yAxis.Length() > 1.0e-3f) ? yAxis.Normalized() : axleWorld.GetNormalizedPerpendicular();
+            six.mAxisX1 = six.mAxisX2 = axleWorld;
+            six.mAxisY1 = six.mAxisY2 = yAxis;
+            // Pyramid, not Cone: Cone symmetrises and couples the two swing limits, and steering
+            // needs an independent asymmetric limit from camber.
+            six.mSwingType = JPH::ESwingType::Pyramid;
+
+            // Translation: the strut slides along Z only.
+            six.MakeFixedAxis(EAx::TranslationX);
+            six.MakeFixedAxis(EAx::TranslationY);
+            const float range = std::max(ws.maxLen - ws.minLen, 0.05f);
+            const float frac  = std::clamp(cfg.jolt_wm4_compress_fraction.value, 0.05f, 0.95f);
+            const float compressHeadroom = frac * range;          // wheel travels UP, toward -Z
+            const float droopHeadroom    = range - compressHeadroom;
+            six.SetLimitedAxis(EAx::TranslationZ, -compressHeadroom, droopHeadroom);
+
+            // A vehicle whose static sag exceeds its compression headroom rests on the bump stop
+            // from the moment it is grounded, which reads as "the suspension is rock hard" rather
+            // than as a config error. Cheap to check, so check rather than assume.
+            const float cornerWeight  = chassisMass * 9.81f / std::max<float>((float) nWheels, 1.0f);
+            const float sagPredicted  = ws.kSusp > 0.0f ? cornerWeight / ws.kSusp : 0.0f;
+            if (sagPredicted > compressHeadroom) {
+                LOG_WARNING("docs §60 (%s): wheel %zu predicted static sag %.3fm EXCEEDS compression "
+                            "headroom %.3fm (range %.3f, fraction %.2f) - it will rest on the bump stop once grounded",
+                    label, i, (double) sagPredicted, (double) compressHeadroom, (double) range, (double) frac);
+            }
+
+            // The spring is a translation motor in Position mode targeting the spawn offset, so
+            // sag emerges physically instead of being placed. Jolt deactivates a Position motor
+            // whose stiffness is zero, so a prototype with no usable CFM would silently lose its
+            // spring - guarded rather than trusted.
+            if (ws.kSusp > 0.0f) {
+                six.mMotorSettings[EAx::TranslationZ].mSpringSettings.mMode = JPH::ESpringMode::StiffnessAndDamping;
+                six.mMotorSettings[EAx::TranslationZ].mSpringSettings.mStiffness = ws.kSusp;
+                six.mMotorSettings[EAx::TranslationZ].mSpringSettings.mDamping   = ws.cSusp;
+                // Motor force limits default to +-FLT_MAX. Bound them: a suspension that can pull
+                // with unbounded force is how a solver blow-up gets laundered into "stiff spring".
+                six.mMotorSettings[EAx::TranslationZ].SetForceLimit(4.0f * ws.kSusp * range);
+            }
+
+            // Rotation: all three locked at step 2. Steps 5 and 6 open RotationX (spin, the twist)
+            // and RotationZ (steer, the swing) behind wm4_spin and wm4_steer. The assignment is
+            // not interchangeable: swing-twist decomposition is R = R_swing * R_twist, so steering
+            // must be the swing and spin the twist, and the reverse is kinematically wrong.
+            six.MakeFixedAxis(EAx::RotationX);
+            six.MakeFixedAxis(EAx::RotationY);
+            six.MakeFixedAxis(EAx::RotationZ);
+
+            JPH::Constraint* c = six.Create(*chassisBody, *wheelBody);  // body 1 = chassis, body 2 = wheel
+            physics->AddConstraint(c);
+            if (ws.kSusp > 0.0f) {
+                JPH::SixDOFConstraint* sc = static_cast<JPH::SixDOFConstraint*>(c);
+                sc->SetMotorState(EAx::TranslationZ, JPH::EMotorState::Position);
+                sc->SetTargetPositionCS(JPH::Vec3::sZero());  // return to the spawn offset
+            }
+
+            state.wheelBodies.push_back(wheelBody->GetID());
+            state.wheelConstraints.push_back(c);
+            state.wmDiscInertiaX.push_back(halfMR2);
+            state.wmDiscInertiaR.push_back(0.5f * halfMR2);
+
+            LOG_INFO("docs §75: constraint frame (%s) w=%zu axle.fwd=%+.4f (%.2f deg off perpendicular) | "
+                     "anchorOffsetFromWheelCentre=%.4f m (restLen)",
+                label, i, (double) axleWorld.Dot(fwdWorld),
+                (double) (std::asin(std::min(std::fabs(axleWorld.Dot(fwdWorld)), 1.0f)) * 57.29578f),
+                (double) JPH::Vec3(wheelCentreWorld - worldAttach).Length());
+        }
+
+        // docs §95.4/§96: take the wheel bodies' mass back OUT of the chassis, so the shadow's
+        // total matches ODE's instead of exceeding it by the whole unsprung mass. Mass and
+        // inertia are scaled by the SAME factor: the chassis shape has not changed, only how much
+        // matter it represents, so its tensor is linear in mass. Done as a post-pass rather than
+        // at CreateBody so the compound-derived tensor keeps its SHAPE - Jolt computed that
+        // correctly, it was only the magnitude that was wrong.
+        float chassisMassFinal = chassisMass;
+        if (cfg.jolt_wm4_chassis_mass_excl_wheels.value != 0 && totalWheelMass > 0.0f) {
+            if (totalWheelMass < chassisMass * 0.9f) {
+                const float scale = (chassisMass - totalWheelMass) / chassisMass;
+                JPH::MotionProperties* mp = chassisBody->GetMotionProperties();
+                mp->SetInverseMass(mp->GetInverseMass() / scale);
+                mp->SetInverseInertia(mp->GetInverseInertiaDiagonal() / scale, mp->GetInertiaRotation());
+                chassisMassFinal = chassisMass - totalWheelMass;
+            } else {
+                // Refuse rather than drive the chassis toward zero mass: a vehicle whose wheels
+                // claim >=90% of its total is either bad data or the mass floor biting hard, and
+                // silently producing a near-massless chassis is how a solver blow-up gets
+                // laundered into "the fix made it unstable".
+                LOG_WARNING("docs §95.4 (%s): wheel mass %.1f is >=90%% of vehicle mass %.1f - NOT "
+                            "subtracting; the shadow stays heavier than ODE for this vehicle",
+                    label, (double) totalWheelMass, (double) chassisMass);
+            }
+        }
+
+        // The engagement check is inside the line: chassisMassFinal + wheelMass must equal
+        // chassisMass, or the subtraction did not happen.
+        LOG_INFO("docs §58 (%s): mode 4 - built %zu wheel bodies + SixDOF constraints (chassisMass=%.1f, massFloor=%.2f)"
+                 " | docs §95.4 wheelMass=%.1f chassisMassFinal=%.1f total=%.1f",
+            label, state.wheelBodies.size(), (double) chassisMass, (double) massFloor,
+            (double) totalWheelMass, (double) chassisMassFinal, (double) (chassisMassFinal + totalWheelMass));
+    }
+
     static bool BuildShadow(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label, uint32_t collisionGroupId) {
         const uint32_t numWheels = vehicle->GetNumWheels();
         if (numWheels == 0) {
@@ -1448,7 +1741,13 @@ namespace kraken::fix::joltshadow {
         // (the file's hard rule, from a real worker-thread crash) - it's simply never activating
         // it; safe. Everything before this point (chassis body/shape/mass, wheel settings) is
         // shared with the normal path.
-        state.wheelModelMode = (kraken::Config::Instance().jolt_wheelmodel.value == 2);
+        // docs §58 (Этап 1, шаг 2): mode 4 is mode 2 PLUS real wheel bodies. Both flags are true
+        // for it, and they only diverge at step 4 when the forces move off the chassis and onto
+        // those bodies - until then the chassis force path is byte-for-byte the mode-2 one, which
+        // is what keeps step 2's effect on the vehicle observable rather than tangled.
+        const uint32_t wheelModelSetting = kraken::Config::Instance().jolt_wheelmodel.value;
+        state.wheelModelMode = (wheelModelSetting == 2 || wheelModelSetting == 4);
+        state.wheelBodyMode  = (wheelModelSetting == 4);
         if (!state.wheelModelMode) {
             physics->AddConstraint(state.constraint);
             physics->AddStepListener(state.constraint);
@@ -1470,6 +1769,15 @@ namespace kraken::fix::joltshadow {
         }
 
         bodyInterface.AddBody(state.bodyId, JPH::EActivation::Activate);
+
+        // docs §58 (Этап 1, шаг 2): after the chassis is in the world (the SixDOF needs both
+        // bodies live) and after InitWheelModelSuspension has filled wmRestLen, which is what
+        // places each wheel body. Both preconditions are why this sits here and not earlier.
+        if (state.wheelBodyMode) {
+            JPH::Body* chassisForWheels = physics->GetBodyLockInterfaceNoLock().TryGetBody(state.bodyId);
+            if (chassisForWheels != nullptr)
+                BuildWheelBodies(physics, chassisForWheels, state, label, collisionGroupId);
+        }
 
         ++g_shadowGeneration;
         state.builtGeneration = g_tuningGeneration;
