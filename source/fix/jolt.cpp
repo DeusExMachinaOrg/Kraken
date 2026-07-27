@@ -72,7 +72,19 @@ namespace kraken::fix::jolt {
         // vehicles' bodies or kinematic mirrors (which share MOVING) - a proxy sphere shoving a
         // neighboring vehicle around would be its own new bug, not a fix.
         static constexpr JPH::ObjectLayer WHEEL_PROXY = 3;
-        static constexpr JPH::ObjectLayer NUM_LAYERS  = 4; // BPLayerInterfaceImpl's array size - WHEEL_QUERY (2) is query-only and excluded, but WHEEL_PROXY (3) is a real body layer and needs a slot
+        // docs §58 (Этап 1, шаг 2): the real wheel BODIES. Unlike WHEEL_PROXY, which only ever
+        // braces against terrain, a real wheel has to collide with everything a wheel can hit -
+        // terrain AND other vehicles - so it reaches both broad-phase layers, like MOVING.
+        //
+        // It is a separate layer from MOVING rather than a reuse of it purely so the filter stays
+        // cheap to change: wheel-vs-wheel and wheel-vs-chassis of the SAME vehicle are excluded by
+        // the collision GROUP (joltshadow.cpp's GetWheelGroupFilter), not by the layer, so the
+        // layer only has to answer the coarse question. Plan §6 "Риск островов" notes the cost of
+        // letting WHEEL see MOVING: two vehicles can merge into one simulation island through
+        // their wheels. That is accepted deliberately - wheels that cannot hit another vehicle
+        // would be worse than a large island.
+        static constexpr JPH::ObjectLayer WHEEL       = 4;
+        static constexpr JPH::ObjectLayer NUM_LAYERS  = 5; // BPLayerInterfaceImpl's array size - WHEEL_QUERY (2) is query-only and excluded, but WHEEL_PROXY (3) and WHEEL (4) are real body layers and need slots
     }
 
     namespace BroadPhaseLayers {
@@ -87,6 +99,7 @@ namespace kraken::fix::jolt {
             m_objectToBroadPhase[Layers::NON_MOVING] = BroadPhaseLayers::NON_MOVING;
             m_objectToBroadPhase[Layers::MOVING]     = BroadPhaseLayers::MOVING;
             m_objectToBroadPhase[Layers::WHEEL_PROXY] = BroadPhaseLayers::MOVING; // it's a real dynamic body, just a restricted-collision one
+            m_objectToBroadPhase[Layers::WHEEL]       = BroadPhaseLayers::MOVING; // docs §58: a real dynamic wheel body
         }
 
         JPH::uint GetNumBroadPhaseLayers() const override {
@@ -117,6 +130,7 @@ namespace kraken::fix::jolt {
                 case Layers::MOVING:      return true;
                 case Layers::WHEEL_QUERY: return layer2 == BroadPhaseLayers::NON_MOVING;
                 case Layers::WHEEL_PROXY: return layer2 == BroadPhaseLayers::NON_MOVING;
+                case Layers::WHEEL:       return true; // docs §58: terrain AND other vehicles
                 default:                  return false;
             }
         }
@@ -130,10 +144,16 @@ namespace kraken::fix::jolt {
                 // WHEEL_PROXY's own case below) since it's unconfirmed whether Jolt always
                 // queries this filter with the same (object1, object2) order - safer to make
                 // the NON_MOVING/WHEEL_PROXY relationship symmetric in both directions.
-                case Layers::NON_MOVING:  return object2 == Layers::MOVING || object2 == Layers::WHEEL_PROXY;
+                case Layers::NON_MOVING:  return object2 == Layers::MOVING || object2 == Layers::WHEEL_PROXY
+                                              || object2 == Layers::WHEEL; // docs §58: same symmetry hedge as WHEEL_PROXY above
                 case Layers::MOVING:      return true;
                 case Layers::WHEEL_QUERY: return object2 == Layers::NON_MOVING;
                 case Layers::WHEEL_PROXY: return object2 == Layers::NON_MOVING;
+                // docs §58: a real wheel collides with terrain, with other vehicles, and with
+                // other vehicles' wheels. Its OWN vehicle's chassis and sibling wheels are
+                // excluded by the collision group, not here - see GetWheelGroupFilter.
+                case Layers::WHEEL:       return object2 == Layers::NON_MOVING || object2 == Layers::MOVING
+                                              || object2 == Layers::WHEEL;
                 default:                  return false;
             }
         }

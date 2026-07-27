@@ -116,15 +116,26 @@ namespace kraken::fix::joltshadow {
     // GroupFilterTable.h), so a DIFFERENT vehicle's chassis/proxies (different GroupID) still
     // always collide normally, unaffected by this table - only a vehicle's own chassis-vs-own-
     // proxy pairs are ever suppressed.
+    //
+    // docs §58 (Этап 1, шаг 2): the inner loop below is NEW and the table is now shared with the
+    // real wheel bodies, so the name lost its "proxy". A wheel PROXY only ever braces against
+    // terrain (Layers::WHEEL_PROXY reaches NON_MOVING only), so two proxies of one vehicle could
+    // never meet and chassis-vs-proxy was the only pair worth suppressing. Real wheel bodies sit
+    // on Layers::WHEEL and DO see each other, and at full droop or under a hard steer two wheels
+    // of the same vehicle can overlap - so every wheel-vs-sibling-wheel pair has to be disabled
+    // too, not just chassis-vs-wheel.
     static constexpr uint32_t kMaxWheelsPerVehicleGroupFilter = 16; // generous upper bound - largest real vehicle seen so far (6-wheel truck) is well under this
-    static JPH::GroupFilterTable* g_wheelProxyGroupFilter = nullptr; // built once, shared/leaked forever across every rebuild - same convention as g_collisionTester below
-    static JPH::GroupFilterTable* GetWheelProxyGroupFilter() {
-        if (g_wheelProxyGroupFilter == nullptr) {
-            g_wheelProxyGroupFilter = new JPH::GroupFilterTable(kMaxWheelsPerVehicleGroupFilter + 1);
-            for (uint32_t i = 1; i <= kMaxWheelsPerVehicleGroupFilter; ++i)
-                g_wheelProxyGroupFilter->DisableCollision(0, i);
+    static JPH::GroupFilterTable* g_wheelGroupFilter = nullptr; // built once, shared/leaked forever across every rebuild - same convention as g_collisionTester below
+    static JPH::GroupFilterTable* GetWheelGroupFilter() {
+        if (g_wheelGroupFilter == nullptr) {
+            g_wheelGroupFilter = new JPH::GroupFilterTable(kMaxWheelsPerVehicleGroupFilter + 1);
+            for (uint32_t i = 1; i <= kMaxWheelsPerVehicleGroupFilter; ++i) {
+                g_wheelGroupFilter->DisableCollision(0, i); // chassis (subgroup 0) vs each wheel slot
+                for (uint32_t j = i + 1; j <= kMaxWheelsPerVehicleGroupFilter; ++j)
+                    g_wheelGroupFilter->DisableCollision(i, j); // wheel vs sibling wheel
+            }
         }
-        return g_wheelProxyGroupFilter;
+        return g_wheelGroupFilter;
     }
 
     // Not in extern/hta's ode.hpp yet - declared locally rather than editing that submodule.
@@ -542,7 +553,7 @@ namespace kraken::fix::joltshadow {
     // bodies/constraints on a vehicle swap caused a real, repeatable worker-thread crash
     // earlier this session).
     //
-    // Self-collision against the chassis is excluded explicitly via GetWheelProxyGroupFilter
+    // Self-collision against the chassis is excluded explicitly via GetWheelGroupFilter
     // (docs §38.1/§37 item 3), not just geometric separation. Gated behind [jolt_harness]
     // wheel_proxy (default on) so it can be disabled without a rebuild if it ever needs to be
     // ruled out live. Takes the base JPH::WheelSettings (not the WV-derived type) since it's
@@ -585,10 +596,10 @@ namespace kraken::fix::joltshadow {
         bodyInterface.AddBody(proxyBody->GetID(), JPH::EActivation::Activate);
 
         // docs §37 item 3: explicit exclusion, hardening the geometric-only safeguard below -
-        // see GetWheelProxyGroupFilter's comment. Falls back to geometric-only separation
+        // see GetWheelGroupFilter's comment. Falls back to geometric-only separation
         // (silently, but logged) if wheelIndex somehow exceeds the table's generous slot count.
         if (wheelIndex + 1 <= kMaxWheelsPerVehicleGroupFilter) {
-            proxyBody->SetCollisionGroup(JPH::CollisionGroup(GetWheelProxyGroupFilter(), collisionGroupId, wheelIndex + 1));
+            proxyBody->SetCollisionGroup(JPH::CollisionGroup(GetWheelGroupFilter(), collisionGroupId, wheelIndex + 1));
         } else {
             LOG_WARNING("Shadow (%s): wheel=%u exceeds kMaxWheelsPerVehicleGroupFilter=%u - self-collision exclusion not applied for this wheel, relying on geometric separation only",
                 label, wheelIndex, kMaxWheelsPerVehicleGroupFilter);
@@ -1102,8 +1113,8 @@ namespace kraken::fix::joltshadow {
         // technique used for the kinematic mirrors below (MirrorOtherVehicles).
         body->SetUserData(reinterpret_cast<uint64_t>(vehicle));
         // docs §37 item 3: chassis is always subgroup 0 within this vehicle's own GroupID - see
-        // GetWheelProxyGroupFilter's comment above.
-        body->SetCollisionGroup(JPH::CollisionGroup(GetWheelProxyGroupFilter(), collisionGroupId, 0));
+        // GetWheelGroupFilter's comment above.
+        body->SetCollisionGroup(JPH::CollisionGroup(GetWheelGroupFilter(), collisionGroupId, 0));
 
         // docs §27: read once here (constant for the whole body, not per-wheel) - used by the
         // per-wheel suspension-frequency derivation below. Valid immediately after CreateBody:
@@ -4044,7 +4055,7 @@ namespace kraken::fix::joltshadow {
         for (size_t i = 0; i < aiShadowCount; ++i) {
             std::snprintf(aiLabels[i], sizeof(aiLabels[i]), "ai%zu", i);
             // docs §37 item 3: player is always GroupID 0 (above); AI shadow slot i gets i+1 -
-            // a stable, distinct GroupID per vehicle so GetWheelProxyGroupFilter's shared table
+            // a stable, distinct GroupID per vehicle so GetWheelGroupFilter's shared table
             // only ever suppresses a vehicle's own chassis-vs-own-proxy pairs, never cross-
             // vehicle ones (see its comment).
             aiLive[i] = UpdateOneVehiclePreStep(g_aiTargets[i], g_aiShadows[i], aiLabels[i], static_cast<uint32_t>(i) + 1, elapsedTime);
