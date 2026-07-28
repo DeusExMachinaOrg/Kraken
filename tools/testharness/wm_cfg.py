@@ -100,6 +100,10 @@ FINGERPRINTS = {
     "Molokovoz01": ("mass=167.0", "chassis=3.50x2.50x9.00"),
     "Scout01":     ("mass=100.0", "chassis=4.00x1.00x2.00"),
     "Ural01":      ("mass=303.0", "chassis=5.00x3.00x12.00"),
+    # docs §110 (шаг 7): the step-7 acceptance vehicle. Captured with discover_vehicles.py on the
+    # same launch as Molokovoz01 above, not read off one run's log by eye - the strict check only
+    # means anything if the value it checks against came from the tool built to produce it.
+    "Bug01":       ("mass=132.0", "chassis=3.00x2.00x8.00"),
 }
 PIN_FINGERPRINT = FINGERPRINTS.get(PIN_VEHICLE, MOLOKOVOZ_FINGERPRINT)
 

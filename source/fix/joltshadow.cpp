@@ -112,6 +112,23 @@ namespace kraken::fix::joltshadow {
     // vehicle; its own chassis and sibling wheels are excluded by the collision GROUP instead.
     static constexpr JPH::ObjectLayer kWheelLayer = 4;
 
+    // docs §110 (Этап 1, шаг 7): counters for the three LEGACY paths step 7 is meant to take out
+    // of the hot path - the wheel proxies, and the two per-wheel CollideShape queries.
+    //
+    // Instrumentation rather than an assertion on purpose. Every one of these sites is guarded by
+    // `state.constraint == nullptr`, and mode 4 builds no VehicleConstraint, so reading the code
+    // says they are already dead there. That is exactly the kind of claim this project has been
+    // wrong about before, and "I read the guard" is not a measurement. These count what actually
+    // executed; mode 2 is the POSITIVE CONTROL, because a counter that reads zero for the boring
+    // reason that nothing ever increments it would otherwise pass silently.
+    struct LegacyPathCounters {
+        uint64_t proxyBuilds       = 0;   // BuildWheelProxy bodies actually created
+        uint64_t proxyPassedGuard  = 0;   // TryBuildWheelProxiesOnceSettled past its constraint check
+        uint64_t evalCollideShape  = 0;   // LogWheelModelEval's CollideShape (WHEEL_QUERY layer)
+        uint64_t stepCollideShape  = 0;   // StepWheelModel's CollideShape (mode 2's hot path)
+    };
+    static LegacyPathCounters g_legacyPaths;
+
     // docs §37 item 3: explicit chassis-vs-own-wheel-proxy collision exclusion, hardening
     // BuildWheelProxy's previously sole safeguard (mLimitsMin keeping the proxy geometrically
     // clear of the chassis shape - docs §34.1's known simplification, never proven watertight
@@ -799,6 +816,7 @@ namespace kraken::fix::joltshadow {
         if (kraken::Config::Instance().jolt_wheel_proxy.value == 0)
             return;
 
+        ++g_legacyPaths.proxyBuilds;   // docs §110
         JPH::BodyInterface& bodyInterface = physics->GetBodyInterface();
 
         const float reachLimit = ws->mSuspensionMaxLength + ws->mRadius; // exactly as far as the wheel's own raycast already searches
@@ -887,6 +905,7 @@ namespace kraken::fix::joltshadow {
         if (state.wheelProxiesBuilt || state.constraint == nullptr)
             return;
 
+        ++g_legacyPaths.proxyPassedGuard;   // docs §110: past the constraint guard, i.e. legacy alive
         JPH::BodyInterface& bodyInterface = physics->GetBodyInterface();
 
         // A brand new dynamic body reads a real velocity of exactly 0 before its very first
@@ -2645,6 +2664,7 @@ namespace kraken::fix::joltshadow {
             JPH::CollideShapeSettings csSettings;
             csSettings.mMaxSeparationDistance = tau; // collect near-contacts too, like a soft tyre band
             JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
+            ++g_legacyPaths.evalCollideShape;   // docs §110
             physics->GetNarrowPhaseQuery().CollideShape(
                 &sphere, JPH::Vec3::sReplicate(1.0f), JPH::RMat44::sTranslation(wheelC),
                 csSettings, JPH::RVec3::sZero(), collector, bpFilter, objFilter);
@@ -3454,6 +3474,7 @@ namespace kraken::fix::joltshadow {
             JPH::CollideShapeSettings csSettings;
             csSettings.mMaxSeparationDistance = tau;
             JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
+            ++g_legacyPaths.stepCollideShape;   // docs §110
             physics->GetNarrowPhaseQuery().CollideShape(&sphere, JPH::Vec3::sReplicate(1.0f),
                 JPH::RMat44::sTranslation(wheelC), csSettings, JPH::RVec3::sZero(), collector, bpFilter, objFilter);
 
@@ -5891,6 +5912,22 @@ namespace kraken::fix::joltshadow {
             // docs §54.4 (шаг -1F): same safe window - the step has fully returned, no worker job
             // can still hold a constraint, and we are single-threaded again.
             DrainPendingJoltDestroys();
+
+            // docs §110 (шаг 7): are the legacy paths actually cold? Emitted HERE, once per frame
+            // for the whole process, and NOT from the mode-4 diagnostic block where it started -
+            // that block never runs in mode 2, which would have silenced the positive control and
+            // left "mode 4 reads zero" resting on nothing. The counters are cumulative since
+            // process start, which is what makes "still zero after a full drive" mean something.
+            static uint64_t s_legacyLogFrame = 0;
+            if (++s_legacyLogFrame % 60 == 0) {
+                LOG_INFO("docs §110: legacy paths (cumulative) proxyBuilds=%llu proxyPastGuard=%llu "
+                         "evalCollideShape=%llu stepCollideShape=%llu | mode=%d",
+                    (unsigned long long) g_legacyPaths.proxyBuilds,
+                    (unsigned long long) g_legacyPaths.proxyPassedGuard,
+                    (unsigned long long) g_legacyPaths.evalCollideShape,
+                    (unsigned long long) g_legacyPaths.stepCollideShape,
+                    (int) kraken::Config::Instance().jolt_wheelmodel.value);
+            }
         }
 
         // --- Pass 3 (post-step) ---
