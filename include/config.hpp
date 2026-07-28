@@ -162,6 +162,12 @@ namespace kraken {
         // _KeepGearBox - is still not ported. Porting a SUBSET of the per-frame layer is not a
         // partial improvement, it is a bias. Turn this on together with the governor, not before.
         ConfigValue<uint32_t>                 jolt_wm4_assists;
+        // docs §102 (§95.3 ported): the speed governor _KeepGearBox applies before handing torque
+        // to the joint - above GetMaxSpeed() (player/attacking) or m_cruisingSpeed (AI), measured
+        // on the WHEEL SURFACE speed and only while the driver is not braking, the drive is cut to
+        // zero. Its own lever rather than a part of wm4_assists, so the two can be A/B'd
+        // separately - §101 measured that the assists without this one are a net loss.
+        ConfigValue<uint32_t>                 jolt_wm4_governor;
         // docs §39: wheelmodel_core (Pacejka contact) params - same [wheelmodel] names as spring_wheel so tuning transfers.
         ConfigValue<float>                    jolt_wm_tyre_stiffness;
         ConfigValue<float>                    jolt_wm_tyre_thickness;

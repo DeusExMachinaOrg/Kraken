@@ -370,6 +370,10 @@ namespace kraken::fix::joltshadow {
         float                           wmAssistDownForce = 0.0f;
         float                           wmAssistTorque    = 0.0f;
         float                           wmAssistHorizVel  = 0.0f;
+        // docs §102: the speed governor's state, for the log.
+        float                           wmSpeedLimit   = 0.0f;
+        float                           wmSurfaceSpeed = 0.0f;
+        bool                            wmGoverned     = false;
         // docs §59: the parallel harvest listener for this vehicle. Registered on first build and
         // then re-pointed rather than re-registered - see BuildWheelBodies for why the OLD one is
         // deliberately left registered on a rebuild instead of being removed.
@@ -2628,6 +2632,11 @@ namespace kraken::fix::joltshadow {
         float    perWheel    = 0.0f;  // driveTorque / nDriven - mode 2 does NOT divide
         float    omegaTarget = 0.0f;  // the wheel speed at which the engine would hit its redline
         uint32_t nDriven     = 0;
+        // docs §102: the speed governor's inputs and its verdict, kept for the log so a run that
+        // is slower than expected can be told from one that is being governed.
+        float    speedLimit   = 0.0f;
+        float    surfaceSpeed = 0.0f;
+        bool     governed     = false;
     };
 
     static float StepWheelModelGearbox(hta::ai::Vehicle* vehicle, ShadowState& state, float dt,
@@ -2684,6 +2693,44 @@ namespace kraken::fix::joltshadow {
             const float redline = std::max(vehicle->m_maxEngineRpm, 1.0f);
             const float taper = std::clamp((redline - rpmAtGear) / (0.1f * redline), 0.0f, 1.0f);
             wheelTorque *= taper;
+        }
+
+        // docs §102 (§95.3 ported): the SPEED GOVERNOR. Mode 4 only - it hangs off `out`, so mode
+        // 2's call is still the call it always was.
+        //
+        // _KeepGearBox (RVA 0x1e0e40, vehicle.cpp:6532-6547) does this before handing torque to
+        // the joint, and every piece of it is read from the disassembly:
+        //   limit = m_bIsControlledByPlayer(+0x2dc) ? GetMaxSpeed()
+        //         : m_attackStatus(+0x338) == 1     ? GetMaxSpeed()
+        //                                          : m_cruisingSpeed(+0x214)
+        //   if (m_turboThrottleTime(+0x1cc) > 0) limit *= m_turboThrottleValue(+0x1d0)
+        //   if (speed - limit > 0.1 && m_brake <= proto->m_selfBrakingCoeff + 1e-4) drive = 0
+        //
+        // Two details that are easy to get wrong and are NOT guesses. First, `speed` is the WHEEL
+        // SURFACE speed |m_averageWheelAVel| * R (lines 6519-6521 read the first wheel's
+        // Sphere::GetRadius and multiply), not the chassis' linear velocity - so a vehicle whose
+        // wheels are spinning is governed even if it is going nowhere. Second, the cut only
+        // applies when the driver is NOT braking: m_brake at or below the prototype's idle
+        // self-braking floor. Constants 0.1 @0x5e599c and 1e-4 @0x5e5b40.
+        //
+        // This matters beyond fidelity: §101 measured that porting the §94 downforce WITHOUT this
+        // makes divergence worse, because the assists add grip and nothing takes the speed back.
+        if (out != nullptr) {
+            const hta::ai::VehiclePrototypeInfo* proto = vehicle->GetPrototypeInfo();
+            float speedLimit = (vehicle->m_bIsControlledByPlayer || (int) vehicle->m_attackStatus == 1)
+                ? vehicle->GetMaxSpeed()
+                : vehicle->m_cruisingSpeed;
+            if (vehicle->m_turboThrottleTime > 0.0f)
+                speedLimit *= vehicle->m_turboThrottleValue;
+            // The same first wheel the reference measures against.
+            const float govR = state.wheelSetup.empty() ? 0.0f : state.wheelSetup[0].radius;
+            const float surfSpeed = avgOmega * govR;   // avgOmega is already |omega|
+            const float brakeFloor = (proto != nullptr) ? proto->m_selfBrakingCoeff + 1.0e-4f : 1.0e-4f;
+            out->speedLimit  = speedLimit;
+            out->surfaceSpeed = surfSpeed;
+            out->governed = (surfSpeed - speedLimit > 0.1f) && (vehicle->m_brake <= brakeFloor);
+            if (out->governed && kraken::Config::Instance().jolt_wm4_governor.value != 0)
+                wheelTorque = 0.0f;
         }
 
         if (out != nullptr) {
@@ -2861,9 +2908,12 @@ namespace kraken::fix::joltshadow {
 
         GearboxOut gb;
         StepWheelModelGearbox(vehicle, state, dt, omegaNow, &gb);
-        state.wmDriveTorque = gb.driveTorque;
-        state.wmPerWheel    = gb.perWheel;
-        state.wmDrivenCount = gb.nDriven;
+        state.wmDriveTorque  = gb.driveTorque;
+        state.wmPerWheel     = gb.perWheel;
+        state.wmDrivenCount  = gb.nDriven;
+        state.wmSpeedLimit   = gb.speedLimit;
+        state.wmSurfaceSpeed = gb.surfaceSpeed;
+        state.wmGoverned     = gb.governed;
 
         const float mu    = state.stepListener != nullptr ? state.stepListener->params.mu : 1.0f;
         const float gAbs  = std::max(std::fabs(kraken::Config::Instance().gravity.value), 0.1f);
@@ -4466,6 +4516,21 @@ namespace kraken::fix::joltshadow {
                         (double) state.wmAssistTorque,
                         (double) (vehicle->GetPrototypeInfo() ? vehicle->GetPrototypeInfo()->m_pressingForce : 0.0f),
                         (double) vehicle->m_driftCoeff, (double) vehicle->_GetCabinControlCoeff());
+                    // docs §102: the speed governor. surfaceSpeed is the WHEEL SURFACE speed the
+                    // reference compares against, not the chassis velocity - both are printed so
+                    // the difference is visible rather than assumed, and so the units of
+                    // GetMaxSpeed() can be read off a real run instead of guessed at.
+                    LOG_INFO("docs §102: governor (%s) on=%d src=%s limit=%.1f surfaceSpeed=%.1f "
+                             "chassisSpeed=%.1f cut=%d | brake=%.3f selfBrake=%.3f turboT=%.2f",
+                        label, (int) kraken::Config::Instance().jolt_wm4_governor.value,
+                        vehicle->m_bIsControlledByPlayer ? "player"
+                            : ((int) vehicle->m_attackStatus == 1 ? "attack" : "cruising"),
+                        (double) state.wmSpeedLimit, (double) state.wmSurfaceSpeed,
+                        (double) kraken::fix::jolt::GetPhysicsSystem()->GetBodyInterface()
+                                     .GetLinearVelocity(state.bodyId).Length(),
+                        state.wmGoverned ? 1 : 0, (double) vehicle->m_brake,
+                        (double) (vehicle->GetPrototypeInfo() ? vehicle->GetPrototypeInfo()->m_selfBrakingCoeff : 0.0f),
+                        (double) vehicle->m_turboThrottleTime);
                 }
                 // docs §68 (Этап 1, шаг 6): steering, per wheel. Emitted for UNSTEERED wheels too,
                 // and that is the point: their cap prints as FLT_MAX, which is how the log proves
