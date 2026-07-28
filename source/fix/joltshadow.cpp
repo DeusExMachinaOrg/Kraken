@@ -1119,11 +1119,24 @@ namespace kraken::fix::joltshadow {
             JPH::Body* body   = nullptr;
             float      radius = 0.3f;
             float      tau    = 0.01f;
+            // docs §63 / plan §3.5: the two inputs whose MEANING changes in mode 4. `mass` is the
+            // wheel BODY's mass, not the per-corner sprung mass mode 2 passed, and it must be
+            // bit-identical to what BodyCreationSettings got - it feeds c_t = 2*zeta*sqrt(k_t*m)
+            // and capLat inside the core. `inertia` is the real disc inertia, not the flat
+            // wheelmodel.wheel_inertia = 30.0 mode 2 used; the ~10x drop rescales capPar.
+            float      mass    = 10.0f;
+            float      inertia = 1.0f;
+            JPH::Vec3  axleLocal{1.0f, 0.0f, 0.0f};
+            bool       driven  = false;
         };
         JPH::Body* chassis = nullptr;
         uint32_t   slot    = 0;
         uint32_t   wheelCount = 0;
         WheelTick  wheels[kMaxHarvestWheels];
+        // Snapshotted on the main thread at build time: the listener must not reach into the
+        // config singleton from a worker, and a value that changed mid-step would make the two
+        // halves of one force disagree.
+        kraken::fix::wheelmodel::WMParams params;
 
         // Diagnostics for the §59/§63 line, written here and read by the main thread after
         // Update() has fully returned. Plain values, not atomics: only this listener writes them,
@@ -1132,17 +1145,26 @@ namespace kraken::fix::joltshadow {
         uint32_t lastContactPoints     = 0;
         uint32_t lastOverflow          = 0;
         uint32_t lastSurvived          = 0;
+        float    lastMaxNormalF        = 0.0f;
 
         void OnStep(const JPH::PhysicsStepListenerContext& inContext) override {
-            (void) inContext;   // step 3 applies no force, so dt is unused until step 4
+            namespace wm = kraken::fix::wheelmodel;
+            const float dt = std::max(inContext.mDeltaTime, 1.0e-6f);
             // Read the buffer the PREVIOUS step's narrow phase filled - see StepPhysicsProfiled
             // for why the parity is advanced on the main thread and why this is the other one.
             const uint32_t readParity = (g_harvestStep.load(std::memory_order_relaxed) ^ 1u) & 1u;
+            const JPH::Vec3 chassisAngVel = (chassis != nullptr) ? chassis->GetAngularVelocity() : JPH::Vec3::sZero();
 
             uint32_t withContact = 0, points = 0, overflow = 0, survived = 0;
+            float    maxNormalF = 0.0f;
             for (uint32_t w = 0; w < wheelCount && w < kMaxHarvestWheels; ++w) {
                 const WheelTick& wt = wheels[w];
                 if (wt.body == nullptr)
+                    continue;
+                // AddForce on a sleeping body is a no-op, so an ungated loop either wakes every
+                // vehicle every step or silently stops driving one that fell asleep. Neither
+                // failure announces itself.
+                if (!wt.body->IsActive())
                     continue;
                 WheelHarvest& buf = g_wheelHarvest[readParity][slot][w];
                 const uint32_t n    = buf.count.load(std::memory_order_relaxed);
@@ -1154,7 +1176,17 @@ namespace kraken::fix::joltshadow {
                 points += n;
 
                 const JPH::RVec3 centre = wt.body->GetCenterOfMassPosition();
-                for (uint32_t r = 0; r < used; ++r) {
+                // The RELATIVE spin about the axle. Relative, not absolute: a chassis yawing under
+                // the wheel would otherwise read as wheel rotation and invent slip out of the
+                // vehicle's own turn. The same omega must be used both here and in the v_p
+                // subtraction below, or the two halves describe different wheels.
+                const JPH::Vec3 axleWorld = (wt.body->GetRotation() * wt.axleLocal).Normalized();
+                const float omega = (wt.body->GetAngularVelocity() - chassisAngVel).Dot(axleWorld);
+
+                wm::WMContact cts[kMaxHarvestRecs];
+                wm::WMGeom    gm[kMaxHarvestRecs];
+                uint32_t      nRec = 0;   // NOT `n` - that is the raw harvested count above
+                for (uint32_t r = 0; r < used && nRec < kMaxHarvestRecs; ++r) {
                     const WheelHarvestRec& rec = buf.rec[r];
                     // Only the TYRE sub-shape feeds the band. A RIM record is harvested and
                     // counted, but must never produce band force: the solver already resolves the
@@ -1169,11 +1201,83 @@ namespace kraken::fix::joltshadow {
                     if (penRaw <= 0.0f)
                         continue;
                     ++survived;
-                    // Step 4 clamps this to tau and turns it into force here. Deliberately not
-                    // doing that yet: step 3's contract is that the harvest is proven to carry
-                    // real contacts before anything acts on them.
+                    cts[nRec].p = wm::vec3{ rec.point.GetX(), rec.point.GetY(), rec.point.GetZ() };
+                    cts[nRec].n = wm::vec3{ rec.normal.GetX(), rec.normal.GetY(), rec.normal.GetZ() };
+                    // The tau clamp lives HERE, at the seam, not inside the core - which is what
+                    // makes the core's own delta_hard = max(0, pen - tau) identically zero and
+                    // hard_core_lambda dead, exactly as plan §5 predicted.
+                    cts[nRec].depth = std::min(penRaw, wt.tau);
+                    ++nRec;
                 }
+                if (nRec == 0)
+                    continue;
+
+                const wm::vec3 c{ (float) centre.GetX(), (float) centre.GetY(), (float) centre.GetZ() };
+                const wm::vec3 a{ axleWorld.GetX(), axleWorld.GetY(), axleWorld.GetZ() };
+                const wm::vec3 up{ 0.0f, 1.0f, 0.0f };
+                for (uint32_t h = 0; h < nRec; ++h)
+                    gm[h] = wm::ComputeGeom(cts[h], c, up, a, wt.radius, wt.radius);
+                const wm::WMSlots slots = wm::Classify(gm, (int) nRec);
+
+                // docs §63 / plan §3.5: v_p is the wheel body's point velocity MINUS the spin term
+                // the core is about to add back (v_c = v_p + Cross(a*omega, r)). Feeding
+                // GetPointVelocity raw counts the spin twice - SelfTest[5] exists precisely to
+                // catch that, and measures the error at 3069 N on a freely rolling wheel.
+                auto vpAt = [&](const wm::vec3& pt) {
+                    const JPH::RVec3 pw(pt.x, pt.y, pt.z);
+                    const JPH::Vec3  v = wt.body->GetPointVelocity(pw);
+                    const JPH::Vec3  rr(pt.x - c.x, pt.y - c.y, pt.z - c.z);
+                    const JPH::Vec3  spin = (axleWorld * omega).Cross(rr);
+                    const JPH::Vec3  vp = v - spin;
+                    return wm::vec3{ vp.GetX(), vp.GetY(), vp.GetZ() };
+                };
+
+                wm::WMParams P = params;
+                P.inertia = wt.inertia;   // the real disc inertia, not mode 2's flat constant
+
+                auto forceFor = [&](int idx) -> wm::WMForce {
+                    if (idx < 0)
+                        return wm::WMForce();
+                    return wm::GeneralizedContactForce(cts[idx].p, cts[idx].n, gm[idx].pen, gm[idx].wr,
+                        c, a, vpAt(cts[idx].p), omega, wt.radius, wt.tau, wt.mass, dt, P);
+                };
+                const wm::WMForce fG = forceFor(slots.ground);
+                const wm::WMForce fO = forceFor(slots.obstacle);
+                const wm::WMForce fS = forceFor(slots.side);
+
+                // Deliberately NO maxForce cap here. Mode 2 clamps at jolt_wm_max_g * m * g with
+                // m the per-corner SPRUNG mass (~33-42 kg), giving ~2000-2500 N. With m now the
+                // UNSPRUNG mass (~9-11 kg) the same expression collapses to ~530-650 N, which is
+                // below the band's own peak D = mu*k_t*tau = 2400 N - it would clamp ordinary
+                // driving rather than outliers. Plan step 7 scheduled this removal as its own
+                // measured step; in new code "not porting it" and "removing it" are one act, so
+                // step 7 loses that independent variable and the plan needs to say so.
+                auto applyTo = [&](const wm::WMForce& f, int idx) {
+                    if (idx < 0)
+                        return;
+                    const JPH::Vec3 F(f.F.x, f.F.y, f.F.z);
+                    if (!std::isfinite(F.GetX()) || !std::isfinite(F.GetY()) || !std::isfinite(F.GetZ()))
+                        return;
+                    // The NORMAL component, not |F|. The bound this is compared against, k_t*tau,
+                    // is a ceiling on the band's normal force only - friction adds a tangential
+                    // component on top, so |F| = sqrt(Fn^2 + Ft^2) routinely exceeds it with
+                    // nothing wrong. Tracking |F| here made the very first step-4 run report
+                    // "EXCEEDS GEOMETRIC BOUND" at ratio 1.28 on a vehicle that was standing
+                    // perfectly still: an instrument comparing two different quantities, not a
+                    // physics problem. Comparing like with like is what makes the flag mean
+                    // something.
+                    const JPH::Vec3 nrm(cts[idx].n.x, cts[idx].n.y, cts[idx].n.z);
+                    maxNormalF = std::max(maxNormalF, F.Dot(nrm));
+                    // The WHEEL body, not the chassis. The chassis feels the load through the
+                    // SixDOF, and the r x F torque about the wheel's own COM arises on its own
+                    // and two-sidedly - which is the whole point of giving the wheel a body.
+                    wt.body->AddForce(F, JPH::RVec3(cts[idx].p.x, cts[idx].p.y, cts[idx].p.z));
+                };
+                applyTo(fG, slots.ground);
+                applyTo(fO, slots.obstacle);
+                applyTo(fS, slots.side);
             }
+            lastMaxNormalF = maxNormalF;
             lastWheelsWithContact = withContact;
             lastContactPoints     = points;
             lastOverflow          = overflow;
@@ -1442,11 +1546,24 @@ namespace kraken::fix::joltshadow {
         }
         state.stepListener->chassis    = chassisBody;
         state.stepListener->slot       = collisionGroupId;
+        state.stepListener->params     = WheelModelParamsFromConfig();
         state.stepListener->wheelCount = (uint32_t) std::min<size_t>(state.wheelBodies.size(), kMaxHarvestWheels);
         for (uint32_t w = 0; w < state.stepListener->wheelCount; ++w) {
-            state.stepListener->wheels[w].body   = physics->GetBodyLockInterfaceNoLock().TryGetBody(state.wheelBodies[w]);
-            state.stepListener->wheels[w].radius = state.wheelSetup[w].radius;
-            state.stepListener->wheels[w].tau    = state.wheelSetup[w].tau;
+            JPH::Body* wb = physics->GetBodyLockInterfaceNoLock().TryGetBody(state.wheelBodies[w]);
+            state.stepListener->wheels[w].body      = wb;
+            state.stepListener->wheels[w].radius    = state.wheelSetup[w].radius;
+            state.stepListener->wheels[w].tau       = state.wheelSetup[w].tau;
+            state.stepListener->wheels[w].axleLocal = state.wheelSetup[w].axleLocal;
+            state.stepListener->wheels[w].driven    = state.wheelSetup[w].driven;
+            state.stepListener->wheels[w].inertia   = (w < state.wmDiscInertiaX.size()) ? state.wmDiscInertiaX[w] : 1.0f;
+            // docs §63 / plan §3.5: read the mass back OFF THE BODY rather than recomputing it.
+            // The core's c_t = 2*zeta*sqrt(k_t*m) and capLat must use bit-identically the value
+            // the body was created with; recomputing max(unsprungMass, chassisMass/40) here would
+            // be the same arithmetic today and a silent divergence the first time either input
+            // moves - and nothing would report it.
+            state.stepListener->wheels[w].mass = (wb != nullptr)
+                ? 1.0f / std::max(wb->GetMotionProperties()->GetInverseMass(), 1.0e-8f)
+                : 10.0f;
         }
 
         // The engagement check is inside the line: chassisMassFinal + wheelMass must equal
@@ -3617,6 +3734,16 @@ namespace kraken::fix::joltshadow {
         // docs §39.2: wheelmodel APPLY path drives the chassis itself (no VehicleConstraint,
         // no proxy, no constraint driver input) - the forces must be applied BEFORE this frame's
         // single StepPhysicsProfiled (pass 2), so it happens here in the pre-step.
+        // docs §63 (Этап 1, шаг 4): in mode 4 the old chassis force path is switched off ENTIRELY
+        // (plan line 350: «Старый StepWheelModel в режиме 4 отключается целиком»). Until step 3 it
+        // still ran, which is what kept the vehicle standing while the wheel bodies were only
+        // observed; now the forces are applied to those bodies inside VehicleStepListener::OnStep
+        // and running both would support the chassis twice. The wheel bodies also stopped being
+        // sensors at step 3, so the rim is a real contact - a second, parallel support path would
+        // not merely double the load, it would fight the SixDOF.
+        if (state.wheelBodyMode)
+            return true;
+
         if (state.wheelModelMode) {
             // docs §52: StepWheelModel is the dominant main-thread cost in wheelmodel mode
             // (per-wheel CollideShape, serial, one call per vehicle/frame) - profiled separately
@@ -3664,11 +3791,21 @@ namespace kraken::fix::joltshadow {
             // anything acts on them - so a zero here is a pass, not a missing feature. The fields
             // are present now so the line's shape does not change when step 4 fills them.
             if (state.wheelBodyMode && state.stepListener != nullptr) {
+                // bound = k_t * tau is the band's GEOMETRIC ceiling: the tyre sphere can only
+                // penetrate tau before the rim takes over, so no band force above it is physically
+                // reachable. A ratio over 1.0 therefore means the model is producing force the
+                // geometry cannot justify, which is why it is called out in the line rather than
+                // left for someone to divide by hand.
+                const float tau0  = state.wheelSetup.empty() ? 0.0f : state.wheelSetup[0].tau;
+                const float bound = std::max(kraken::Config::Instance().jolt_wm_tyre_stiffness.value, 1.0f) * tau0;
+                const float ratio = bound > 0.0f ? state.stepListener->lastMaxNormalF / bound : 0.0f;
+                const char* over  = (ratio > 1.0f) ? "  *** EXCEEDS GEOMETRIC BOUND ***" : "";
                 LOG_INFO("docs §59/63: harvest (%s) wheelsWithContact=%u contactPoints=%u overflow=%u (of %u)"
                          " | survived=%u maxNormalF=%.0fN bound(k_t*tau)=%.0fN ratio=%.2f%s",
                     label, state.stepListener->lastWheelsWithContact, state.stepListener->lastContactPoints,
                     state.stepListener->lastOverflow, state.stepListener->wheelCount,
-                    state.stepListener->lastSurvived, 0.0, 0.0, 0.0, "");
+                    state.stepListener->lastSurvived, (double) state.stepListener->lastMaxNormalF,
+                    (double) bound, (double) ratio, over);
             }
         }
     }
