@@ -124,6 +124,14 @@ namespace kraken {
         // 167 (+26%), Scout01 106 vs 100 (+6%). Mode 2 builds no wheel bodies and was always
         // correct, which is why docs §86's step-7 comparison was confounded.
         ConfigValue<uint32_t>                 jolt_wm4_chassis_mass_excl_wheels;
+        // docs §67 (Этап 1, шаг 5): the spin degree of freedom. 1 (default, and what the lost
+        // build shipped) makes RotationX a free twist axis and drives it with a TORQUE-LIMITED
+        // VELOCITY MOTOR - the literal semantics of ai::Vehicle::_KeepGearBox, which drives the
+        // ODE Hinge2 through dParamVel2/dParamFMax2. 0 restores the step-4 topology where the
+        // wheel is locked to the chassis about its axle, and is the rollback lever for the whole
+        // step. NOT the same thing as [wheelmodel] own_spin, which gates mode 2's scalar spin
+        // integrator: that one stays, because mode 2 remains the rollback path on every step.
+        ConfigValue<uint32_t>                 jolt_wm4_spin;
         // docs §39: wheelmodel_core (Pacejka contact) params - same [wheelmodel] names as spring_wheel so tuning transfers.
         ConfigValue<float>                    jolt_wm_tyre_stiffness;
         ConfigValue<float>                    jolt_wm_tyre_thickness;

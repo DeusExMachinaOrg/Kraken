@@ -324,6 +324,29 @@ namespace kraken::fix::joltshadow {
         // Ixx is about the axle, Ir about the two radial axes.
         std::vector<float>              wmDiscInertiaX;
         std::vector<float>              wmDiscInertiaR;
+
+        // docs §67 (Этап 1, шаг 5): what the main thread COMMANDED the spin motors this frame,
+        // kept so the post-step pass can print it beside what the solver actually delivered.
+        // Snapshotted rather than re-read: the log line's "| PRE-STEP" is a contract that brake
+        // and handBrake are the values seen BEFORE PhysicsSystem::Update, and re-reading them
+        // after would silently invalidate every trace parsed on that assumption.
+        struct SpinCmd {
+            float target = 0.0f;   // commanded angular velocity in constraint space, SIGNED
+            float limit  = 0.0f;   // commanded mMaxTorqueLimit, a magnitude
+            float cap    = 0.0f;   // the contact torque cap this wheel was given
+            float brakeT = 0.0f;   // commanded SetMaxFriction(RotationX)
+        };
+        std::vector<SpinCmd>            wmSpinCmd;
+        // The dt the commands were issued against. The post-step pass turns an accumulated lambda
+        // into a torque by dividing by it, and reaching for a fresh frame time there would divide
+        // this step's impulse by the next step's duration.
+        float                           lastStepDt      = 1.0f / 60.0f;
+        float                           wmDriveTorque   = 0.0f;  // engine torque at the wheels, before the split
+        float                           wmPerWheel      = 0.0f;  // driveTorque / nDriven
+        uint32_t                        wmDrivenCount   = 0;
+        float                           wmSpinThrottle  = 0.0f;
+        float                           wmSpinBrake     = 0.0f;  // PRE-STEP snapshot
+        bool                            wmSpinHandBrake = false; // PRE-STEP snapshot
         // docs §59: the parallel harvest listener for this vehicle. Registered on first build and
         // then re-pointed rather than re-registered - see BuildWheelBodies for why the OLD one is
         // deliberately left registered on a rebuild instead of being removed.
@@ -1579,20 +1602,54 @@ namespace kraken::fix::joltshadow {
                 six.mMotorSettings[EAx::TranslationZ].SetForceLimit(4.0f * ws.kSusp * range);
             }
 
-            // Rotation: all three locked at step 2. Steps 5 and 6 open RotationX (spin, the twist)
-            // and RotationZ (steer, the swing) behind wm4_spin and wm4_steer. The assignment is
-            // not interchangeable: swing-twist decomposition is R = R_swing * R_twist, so steering
-            // must be the swing and spin the twist, and the reverse is kinematically wrong.
-            six.MakeFixedAxis(EAx::RotationX);
+            // Rotation: RotationY (camber) is locked unconditionally. RotationX (spin, the twist)
+            // opens at step 5 behind wm4_spin; RotationZ (steer, the swing) at step 6. The
+            // assignment is not interchangeable: swing-twist decomposition is R = R_swing *
+            // R_twist, so steering must be the swing and spin the twist, and the reverse is
+            // kinematically wrong.
             six.MakeFixedAxis(EAx::RotationY);
             six.MakeFixedAxis(EAx::RotationZ);
 
+            // docs §67: the sign that carries a game-side angular velocity into constraint space.
+            // DERIVED, never a literal - every quantity crossing this boundary is multiplied by
+            // it, and a hard-coded +1 would be invisible right up until a prototype whose axle
+            // runs the other way drives backwards. The comparison is between the constraint's own
+            // X axis and the axle the CORE uses, which is the one for which t = a x n points
+            // forward (joltshadow.cpp's `up x forward` derivation, and the bug it records).
+            //
+            // Honest note on what this currently proves: mAxisX is built from the same
+            // ws.axleLocal that the core reads, so today the answer is +1 BY CONSTRUCTION, not by
+            // measurement. That is a reason to keep computing it - it turns a future change to
+            // either side into a visible sign flip instead of a silent one - not a reason to
+            // claim the +1 was discovered.
+            const JPH::Vec3 axleCoreWorld = (chassisRot * ws.axleLocal).Normalized();
+            ws.spinSign = (six.mAxisX1.Dot(axleCoreWorld) >= 0.0f) ? +1.0f : -1.0f;
+
+            const bool spinDof = cfg.jolt_wm4_spin.value != 0;
+            if (spinDof) {
+                // Free twist, for EVERY wheel - not only driven ones. A non-driven wheel still has
+                // to roll, and locking it would drag the vehicle on four skids.
+                six.MakeFreeAxis(EAx::RotationX);
+                // Torque limits start at zero and are commanded per frame. Rotational motors act
+                // in the constraint space of BODY 2 (the wheel), so twist = X is the natural axis.
+                six.mMotorSettings[EAx::RotationX].SetTorqueLimit(0.0f);
+            } else {
+                six.MakeFixedAxis(EAx::RotationX);
+            }
+
             JPH::Constraint* c = six.Create(*chassisBody, *wheelBody);  // body 1 = chassis, body 2 = wheel
             physics->AddConstraint(c);
-            if (ws.kSusp > 0.0f) {
+            {
                 JPH::SixDOFConstraint* sc = static_cast<JPH::SixDOFConstraint*>(c);
-                sc->SetMotorState(EAx::TranslationZ, JPH::EMotorState::Position);
-                sc->SetTargetPositionCS(JPH::Vec3::sZero());  // return to the spawn offset
+                if (ws.kSusp > 0.0f) {
+                    sc->SetMotorState(EAx::TranslationZ, JPH::EMotorState::Position);
+                    sc->SetTargetPositionCS(JPH::Vec3::sZero());  // return to the spawn offset
+                }
+                // Velocity mode only for DRIVEN wheels here; a free-roller gets no motor until
+                // something (the handbrake) needs one, and the per-frame code switches it then.
+                // The axis is free either way, so an undriven wheel spins on the tyre force alone.
+                if (spinDof && ws.driven)
+                    sc->SetMotorState(EAx::RotationX, JPH::EMotorState::Velocity);
             }
 
             state.wheelBodies.push_back(wheelBody->GetID());
@@ -2507,14 +2564,30 @@ namespace kraken::fix::joltshadow {
     // a local, explicitly-labelled copy of the exact values read off the binary instead of
     // inventing a new data-binding mechanism for extern/hta just for this one constant.
     static constexpr float kGearRatios[5] = { 4.0f, 2.5f, 1.5f, 1.0f, 0.7f }; // == real GEAR_RATIOS
-    static float StepWheelModelGearbox(hta::ai::Vehicle* vehicle, ShadowState& state, float dt) {
+    // docs §67 (Этап 1, шаг 5): what mode 4 needs out of the gearbox beyond the single torque
+    // mode 2 wanted. Kept as an OUT-param with a default of nullptr so mode 2's call is
+    // byte-for-byte the call it always was - mode 2 is the rollback path on every step of Stage 1,
+    // and a step that quietly changes it has removed the thing it is supposed to fall back to.
+    struct GearboxOut {
+        float    driveTorque = 0.0f;  // engine torque delivered at the wheels, before the split
+        float    perWheel    = 0.0f;  // driveTorque / nDriven - mode 2 does NOT divide
+        float    omegaTarget = 0.0f;  // the wheel speed at which the engine would hit its redline
+        uint32_t nDriven     = 0;
+    };
+
+    static float StepWheelModelGearbox(hta::ai::Vehicle* vehicle, ShadowState& state, float dt,
+                                       const float* omegaOverride = nullptr, GearboxOut* out = nullptr) {
         float sumOmega = 0.0f;
         int   nDriven  = 0;
-        const size_t nw = std::min(state.wmOmega.size(), state.wheelOrder.size());
+        // In mode 4 the spin lives on the bodies and wmOmega is never allocated, so the source of
+        // the average is the caller's array; mode 2 keeps reading its own scalar integrator.
+        const size_t nw = (omegaOverride != nullptr)
+            ? state.wheelOrder.size()
+            : std::min(state.wmOmega.size(), state.wheelOrder.size());
         for (size_t i = 0; i < nw; ++i) {
             const hta::ai::Wheel* hw = state.wheelOrder[i];
             if (hw != nullptr && hw->m_driven) {
-                sumOmega += std::fabs(state.wmOmega[i]);
+                sumOmega += std::fabs((omegaOverride != nullptr) ? omegaOverride[i] : state.wmOmega[i]);
                 ++nDriven;
             }
         }
@@ -2558,7 +2631,175 @@ namespace kraken::fix::joltshadow {
             wheelTorque *= taper;
         }
 
+        if (out != nullptr) {
+            out->driveTorque = wheelTorque;
+            out->nDriven     = (uint32_t) std::max(nDriven, 0);
+            // The split across driven wheels. Mode 2 hands the FULL torque to every wheel, so this
+            // is a real change in delivered torque by a factor of nDriven - it is not in the plan
+            // at all and is visible only because the recovered log has separate driveTorque and
+            // perWheel fields. The log is newer than the plan.
+            out->perWheel    = wheelTorque / (float) std::max(nDriven, 1);
+            // The exact inverse of the RPM relation above: the wheel speed at which the engine
+            // would sit on its own redline in the gear it is now in. The gear-4 taper deliberately
+            // does NOT appear here - it shapes torque, not the servo's target, and folding it in
+            // would quietly lower top speed in top gear only.
+            const float denom = gearRatio * diffRatio * kRpmScale;
+            out->omegaTarget  = (std::fabs(denom) > 1.0e-6f)
+                ? std::max(vehicle->m_maxEngineRpm, 0.0f) / denom
+                : 0.0f;
+        }
+
         return wheelTorque;
+    }
+
+    // docs §67 (Этап 1, шаг 5): the per-frame spin command. MAIN THREAD, before
+    // PhysicsSystem::Update, from live game fields - nothing here may run inside the step listener
+    // or a contact callback.
+    //
+    // The drive is a TORQUE-LIMITED VELOCITY MOTOR, not an explicit torque. That is not a
+    // preference: ai::Vehicle::_KeepGearBox (RVA 0x1e0e40) drives the ODE Hinge2 through
+    // dParamVel2 / dParamFMax2, which is exactly a velocity servo with a force cap, so the motor
+    // is the port and the explicit-torque integrator in StepWheelModel is mode 2's own thing.
+    // Porting THAT would drag kMaxOmega, react_scale and the manual spin reaction back in with it.
+    static void UpdateWheelSpinCommands(hta::ai::Vehicle* vehicle, ShadowState& state, float dt) {
+        using EAx = JPH::SixDOFConstraint::EAxis;
+        if (vehicle == nullptr || dt <= 1.0e-6f || !state.wheelBodyMode)
+            return;
+        if (kraken::Config::Instance().jolt_wm4_spin.value == 0)
+            return;
+
+        JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+        if (physics == nullptr)
+            return;
+        const size_t nw = std::min(state.wheelConstraints.size(), state.wheelSetup.size());
+        if (nw == 0)
+            return;
+        state.wmSpinCmd.assign(nw, ShadowState::SpinCmd());
+        state.lastStepDt = dt;
+
+        // PRE-STEP snapshot. The "| PRE-STEP" in the log line is a contract - see SpinCmd.
+        //
+        // m_realThrottle is the drive command, but it is NOT bounded to [-1,1] and clamping it is
+        // wrong. docs §67.2 measured three regimes over one run:
+        //   throttle=0.985 brake=0.000 realThrottle=0.985   free driving  (rpm ~1600)
+        //   throttle=0.000 brake=0.006 realThrottle=1.000   scripted drive (rpm 3200-4900)
+        //   throttle=0.000 brake=0.006 realThrottle=+-10.00 at rest       (rpm ~0)
+        // In the third the sign follows -sign(engineRpm) and flips frame to frame as rpm dithers
+        // about zero. Clamped into [-1,1] that reads as full throttle forward and full throttle
+        // reverse on alternating frames: mode 2's scalar integrator averages it into nothing, a
+        // velocity servo executes it, and it wrecked the brake tail (angle 106-150 deg).
+        //
+        // So the split is on MAGNITUDE, not on which field: inside [-1,1] the value is a throttle,
+        // outside it the brake term is dominating and there is no drive intent - confirmed by
+        // m_throttle reading exactly 0 in all 32 such samples. The !(<=) form also rejects NaN.
+        //
+        // Reading m_throttle instead was tried and is wrong: it is 0 throughout the scripted drive
+        // window (the harness writes m_realThrottle), so the shadow simply stopped moving. Mode 2's
+        // comment about m_throttle reading 0 at this point in the frame is correct; the 0.985
+        // samples above come from the free-driving phase before the vehicle is pinned.
+        float driveIntent = vehicle->m_realThrottle;
+        if (!(std::fabs(driveIntent) <= 1.0f))
+            driveIntent = std::clamp(vehicle->m_throttle, -1.0f, 1.0f);
+        const float throttle = driveIntent;
+        const float brake     = std::clamp(vehicle->m_brake, 0.0f, 1.0f);
+        const bool  handBrake = vehicle->m_bHandBrake;
+        state.wmSpinThrottle  = throttle;
+        state.wmSpinBrake     = brake;
+        state.wmSpinHandBrake = handBrake;
+
+        const JPH::Vec3 chassisAngVel =
+            physics->GetBodyInterface().GetAngularVelocity(state.bodyId);
+
+        // omega is RELATIVE spin, wheel minus chassis about the axle read OFF THE BODY. Absolute
+        // angular velocity would feed chassis yaw and pitch into the gearbox as engine RPM.
+        float omegaNow[kMaxHarvestWheels] = {};
+        for (size_t i = 0; i < nw && i < kMaxHarvestWheels; ++i) {
+            JPH::Body* wb = physics->GetBodyLockInterfaceNoLock().TryGetBody(state.wheelBodies[i]);
+            if (wb == nullptr)
+                continue;
+            const JPH::Vec3 axleWorld = (wb->GetRotation() * state.wheelSetup[i].axleLocal).Normalized();
+            omegaNow[i] = state.wheelSetup[i].spinSign *
+                          (wb->GetAngularVelocity() - chassisAngVel).Dot(axleWorld);
+        }
+
+        GearboxOut gb;
+        StepWheelModelGearbox(vehicle, state, dt, omegaNow, &gb);
+        state.wmDriveTorque = gb.driveTorque;
+        state.wmPerWheel    = gb.perWheel;
+        state.wmDrivenCount = gb.nDriven;
+
+        const float mu    = state.stepListener != nullptr ? state.stepListener->params.mu : 1.0f;
+        const float gAbs  = std::max(std::fabs(kraken::Config::Instance().gravity.value), 0.1f);
+        const float mVeh  = std::max(vehicle->GetMass(), 1.0f);
+
+        for (size_t i = 0; i < nw && i < kMaxHarvestWheels; ++i) {
+            JPH::SixDOFConstraint* sc = static_cast<JPH::SixDOFConstraint*>(state.wheelConstraints[i]);
+            JPH::Body* wb = physics->GetBodyLockInterfaceNoLock().TryGetBody(state.wheelBodies[i]);
+            if (sc == nullptr || wb == nullptr)
+                continue;
+            // Commands to a sleeping body do nothing. Gated rather than blanket-woken: an ungated
+            // loop either wakes every vehicle every frame or silently stops driving a sleeping one.
+            if (!wb->IsActive())
+                continue;
+
+            const WheelSetup& ws = state.wheelSetup[i];
+            const float R = std::max(ws.radius, 1.0e-3f);
+
+            // The contact torque cap. DECIDED HERE, not recovered: the recovered build's cap was
+            // reverse-engineered from logs and the proposed floor m_vehicle*g*R was REFUTED during
+            // verification (a 100 kg vehicle logged cap=432 Nm where that formula demands 816), so
+            // there is no formula to port and inventing one silently would be the worse option.
+            //
+            // The choice: a wheel can never transmit more torque than its contact patch supports,
+            // mu*F_n*R, so that is the ceiling; the floor is one corner's static weight so an
+            // airborne wheel still gets a finite, sane handbrake instead of an infinite one.
+            // F_n comes from the PREVIOUS step's band (docs §66 fnGround) - one step stale, which
+            // for a cap is acceptable and is stated rather than hidden.
+            const float fnPrev = (state.stepListener != nullptr && i < kMaxHarvestWheels)
+                ? state.stepListener->diag[i].fnGround : 0.0f;
+            const float cap = R * std::max(mu * fnPrev, mVeh * gAbs / (float) std::max<size_t>(nw, 1));
+
+            float target = 0.0f, limit = 0.0f;
+            if (handBrake) {
+                // The handbrake overrides the drive ENTIRELY - throttle and gearbox torque are
+                // ignored, which the recovered log confirms directly (throttle=1.00 and
+                // perWheel=150Nm while cmdTq read 815-3049Nm in the same frame). Applied to every
+                // wheel, driven or not: what a free-roller's motor does under handbrake is one of
+                // the stated unknowns, and letting half the wheels spin freely is not a defensible
+                // reading of "handbrake".
+                sc->SetMotorState(EAx::RotationX, JPH::EMotorState::Velocity);
+                target = 0.0f;
+                limit  = cap;
+            } else if (ws.driven) {
+                sc->SetMotorState(EAx::RotationX, JPH::EMotorState::Velocity);
+                // The target carries the throttle's SIGN (reverse asks for a negative wheel
+                // speed); the limit is a magnitude, so the direction lives entirely in the target.
+                target = gb.omegaTarget * ((throttle >= 0.0f) ? 1.0f : -1.0f);
+                limit  = std::fabs(throttle) * gb.perWheel;
+            } else {
+                // Free-rolling: no motor at all, the tyre force alone spins it.
+                sc->SetMotorState(EAx::RotationX, JPH::EMotorState::Off);
+            }
+
+            sc->GetMotorSettings(EAx::RotationX).SetTorqueLimit(limit);
+            sc->SetTargetAngularVelocityCS(JPH::Vec3(ws.spinSign * target, 0.0f, 0.0f));
+
+            // The service brake as a FRICTION constraint, per plan:239 - it drives the relative
+            // angular velocity to zero under a torque bound, which is what pads do. Flagged
+            // explicitly: this is the one part of step 5 with NO recovered evidence. The
+            // alternative (a second velocity-motor-to-zero, the route the handbrake demonstrably
+            // used) behaves differently on a slope. The plan is followed, the choice is logged in
+            // the §67 line's brake field, and it must not be reported as "what the build did".
+            // maxBrakeTorque has no recovered value either, so the same contact cap is reused
+            // rather than a new invented constant.
+            sc->SetMaxFriction(EAx::RotationX, brake * cap);
+
+            ShadowState::SpinCmd& cmd = state.wmSpinCmd[i];
+            cmd.target = target;
+            cmd.limit  = limit;
+            cmd.cap    = cap;
+            cmd.brakeT = brake * cap;
+        }
     }
 
     // docs §39.2: the APPLY path. Drives the Jolt chassis body with the ported wheelmodel_core
@@ -3860,7 +4101,10 @@ namespace kraken::fix::joltshadow {
         // sensors at step 3, so the rim is a real contact - a second, parallel support path would
         // not merely double the load, it would fight the SixDOF.
         if (state.wheelBodyMode) {
+            // Wake FIRST, command second: UpdateWheelSpinCommands gates every write on IsActive,
+            // so the other order would skip the whole vehicle on the frame it woke.
             KeepShadowBodiesAwake(state);
+            UpdateWheelSpinCommands(vehicle, state, dt);
             return true;
         }
 
@@ -3950,6 +4194,59 @@ namespace kraken::fix::joltshadow {
                           : (d.penRawAny > 0.0f) ? ""
                           : (d.distRim > 0.0f && d.distRim < 0.999f) ? "  [rim loaded, tyre clear]"
                           : "  [both clear of ground]");
+                }
+                // docs §67 (Этап 1, шаг 5): the spin DOF, per wheel and then per vehicle. These
+                // two lines ARE the step's acceptance instrumentation - the plan's checks
+                // ("GetTotalLambdaMotorRotation()[0]/dt tracks the commanded torque", "omega at
+                // 100 km/h does not hit the ceiling") are the motorTq/cmdTq pair and the omega
+                // field, so the gates are read off the log rather than judged by eye.
+                if (kraken::Config::Instance().jolt_wm4_spin.value != 0 && !state.wmSpinCmd.empty()) {
+                    const float dtLog = std::max(state.lastStepDt, 1.0e-6f);
+                    const JPH::Vec3 chassisAngVel =
+                        kraken::fix::jolt::GetPhysicsSystem()->GetBodyInterface().GetAngularVelocity(state.bodyId);
+                    for (size_t w = 0; w < state.wmSpinCmd.size() && w < state.wheelSetup.size(); ++w) {
+                        JPH::Body* wb = kraken::fix::jolt::GetPhysicsSystem()
+                            ->GetBodyLockInterfaceNoLock().TryGetBody(state.wheelBodies[w]);
+                        const WheelSetup& ws = state.wheelSetup[w];
+                        float omega = 0.0f;
+                        if (wb != nullptr) {
+                            const JPH::Vec3 axleWorld = (wb->GetRotation() * ws.axleLocal).Normalized();
+                            omega = ws.spinSign * (wb->GetAngularVelocity() - chassisAngVel).Dot(axleWorld);
+                        }
+                        // SIGNED, and deliberately not |motorTq|: when its magnitude equals cmdTq
+                        // the motor is saturated, and comparing the two is the whole point.
+                        const JPH::SixDOFConstraint* sc =
+                            static_cast<const JPH::SixDOFConstraint*>(state.wheelConstraints[w]);
+                        const float motorTq = (sc != nullptr)
+                            ? sc->GetTotalLambdaMotorRotation().GetX() / dtLog : 0.0f;
+                        LOG_INFO("docs §67: spin (%s) w=%zu driven=%d omega=%.2f rad/s surfaceSpeed=%.2f m/s "
+                                 "spinSign=%+.0f motorTq=%.0fNm cmdTq=%.0fNm",
+                            label, w, ws.driven ? 1 : 0, (double) omega, (double) (omega * ws.radius),
+                            (double) ws.spinSign, (double) motorTq, (double) state.wmSpinCmd[w].limit);
+                    }
+                    // gear is POST-shift while rpm is PRE-shift - that ordering is what the
+                    // gearbox already does and what the recovered log shows; printing a matched
+                    // pair here would silently disagree with every trace parsed on the old one.
+                    LOG_INFO("docs §67: drivetrain (%s) gear=%d rpm=%.0f driveTorque=%.0fNm perWheel=%.0fNm "
+                             "driven=%u throttle=%.2f spin=%d | PRE-STEP brake=%.2f handBrake=%d",
+                        label, state.wmGear, (double) state.wmEngineRpm, (double) state.wmDriveTorque,
+                        (double) state.wmPerWheel, state.wmDrivenCount, (double) state.wmSpinThrottle,
+                        (int) kraken::Config::Instance().jolt_wm4_spin.value,
+                        (double) state.wmSpinBrake, state.wmSpinHandBrake ? 1 : 0);
+                    // docs §67.2: the RAW driver fields, because m_realThrottle turned out not to
+                    // be a throttle. It reaches +-10.00 live while m_brake reads 0.01, so it is
+                    // neither bounded to [-1,1] nor equal to any documented combination of the
+                    // two - and clamping it, which is what mode 2 does, converts "the brake term
+                    // is dominating" into "full throttle in whichever direction the sign happens
+                    // to be this frame". A scalar integrator averages that away; a velocity servo
+                    // executes it. Logged rather than guessed at: the decomposition decides what
+                    // the motor should actually be commanded with.
+                    LOG_INFO("docs §67.2: drive intent (%s) throttle=%.3f brake=%.3f realThrottle=%.3f "
+                             "engineRpm=%.0f avgWheelAVel=%.2f handBrake=%d autoBrake=%d",
+                        label, (double) vehicle->m_throttle, (double) vehicle->m_brake,
+                        (double) vehicle->m_realThrottle, (double) vehicle->m_engineRpm,
+                        (double) vehicle->m_averageWheelAVel,
+                        vehicle->m_bHandBrake ? 1 : 0, vehicle->m_bAutoBrake ? 1 : 0);
                 }
             }
         }
@@ -5317,6 +5614,29 @@ namespace kraken::fix::joltshadow {
             LOG_INFO("docs §63 SelfTest[5] v_p basis (STEP 4 GATE): correct fpar=%.3f raw fpar=%.3f -> %s",
                 fGood.fpar_w, fRaw.fpar_w, pass ? "PASS" : "FAIL");
             ok = ok && pass;
+        }
+        { // docs §67 - Case 6, the STEP 5 GATE. The redline target is the exact inverse of the
+          // gearbox's own RPM relation, so round-tripping it must return the redline. Every
+          // algebra slip in that inversion - a ratio on the wrong side, a missing diffRatio, the
+          // gear-4 taper folded in - fails this in one line, and none of them would be visible in
+          // a driving run except as "the vehicle is a bit slow".
+            constexpr float kRpmScaleT = 108.0f / (2.0f * 3.14159265f);
+            const float ratios[3] = { 4.0f, 2.5f, 1.5f };
+            const float diffRatio = 3.0f, redline = 6000.0f;   // Bug01's real XML values
+            bool spinOk = true;
+            float first = 0.0f;
+            for (int g = 0; g < 3; ++g) {
+                const float omegaTarget = redline / (ratios[g] * diffRatio * kRpmScaleT);
+                const float roundTrip   = omegaTarget * ratios[g] * diffRatio * kRpmScaleT;
+                if (g == 0) first = omegaTarget;
+                spinOk = spinOk && std::fabs(roundTrip - redline) < 0.5f;
+            }
+            // 29.09 rad/s in gear 0 is not a tuned constant - it is what Bug01's own DiffRatio 3.0
+            // and MaxEngineRpm 6000 give, and the lost build's log printed target=29.1.
+            spinOk = spinOk && std::fabs(first - 29.088f) < 0.05f;
+            LOG_INFO("docs §67 SelfTest[6] redline target (STEP 5 GATE): gear0 target=%.3f rad/s "
+                     "(expect 29.088) round-trip -> %s", (double) first, spinOk ? "PASS" : "FAIL");
+            ok = ok && spinOk;
         }
         LOG_INFO("docs §39 wheelmodel_core SelfTest overall: %s", ok ? "PASS" : "FAIL");
     }
