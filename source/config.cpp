@@ -73,7 +73,7 @@ namespace kraken {
         this->jolt_wm4_assists                   = { "jolt_harness","wm4_assists",                     1,     true,  0,     1           };
         this->jolt_wm4_governor                  = { "jolt_harness","wm4_governor",                    1,     true,  0,     1           };
         this->jolt_wm4_soildrag                  = { "jolt_harness","wm4_soildrag",                    1,     true,  0,     1           };
-        this->jolt_wm4_steer_kinematic           = { "jolt_harness","wm4_steer_kinematic",             1,     true,  0,     2           };
+        this->jolt_wm4_steer_kinematic           = { "jolt_harness","wm4_steer_kinematic",             2,     true,  0,     2           };
         this->jolt_wm4_steer_hz                  = { "jolt_harness","wm4_steer_hz",                    20.0f, true,  1.0f,  500.0f      };
         this->jolt_wm4_steer_damping             = { "jolt_harness","wm4_steer_damping",               1.0f,  true,  0.05f, 10.0f       };
         this->jolt_wm_tyre_stiffness             = { "wheelmodel","tyre_stiffness",   120000.0f, true, 1.0f,     1e9f    };

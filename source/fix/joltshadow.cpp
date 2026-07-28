@@ -437,6 +437,18 @@ namespace kraken::fix::joltshadow {
         // call it "settled" mid-tumble, so several ticks in a row are required instead.
         bool     wheelProxiesBuilt      = false;
         uint32_t collisionGroupId       = 0;
+        // docs §107: the harvest buffer index, DECOUPLED from collisionGroupId. They are the same
+        // number for every shadow today, and the split exists for variant shadows - several
+        // shadows of the SAME vehicle, run in one pass with different parameters so one game
+        // launch answers what used to take one launch per arm.
+        //
+        // Variant shadows spawn at the SAME pose, so they would interpenetrate. Giving them a
+        // SHARED collisionGroupId makes the group filter disable every pair among them (each still
+        // collides with the static world, which is what is being compared). But the harvest buffer
+        // is per-vehicle state and must stay private, so it cannot be keyed on that shared id.
+        // Hence two fields. Anything that identifies "which vehicle's buffer" uses harvestSlot;
+        // anything about "who may collide with whom" uses collisionGroupId.
+        uint32_t harvestSlot           = 0;
         uint32_t consecutiveSlowFrames  = 0;
 
         // docs §39: per-wheel state for the wheelmodel apply path (parallel to wheelOrder).
@@ -1584,8 +1596,11 @@ namespace kraken::fix::joltshadow {
             }
 
             // A tagged handle the contact callback can read with no lookup and no lock: high
-            // dword is the literal 'WHL\0', low dword packs the vehicle slot and the wheel index.
-            wheelBody->SetUserData(MakeWheelUserData(collisionGroupId, (uint32_t) i));
+            // dword is the literal 'WHL\0', low dword packs the HARVEST SLOT and the wheel index.
+            // The harvest slot, not the collision group - the callback uses this to find which
+            // buffer to append to, and variant shadows deliberately share a collision group while
+            // keeping separate buffers (see ShadowState::harvestSlot).
+            wheelBody->SetUserData(MakeWheelUserData(state.harvestSlot, (uint32_t) i));
             // Without this Jolt merges manifolds from different SubShapeIDs whose normals are
             // near-equal, and the TYRE/RIM distinction disappears with no symptom at all - the
             // whole banded-contact scheme dies quietly.
@@ -1794,7 +1809,7 @@ namespace kraken::fix::joltshadow {
             physics->AddStepListener(state.stepListener);
         }
         state.stepListener->chassis    = chassisBody;
-        state.stepListener->slot       = collisionGroupId;
+        state.stepListener->slot       = state.harvestSlot;
         state.stepListener->params     = WheelModelParamsFromConfig();
         state.stepListener->wheelCount = (uint32_t) std::min<size_t>(state.wheelBodies.size(), kMaxHarvestWheels);
         for (uint32_t w = 0; w < state.stepListener->wheelCount; ++w) {
@@ -1935,6 +1950,10 @@ namespace kraken::fix::joltshadow {
         state.wheelHadExtraJointLastFrame.clear();
         state.wheelProxiesBuilt     = false; // docs §38.9: (re)built lazily once this new chassis settles
         state.collisionGroupId      = collisionGroupId;
+        // docs §107: identical to the collision group for every shadow that exists today. Set
+        // explicitly rather than left implicit so that the day a caller wants them to differ
+        // (variant shadows sharing a group), the only change is at the caller.
+        state.harvestSlot           = collisionGroupId;
         state.consecutiveSlowFrames = 0;
 
         // docs §31: suspension stiffness/damping are now read directly from real ODE data per
