@@ -17,7 +17,11 @@ import os
 import time
 from dataclasses import dataclass, field
 
-GAME_DIR = r"E:\HTA-Kraken"
+# Paths come from gamedir.py - the single place that knows where the game is installed.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+import gamedir
+GAME_DIR = gamedir.GAME_DIR
 BASE_DIR = os.path.join(GAME_DIR, "data", "kraken_testharness")
 
 TELEMETRY_COLUMNS = [
