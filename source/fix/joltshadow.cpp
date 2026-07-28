@@ -206,6 +206,32 @@ namespace kraken::fix::joltshadow {
     // anything between.
     static constexpr float kWheelSteeringLimitRadians = 0.7853982f;   // = pi/4, read from 0x5931f4
 
+    // docs §105: the reference's MECHANICAL stop on the steering axis, which is NOT the command
+    // limit above. §94.2 reports ODE's Hinge2 axis-1 LoStop/HiStop as +-pi for steered wheels and
+    // 0 for unsteered ones - i.e. a steered wheel is mechanically free through half a turn each
+    // way and is held at its angle by something else entirely (see below). A hair under pi so the
+    // swing limit cannot degenerate at exactly half a turn.
+    static constexpr float kOdeSteerStopRadians = 3.1415927f - 0.01f;
+
+    // docs §105: how the reference actually holds the steer angle - and it is not a torque.
+    // ai::Vehicle::_KeepSteer (RVA 0x1da940) never touches the joint: its only calls are
+    // _AdjustWheel and _TurnWheelByAngle, and _TurnWheelByAngle ends at vtable slot +0x118 =
+    // PhysicObj::SetRotation. The angle is ASSIGNED to the wheel body every frame. The joint's
+    // only motor is on axis 2: _KeepGearBox writes dParamVel2 (0x102) and dParamFMax2 (0x103) at
+    // 0x1e1259/0x1e126f, and nothing anywhere writes an axis-1 motor parameter.
+    //
+    // That is why §104's "give the kingpin a lever arm" instinct was the wrong lead: the reference
+    // never enters a torque contest over the steer angle, so no scrub radius or caster trail would
+    // have changed the outcome. A Position motor with a finite cap is a different mechanism, and
+    // contact torque beats it whenever the load is high enough - which the §103 bundle guaranteed
+    // by raising the load.
+    //
+    // The dynamic stand-in for "kinematic" is a motor strong enough never to be the binding
+    // constraint. It is expressed as a multiple of the disturbance actually measured (8591 Nm at
+    // 64% downforce), not tuned by eye, and the §68 `sat` field is the check: if sat stops pinning
+    // at 1.00, the motor is no longer losing.
+    static constexpr float kSteerKinematicCapNm = 200000.0f;   // >20x the measured 8591 Nm peak
+
     // SUPERSEDED but deliberately still here. Everything the comment below says was wrong: the
     // value exists and is 45 deg, not 35. It stays only because mode 2 and the VehicleConstraint
     // path use it, and mode 2 is Stage 1's rollback path on every step - silently changing what
@@ -1683,12 +1709,14 @@ namespace kraken::fix::joltshadow {
             // unsteered case is cheaper than the steered one rather than merely equivalent.
             const bool steerDof = cfg.jolt_wm4_steer.value != 0 && ws.steering;
             if (steerDof) {
-                // docs §100: the REAL limit, Wheel::STEERING_LIMIT = pi/4 = 45 deg, read out of
-                // the binary at 0x5931f4. The 35 deg this used to clamp to was invented, and it
-                // was not a harmless approximation: the player-control path commands exactly
-                // +-STEERING_LIMIT, so every real steer command sat 28% BEYOND the stop and the
-                // wheel rested on it by construction. That is the mechanism §99 was hunting.
-                six.SetLimitedAxis(EAx::RotationZ, -kWheelSteeringLimitRadians, +kWheelSteeringLimitRadians);
+                // docs §105: the MECHANICAL STOP and the COMMAND LIMIT are different things, and
+                // step 6 conflated them. Wheel::STEERING_LIMIT (pi/4) is what the player-control
+                // path passes to SetSteer - a COMMAND bound. The reference's mechanical stops are
+                // ODE's Hinge2 axis-1 LoStop/HiStop, which §94.2 reports as +-pi for steered
+                // wheels. Clamping the stop to pi/4 as well meant the only thing that ever reached
+                // it was DISTURBANCE, never a command - and §104 measured the stop then supplying
+                // 8591 Nm to hold a wheel there while commanded read 0.000.
+                six.SetLimitedAxis(EAx::RotationZ, -kOdeSteerStopRadians, +kOdeSteerStopRadians);
                 six.mMotorSettings[EAx::RotationZ].mSpringSettings.mMode      = JPH::ESpringMode::FrequencyAndDamping;
                 six.mMotorSettings[EAx::RotationZ].mSpringSettings.mFrequency = 20.0f;
                 six.mMotorSettings[EAx::RotationZ].mSpringSettings.mDamping   = 1.0f;
@@ -3085,7 +3113,9 @@ namespace kraken::fix::joltshadow {
             // to tune this limit until the wheel "neither jams nor bulldozes". Finite on purpose:
             // a kerb must still eventually win, which FLT_MAX would forbid.
             constexpr float kSteerCapWeightMultiple = 4.0f;   // ~8x the measured 533 Nm disturbance
-            const float steerCap = kSteerCapWeightMultiple * mVeh * gAbs * R;
+            const bool kinematicSteer = kraken::Config::Instance().jolt_wm4_steer_kinematic.value != 0;
+            const float steerCap = kinematicSteer ? kSteerKinematicCapNm
+                                                  : (kSteerCapWeightMultiple * mVeh * gAbs * R);
             if (steerable) {
                 // docs §100: the target is the WHEEL's own m_curAngle, not the vehicle-wide
                 // m_steerRadians the plan named. ai::Vehicle::_KeepSteer (RVA 0x1da940,

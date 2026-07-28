@@ -171,6 +171,13 @@ namespace kraken {
         // v / R, applied per wheel at the end of CollideWheelAndLandscape. The last un-ported
         // every-frame force, and the third lever of the same bundle as wm4_assists/wm4_governor.
         ConfigValue<uint32_t>                 jolt_wm4_soildrag;
+        // docs §105: how the steer DOF holds its angle. 1 (default) makes the RotationZ motor
+        // effectively kinematic - a torque limit far above any measured contact disturbance -
+        // which is the dynamic stand-in for what the reference does: ai::Vehicle::_KeepSteer
+        // ASSIGNS the wheel's orientation via PhysicObj::SetRotation every frame and never writes
+        // an axis-1 joint motor at all. 0 restores the finite load-derived cap, which §104
+        // measured losing to an 8591 Nm disturbance while the driver was not even steering.
+        ConfigValue<uint32_t>                 jolt_wm4_steer_kinematic;
         // docs §39: wheelmodel_core (Pacejka contact) params - same [wheelmodel] names as spring_wheel so tuning transfers.
         ConfigValue<float>                    jolt_wm_tyre_stiffness;
         ConfigValue<float>                    jolt_wm_tyre_thickness;
