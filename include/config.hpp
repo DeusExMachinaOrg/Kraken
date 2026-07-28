@@ -172,6 +172,25 @@ namespace kraken {
         // DEFAULT 1 = the faithful port, i.e. no behaviour change from before this key existed. It
         // is a MEASUREMENT lever, not a tuning one; the sub-gate exists so the arm can be built.
         ConfigValue<uint32_t>                 jolt_wm4_assist_yaw;
+        // docs §112 (Этап 1, шаг 8): Jolt's PhysicsSettings::mStepListenersBatchSize. Step
+        // listeners are handed to workers in batches of this size (Jolt default 8); with 75 shadows
+        // each owning a VehicleStepListener that is ~10 batches, so this sets how finely the wheel
+        // work can spread across cores. 0 = leave Jolt's default untouched.
+        //
+        // A GLOBAL knob, not a per-shadow one - it is a PhysicsSettings field affecting every step
+        // listener in the world, which is why the plan calls it out as needing its own measurement
+        // rather than being folded into a shadow-side lever.
+        ConfigValue<uint32_t>                 jolt_step_listener_batch;
+        // docs §112 (Этап 1, шаг 8): let a shadow whose REFERENCE has been idle fall asleep instead
+        // of force-waking every body every frame. At 74 AI shadows the forced-awake path keeps 75
+        // chassis and ~300 wheel bodies permanently in the active set.
+        //
+        // DEFAULT 0, because getting this wrong re-arms §97's latch: a mode-4 wheel body is driven
+        // only from a step listener, Jolt skips step listeners for sleeping bodies, so a wrong wake
+        // condition means "asleep forever", silently, for the rest of the session. The wake
+        // condition reads the REFERENCE's inputs and speed - never the shadow's own velocity, which
+        // a sleeping shadow reports as zero by construction.
+        ConfigValue<uint32_t>                 jolt_wm4_sleep;
         // docs §102 (§95.3 ported): the speed governor _KeepGearBox applies before handing torque
         // to the joint - above GetMaxSpeed() (player/attacking) or m_cruisingSpeed (AI), measured
         // on the WHEEL SURFACE speed and only while the driver is not braking, the drive is cut to

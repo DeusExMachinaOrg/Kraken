@@ -121,6 +121,24 @@ namespace kraken::fix::joltshadow {
     // wrong about before, and "I read the guard" is not a measurement. These count what actually
     // executed; mode 2 is the POSITIVE CONTROL, because a counter that reads zero for the boring
     // reason that nothing ever increments it would otherwise pass silently.
+    // docs §112 (шаг 8): how many shadows were allowed to sleep this frame. Without this the
+    // sleep lever's effect is indistinguishable from noise in the frame time - "it got faster"
+    // has to be traceable to "N of 75 shadows stopped simulating".
+    struct SleepStats {
+        uint64_t sleptShadows = 0;
+        uint64_t awakeShadows = 0;
+        // Why a shadow was kept awake. "0% slept" is a dead end without these - it cannot
+        // distinguish "the vehicles really are all busy" from "one of my thresholds is wrong",
+        // and those call for opposite next moves.
+        uint64_t rejThrottle = 0;
+        uint64_t rejBrake    = 0;
+        uint64_t rejSpeed    = 0;
+        uint64_t rejHand     = 0;
+        uint64_t rejChanged  = 0;
+        uint64_t rejMargin   = 0;   // quiet, but not yet for long enough
+    };
+    static SleepStats g_sleepStats;
+
     struct LegacyPathCounters {
         uint64_t proxyBuilds       = 0;   // BuildWheelProxy bodies actually created
         uint64_t proxyPassedGuard  = 0;   // TryBuildWheelProxiesOnceSettled past its constraint check
@@ -538,6 +556,12 @@ namespace kraken::fix::joltshadow {
         float    VarSteerHz()   const { return var.set ? var.steerHz   : kraken::Config::Instance().jolt_wm4_steer_hz.value; }
         float    VarSteerDamp() const { return var.set ? var.steerDamping : kraken::Config::Instance().jolt_wm4_steer_damping.value; }
         uint32_t consecutiveSlowFrames  = 0;
+        // docs §112 (шаг 8): the wake condition's memory. Reference-side inputs as of last frame,
+        // plus how long this shadow has been quiet.
+        float    lastWakeThrottle  = 0.0f;
+        float    lastWakeBrake     = 0.0f;
+        bool     lastWakeHandBrake = false;
+        uint32_t quietFrames       = 0;
 
         // docs §39: per-wheel state for the wheelmodel apply path (parallel to wheelOrder).
         // suspLen/suspVel are the explicit suspension-travel DOF (spring_wheel got travel from
@@ -2441,7 +2465,65 @@ namespace kraken::fix::joltshadow {
     // has no VehicleConstraint and returns from the pre-step before UpdateShadowInputs is ever
     // reached, so anything that lives in there is dead code for the mode that needs it most.
     // That is not hypothetical - it is exactly the bug this function was extracted to fix.
-    static void KeepShadowBodiesAwake(ShadowState& state) {
+    // docs §112 (Этап 1, шаг 8): the plan's "переделка на пробуждение по изменению ввода".
+    //
+    // Unconditional ActivateBody every frame means NOTHING a shadow owns can ever sleep: at 74 AI
+    // shadows that is 75 chassis and ~300 wheel bodies permanently in the active set, paying
+    // broadphase, narrow-phase and solver every step whether or not the vehicle they mirror has
+    // moved in the last ten minutes.
+    //
+    // It cannot simply be deleted, and that is the whole difficulty. §97 put it there because a
+    // wheel body receives force ONLY from VehicleStepListener::OnStep, and Jolt skips step
+    // listeners for sleeping bodies - asleep -> listener skipped -> no force -> asleep forever.
+    // A latch, not slow recovery. So sleeping is only safe with a wake condition that fires
+    // BEFORE the vehicle needs to move, evaluated from the REFERENCE (which is always simulated),
+    // never from the shadow's own velocity - a sleeping shadow reads zero velocity by definition
+    // and would conclude it may keep sleeping.
+    //
+    // Behind jolt_wm4_sleep, default 0 (the pre-§112 behaviour), until measured.
+    static bool ShadowMaySleep(ShadowState& state, hta::ai::Vehicle* vehicle) {
+        if (kraken::Config::Instance().jolt_wm4_sleep.value == 0 || vehicle == nullptr)
+            return false;
+        // Every term below is the REFERENCE's, not the shadow's.
+        const float throttle = std::fabs(vehicle->m_throttle);
+        const float brake    = std::fabs(vehicle->m_brake);
+        const float odeSpeed = std::fabs(vehicle->m_averageWheelAVel);
+        const bool  hand     = vehicle->m_bHandBrake;
+        if (throttle >= 1e-3f) ++g_sleepStats.rejThrottle;
+        if (brake    >= 1e-3f) ++g_sleepStats.rejBrake;
+        if (odeSpeed >= 1e-2f) ++g_sleepStats.rejSpeed;
+        if (hand)              ++g_sleepStats.rejHand;
+        const bool  quiet    = (throttle < 1e-3f) && (brake < 1e-3f) && (odeSpeed < 1e-2f) && !hand;
+        // Wake on CHANGE as well as on magnitude: a step from one held throttle to another is not
+        // caught by "is it non-zero", and the whole point is to be awake before the force lands.
+        const bool  changed  = (std::fabs(throttle - state.lastWakeThrottle) > 1e-3f)
+                            || (std::fabs(brake    - state.lastWakeBrake)    > 1e-3f)
+                            || (hand != state.lastWakeHandBrake);
+        state.lastWakeThrottle  = throttle;
+        state.lastWakeBrake     = brake;
+        state.lastWakeHandBrake = hand;
+        if (!quiet || changed) {
+            if (quiet && changed) ++g_sleepStats.rejChanged;
+            state.quietFrames = 0;
+            return false;
+        }
+        // A margin of quiet frames before letting go, for the same reason §38.9 needed consecutive
+        // slow ticks rather than one: a single quiet frame mid-manoeuvre is common and letting the
+        // bodies go there would re-arm the latch at the worst moment.
+        constexpr uint32_t kQuietFramesBeforeSleep = 120;
+        if (++state.quietFrames < kQuietFramesBeforeSleep) {
+            ++g_sleepStats.rejMargin;   // quiet, just not for long enough YET
+            return false;
+        }
+        return true;
+    }
+
+    static void KeepShadowBodiesAwake(ShadowState& state, hta::ai::Vehicle* vehicle = nullptr) {
+        if (ShadowMaySleep(state, vehicle)) {
+            ++g_sleepStats.sleptShadows;
+            return;   // let Jolt put them down; the wake condition above brings them back
+        }
+        ++g_sleepStats.awakeShadows;
         JPH::BodyInterface& bi = kraken::fix::jolt::GetPhysicsSystem()->GetBodyInterface();
         bi.ActivateBody(state.bodyId);
         // docs §97: the mode-4 wheel bodies need the same treatment, for the same reason and one
@@ -4635,7 +4717,7 @@ namespace kraken::fix::joltshadow {
         if (state.wheelBodyMode) {
             // Wake FIRST, command second: UpdateWheelSpinCommands gates every write on IsActive,
             // so the other order would skip the whole vehicle on the frame it woke.
-            KeepShadowBodiesAwake(state);
+            KeepShadowBodiesAwake(state, vehicle);
             UpdateWheelSpinCommands(vehicle, state, dt);
             // AFTER the motor commands, but still pre-step: forces added here are consumed by the
             // Update that follows, which is the same relationship the reference has (ODE applies
@@ -5927,6 +6009,23 @@ namespace kraken::fix::joltshadow {
                     (unsigned long long) g_legacyPaths.evalCollideShape,
                     (unsigned long long) g_legacyPaths.stepCollideShape,
                     (int) kraken::Config::Instance().jolt_wheelmodel.value);
+                // docs §112 (шаг 8): the sleep lever's effect, as a count rather than as a frame
+                // time. "It got faster" has to be traceable to "N of M shadows stopped simulating",
+                // otherwise the lever and the run-to-run noise are the same observation. Reported
+                // per frame (the counters are reset here), not cumulative.
+                LOG_INFO("docs §112: shadow sleep on=%d slept=%llu awake=%llu of %llu | kept awake by: "
+                         "throttle=%llu brake=%llu speed=%llu hand=%llu changed=%llu margin=%llu",
+                    (int) kraken::Config::Instance().jolt_wm4_sleep.value,
+                    (unsigned long long) g_sleepStats.sleptShadows,
+                    (unsigned long long) g_sleepStats.awakeShadows,
+                    (unsigned long long) (g_sleepStats.sleptShadows + g_sleepStats.awakeShadows),
+                    (unsigned long long) g_sleepStats.rejThrottle,
+                    (unsigned long long) g_sleepStats.rejBrake,
+                    (unsigned long long) g_sleepStats.rejSpeed,
+                    (unsigned long long) g_sleepStats.rejHand,
+                    (unsigned long long) g_sleepStats.rejChanged,
+                    (unsigned long long) g_sleepStats.rejMargin);
+                g_sleepStats = SleepStats();
             }
         }
 

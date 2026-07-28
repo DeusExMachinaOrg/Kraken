@@ -839,6 +839,24 @@ namespace kraken::fix::jolt {
             cMaxBodies, cNumBodyMutexes, cMaxBodyPairs, cMaxContactConstraints,
             *g_broadPhaseLayerInterface, *g_objectVsBroadPhaseFilter, *g_objectLayerPairFilter);
 
+        // docs §112 (Этап 1, шаг 8): mStepListenersBatchSize, the one step-8 lever with headroom
+        // left. Jolt hands step listeners to workers in batches of this size (default 8); with 75
+        // shadows each owning a VehicleStepListener that is ~10 batches, so the batch size sets how
+        // finely that work can spread across cores. The plan says "8 -> 1-2 (замерить обе)".
+        //
+        // Deliberately a global knob and not a per-shadow one: it is a PhysicsSettings field, it
+        // affects EVERY step listener in the world, and the plan flags that explicitly.
+        {
+            JPH::PhysicsSettings settings = g_physicsSystem->GetPhysicsSettings();
+            const uint32_t batch = kraken::Config::Instance().jolt_step_listener_batch.value;
+            if (batch > 0) {
+                settings.mStepListenersBatchSize = (int) batch;
+                g_physicsSystem->SetPhysicsSettings(settings);
+            }
+            LOG_INFO("Jolt: mStepListenersBatchSize=%d (config %u, 0 = leave Jolt's default)",
+                g_physicsSystem->GetPhysicsSettings().mStepListenersBatchSize, batch);
+        }
+
         LOG_INFO("Jolt Physics initialized (threads=%u, maxBodies=%u)", threads, cMaxBodies);
 
         routines::ChangeCall((void*) 0x005CA413, &PostServersLoadHook);
