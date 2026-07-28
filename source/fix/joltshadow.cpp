@@ -197,12 +197,23 @@ namespace kraken::fix::joltshadow {
     // [body+0x14]/[node+8], i.e. exactly ODE's real, live joint count - not cached anywhere.
     static const auto dBodyGetNumJoints = (int (__fastcall*)(dxBody*))(0x007C4B90);
 
-    // hta::ai::Wheel::STEERING_LIMIT is declared in the header port (Wheel.hpp) but has no
-    // backing definition anywhere in extern/hta (confirmed via grep of Wheel.cpp) - likely
-    // folded into an immediate at each use site in the original binary with no addressable
-    // storage, so its value hasn't been recovered. Use a plausible generic max steer angle
-    // instead for both the wheel's own limit and for normalizing m_steerRadians into the
-    // controller's -1..1 "right" input - approximate, not gameplay-affecting at this stage.
+    // docs §100: hta::ai::Wheel::STEERING_LIMIT IS RECOVERED, and it is pi/4 = 45 deg.
+    // The PDB places it at rva 0x5931f4, and reading that address gives 0x3f490fdb =
+    // 0.7853981852531433. It is not folded into immediates as the note below assumed - it has
+    // real addressable storage, and the player-control path loads it straight from there:
+    // CMiracle3d::Controls (game.cpp:305-309) calls ai::Vehicle::SetSteer with +STEERING_LIMIT,
+    // -STEERING_LIMIT or 0. So the player's steering command is a three-way +-45 deg, never
+    // anything between.
+    static constexpr float kWheelSteeringLimitRadians = 0.7853982f;   // = pi/4, read from 0x5931f4
+
+    // SUPERSEDED but deliberately still here. Everything the comment below says was wrong: the
+    // value exists and is 45 deg, not 35. It stays only because mode 2 and the VehicleConstraint
+    // path use it, and mode 2 is Stage 1's rollback path on every step - silently changing what
+    // the fallback does would remove the thing the rollback is for. Mode 4 uses the real constant
+    // above. Migrating these call sites is its own change, with its own measurement.
+    //
+    //   (original note) ... has no backing definition anywhere in extern/hta ... so its value
+    //   hasn't been recovered. Use a plausible generic max steer angle instead ...
     static constexpr float kApproxMaxSteerAngleRadians = 35.0f * (3.14159265f / 180.0f);
 
     // "Body is flying" gate (docs/jolt-integration-techanalysis.md Stage 2 section, ported
@@ -1661,13 +1672,12 @@ namespace kraken::fix::joltshadow {
             // unsteered case is cheaper than the steered one rather than merely equivalent.
             const bool steerDof = cfg.jolt_wm4_steer.value != 0 && ws.steering;
             if (steerDof) {
-                // kApproxMaxSteerAngleRadians is INVENTED, not game data - the file says so at its
-                // declaration, and §94.2 confirms ODE's real Hinge2 stops on the steer axis are 0
-                // for unsteered wheels and +-pi for steered ones, i.e. the reference has no 35 deg
-                // limit at all. It is load-bearing (the lost build's log shows wheels sitting AT
-                // the stop with commanded=0.000), so it stays a named constant that can be swept,
-                // never a literal.
-                six.SetLimitedAxis(EAx::RotationZ, -kApproxMaxSteerAngleRadians, +kApproxMaxSteerAngleRadians);
+                // docs §100: the REAL limit, Wheel::STEERING_LIMIT = pi/4 = 45 deg, read out of
+                // the binary at 0x5931f4. The 35 deg this used to clamp to was invented, and it
+                // was not a harmless approximation: the player-control path commands exactly
+                // +-STEERING_LIMIT, so every real steer command sat 28% BEYOND the stop and the
+                // wheel rested on it by construction. That is the mechanism §99 was hunting.
+                six.SetLimitedAxis(EAx::RotationZ, -kWheelSteeringLimitRadians, +kWheelSteeringLimitRadians);
                 six.mMotorSettings[EAx::RotationZ].mSpringSettings.mMode      = JPH::ESpringMode::FrequencyAndDamping;
                 six.mMotorSettings[EAx::RotationZ].mSpringSettings.mFrequency = 20.0f;
                 six.mMotorSettings[EAx::RotationZ].mSpringSettings.mDamping   = 1.0f;
@@ -2874,11 +2884,26 @@ namespace kraken::fix::joltshadow {
             constexpr float kSteerCapWeightMultiple = 4.0f;   // ~8x the measured 533 Nm disturbance
             const float steerCap = kSteerCapWeightMultiple * mVeh * gAbs * R;
             if (steerable) {
+                // docs §100: the target is the WHEEL's own m_curAngle, not the vehicle-wide
+                // m_steerRadians the plan named. ai::Vehicle::_KeepSteer (RVA 0x1da940,
+                // vehicle.cpp:5225-5309) computes each wheel's target as
+                //   (int)wheel->m_steering * vehicle->m_steerRadians
+                // and then rate-limits m_curAngle (Wheel+0x15c) toward it at m_steeringSpeed,
+                // calling _TurnWheelByAngle with the DELTA. So m_curAngle is the reference's own
+                // per-wheel steer angle with three things already folded in that the raw field
+                // does not have: the per-wheel direction (m_steering is a signed multiplier,
+                // not a flag - STEERING_INVERSE), the rate limit, and the actual achieved angle
+                // rather than the instantaneous command.
+                //
+                // Mirroring it is also strictly better for a SHADOW: matching the reference's
+                // wheel angle is the whole job, and it removes both the sign question and the
+                // smoothing question from our side of the comparison.
+                const hta::ai::Wheel* hw = (i < state.wheelOrder.size()) ? state.wheelOrder[i] : nullptr;
                 // Clamped to the mechanical stop before it is commanded: asking a Position motor
                 // for an angle the limits forbid makes it fight the limit constraint every frame,
                 // which reads as a jittering wheel rather than as an out-of-range command.
-                const float steerCmd = std::clamp(vehicle->m_steerRadians,
-                                                  -kApproxMaxSteerAngleRadians, kApproxMaxSteerAngleRadians);
+                const float steerCmd = std::clamp(hw != nullptr ? hw->m_curAngle : 0.0f,
+                                                  -kWheelSteeringLimitRadians, kWheelSteeringLimitRadians);
                 steerCS = ws.steerSign * steerCmd;
                 sc->GetMotorSettings(EAx::RotationZ).SetTorqueLimit(steerCap);
                 sc->SetTargetOrientationCS(JPH::Quat::sRotation(JPH::Vec3::sAxisZ(), steerCS));
@@ -4395,7 +4420,7 @@ namespace kraken::fix::joltshadow {
                                      "atStop=%d |wheelAngVel|=%.1f rad/s",
                                 label, w, (double) limRot.GetX(), (double) limRot.GetY(),
                                 (double) limRot.GetZ(),
-                                (std::fabs(measured) > kApproxMaxSteerAngleRadians - 0.005f) ? 1 : 0,
+                                (std::fabs(measured) > kWheelSteeringLimitRadians - 0.005f) ? 1 : 0,
                                 (double) wAng.Length());
                         }
                     }
