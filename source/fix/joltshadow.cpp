@@ -1717,9 +1717,14 @@ namespace kraken::fix::joltshadow {
                 // it was DISTURBANCE, never a command - and §104 measured the stop then supplying
                 // 8591 Nm to hold a wheel there while commanded read 0.000.
                 six.SetLimitedAxis(EAx::RotationZ, -kOdeSteerStopRadians, +kOdeSteerStopRadians);
+                // docs §106: the spring frequency is a CONFIG value, not a literal, because it is
+                // now the binding constraint on the steer angle (§105.4) and because it is the one
+                // steering constant the recovery pass listed as never established - the plan says
+                // "~20 Гц / ζ=1" with a tilde and no artefact carries it. A named lever is what
+                // lets it be swept instead of guessed.
                 six.mMotorSettings[EAx::RotationZ].mSpringSettings.mMode      = JPH::ESpringMode::FrequencyAndDamping;
-                six.mMotorSettings[EAx::RotationZ].mSpringSettings.mFrequency = 20.0f;
-                six.mMotorSettings[EAx::RotationZ].mSpringSettings.mDamping   = 1.0f;
+                six.mMotorSettings[EAx::RotationZ].mSpringSettings.mFrequency = cfg.jolt_wm4_steer_hz.value;
+                six.mMotorSettings[EAx::RotationZ].mSpringSettings.mDamping   = cfg.jolt_wm4_steer_damping.value;
                 six.mMotorSettings[EAx::RotationZ].SetTorqueLimit(0.0f);   // commanded per frame
             } else {
                 six.MakeFixedAxis(EAx::RotationZ);
@@ -3094,6 +3099,7 @@ namespace kraken::fix::joltshadow {
             // already limits how fast that field moves.
             float steerCS = 0.0f;
             const bool steerable = steerDofOn && ws.steering;
+            const uint32_t steerMode = kraken::Config::Instance().jolt_wm4_steer_kinematic.value;
             // The steering motor gets its OWN limit, not the contact torque cap. Measured, not
             // assumed: sharing them put the cap at 370-730 Nm while docs §68.2 showed the
             // mechanical stop supplying 212-533 Nm to hold the wheel there - the same order, so
@@ -3113,9 +3119,8 @@ namespace kraken::fix::joltshadow {
             // to tune this limit until the wheel "neither jams nor bulldozes". Finite on purpose:
             // a kerb must still eventually win, which FLT_MAX would forbid.
             constexpr float kSteerCapWeightMultiple = 4.0f;   // ~8x the measured 533 Nm disturbance
-            const bool kinematicSteer = kraken::Config::Instance().jolt_wm4_steer_kinematic.value != 0;
-            const float steerCap = kinematicSteer ? kSteerKinematicCapNm
-                                                  : (kSteerCapWeightMultiple * mVeh * gAbs * R);
+            const float steerCap = (steerMode >= 1) ? kSteerKinematicCapNm
+                                                    : (kSteerCapWeightMultiple * mVeh * gAbs * R);
             if (steerable) {
                 // docs §100: the target is the WHEEL's own m_curAngle, not the vehicle-wide
                 // m_steerRadians the plan named. ai::Vehicle::_KeepSteer (RVA 0x1da940,
@@ -3138,8 +3143,36 @@ namespace kraken::fix::joltshadow {
                 const float steerCmd = std::clamp(hw != nullptr ? hw->m_curAngle : 0.0f,
                                                   -kWheelSteeringLimitRadians, kWheelSteeringLimitRadians);
                 steerCS = ws.steerSign * steerCmd;
-                sc->GetMotorSettings(EAx::RotationZ).SetTorqueLimit(steerCap);
-                sc->SetTargetOrientationCS(JPH::Quat::sRotation(JPH::Vec3::sAxisZ(), steerCS));
+                if (steerMode >= 2) {
+                    // docs §106: the LITERAL port. ai::Vehicle::_TurnWheelByAngle ends at
+                    // PhysicObj::SetRotation - the reference ASSIGNS the wheel's orientation and
+                    // never enters a torque contest. That is qualitatively different from a very
+                    // stiff motor, and the difference is the whole point: a stiff motor buys a
+                    // rigid wheel by reacting the disturbance into the chassis, and §106's sweep
+                    // measured exactly what that costs (pos-div 12.4 -> 35.1 m as the spring went
+                    // 20 -> 240 Hz, monotone). An assignment reacts nothing.
+                    //
+                    // The motor must be OFF here or the two mechanisms fight each other.
+                    sc->SetMotorState(EAx::RotationZ, JPH::EMotorState::Off);
+
+                    // Keep the SPIN, replace only the steer. In chassis space the wheel's rotation
+                    // decomposes as swing*twist with twist about local X - and local X IS the axle
+                    // (axleLocal = wheelUp x wheelForward), so the twist is exactly the spin that
+                    // step 5 owns and must not be disturbed. Rebuilding from the commanded steer
+                    // and the CURRENT twist is what makes this a steer assignment rather than a
+                    // full pose override.
+                    const JPH::Quat chassisRot = physics->GetBodyInterface().GetRotation(state.bodyId);
+                    const JPH::Quat wheelLocal = chassisRot.Conjugated() * wb->GetRotation();
+                    JPH::Quat swing, twist;
+                    wheelLocal.GetSwingTwist(swing, twist);
+                    const JPH::Quat steerRot = JPH::Quat::sRotation(ws.steerAxis.Normalized(), steerCmd);
+                    physics->GetBodyInterface().SetRotation(
+                        state.wheelBodies[i], (chassisRot * steerRot * twist).Normalized(),
+                        JPH::EActivation::DontActivate);
+                } else {
+                    sc->GetMotorSettings(EAx::RotationZ).SetTorqueLimit(steerCap);
+                    sc->SetTargetOrientationCS(JPH::Quat::sRotation(JPH::Vec3::sAxisZ(), steerCS));
+                }
             }
 
             ShadowState::SpinCmd& cmd = state.wmSpinCmd[i];

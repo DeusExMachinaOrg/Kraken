@@ -171,13 +171,26 @@ namespace kraken {
         // v / R, applied per wheel at the end of CollideWheelAndLandscape. The last un-ported
         // every-frame force, and the third lever of the same bundle as wm4_assists/wm4_governor.
         ConfigValue<uint32_t>                 jolt_wm4_soildrag;
-        // docs §105: how the steer DOF holds its angle. 1 (default) makes the RotationZ motor
+        // docs §105/§106: how the steer DOF holds its angle. 2 = the LITERAL port - the RotationZ
+        // motor is switched OFF and the wheel's orientation is ASSIGNED each frame from the
+        // commanded steer and its current spin, exactly as _TurnWheelByAngle ->
+        // PhysicObj::SetRotation does. Not the same as a very stiff motor: a stiff motor buys the
+        // rigid wheel by reacting the disturbance into the chassis, and §106's frequency sweep
+        // measured that cost as monotone (pos-div 12.4 -> 35.1 m from 20 to 240 Hz).
+        // 1 (default) makes the RotationZ motor
         // effectively kinematic - a torque limit far above any measured contact disturbance -
         // which is the dynamic stand-in for what the reference does: ai::Vehicle::_KeepSteer
         // ASSIGNS the wheel's orientation via PhysicObj::SetRotation every frame and never writes
         // an axis-1 joint motor at all. 0 restores the finite load-derived cap, which §104
         // measured losing to an 8591 Nm disturbance while the driver was not even steering.
         ConfigValue<uint32_t>                 jolt_wm4_steer_kinematic;
+        // docs §106: the steering Position motor's spring. NOT recovered - the plan writes
+        // "~20 Гц / ζ=1" with a tilde and no format string, config key or log field carries either
+        // number, so unlike the torque cap there is no evidence to contradict by moving it. §105.4
+        // showed it is now what limits the steer angle: k = I_z*(2*pi*f)^2, and holding the
+        // measured 8591 Nm disturbance to 1 deg needs about 93 Hz. Swept, not guessed.
+        ConfigValue<float>                    jolt_wm4_steer_hz;
+        ConfigValue<float>                    jolt_wm4_steer_damping;
         // docs §39: wheelmodel_core (Pacejka contact) params - same [wheelmodel] names as spring_wheel so tuning transfers.
         ConfigValue<float>                    jolt_wm_tyre_stiffness;
         ConfigValue<float>                    jolt_wm_tyre_thickness;

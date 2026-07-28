@@ -73,7 +73,9 @@ namespace kraken {
         this->jolt_wm4_assists                   = { "jolt_harness","wm4_assists",                     1,     true,  0,     1           };
         this->jolt_wm4_governor                  = { "jolt_harness","wm4_governor",                    1,     true,  0,     1           };
         this->jolt_wm4_soildrag                  = { "jolt_harness","wm4_soildrag",                    1,     true,  0,     1           };
-        this->jolt_wm4_steer_kinematic           = { "jolt_harness","wm4_steer_kinematic",             1,     true,  0,     1           };
+        this->jolt_wm4_steer_kinematic           = { "jolt_harness","wm4_steer_kinematic",             1,     true,  0,     2           };
+        this->jolt_wm4_steer_hz                  = { "jolt_harness","wm4_steer_hz",                    20.0f, true,  1.0f,  500.0f      };
+        this->jolt_wm4_steer_damping             = { "jolt_harness","wm4_steer_damping",               1.0f,  true,  0.05f, 10.0f       };
         this->jolt_wm_tyre_stiffness             = { "wheelmodel","tyre_stiffness",   120000.0f, true, 1.0f,     1e9f    };
         this->jolt_wm_tyre_thickness             = { "wheelmodel","tyre_thickness",   0.1f,      true, 0.0f,     10.0f   };
         this->jolt_wm_tyre_damping               = { "wheelmodel","tyre_damping",     0.5f,      true, 0.0f,     10.0f   };
@@ -186,6 +188,8 @@ namespace kraken {
         this->LoadValue(&this->jolt_wm4_governor);
         this->LoadValue(&this->jolt_wm4_soildrag);
         this->LoadValue(&this->jolt_wm4_steer_kinematic);
+        this->LoadValue(&this->jolt_wm4_steer_hz);
+        this->LoadValue(&this->jolt_wm4_steer_damping);
         this->LoadValue(&this->jolt_wm4_joint_at_mount);
         this->LoadValue(&this->jolt_wm4_compress_fraction);
         this->LoadValue(&this->jolt_wm_tyre_stiffness);
@@ -278,6 +282,8 @@ namespace kraken {
         this->DumpValue(&this->jolt_wm4_governor);
         this->DumpValue(&this->jolt_wm4_soildrag);
         this->DumpValue(&this->jolt_wm4_steer_kinematic);
+        this->DumpValue(&this->jolt_wm4_steer_hz);
+        this->DumpValue(&this->jolt_wm4_steer_damping);
         this->DumpValue(&this->jolt_wm4_joint_at_mount);
         this->DumpValue(&this->jolt_wm4_compress_fraction);
         this->DumpValue(&this->jolt_wm_tyre_stiffness);
