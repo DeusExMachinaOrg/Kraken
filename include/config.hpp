@@ -154,13 +154,12 @@ namespace kraken {
         // MaxEngineRpm, which we already port. We took the drivetrain and skipped the handling
         // layer. 1 applies them to the shadow chassis, 0 is the pre-§94 behaviour.
         //
-        // DEFAULT 0, on the measurement, and the reason is worth reading before flipping it: the
-        // port is exact (constants read from the binary, the force reproduces to the newton) and
-        // it still made divergence WORSE - travel ratio 1.01 -> 1.09, pos-div 2.62 -> 8.03 over 3
-        // interleaved repeats. The downforce adds grip, the drive servo converts grip into speed,
-        // and the thing that restrains the reference at that speed - the §95.3 speed governor in
-        // _KeepGearBox - is still not ported. Porting a SUBSET of the per-frame layer is not a
-        // partial improvement, it is a bias. Turn this on together with the governor, not before.
+        // DEFAULT 1, but only as part of a BUNDLE with wm4_governor and wm4_soildrag - see §101
+        // and §103. On its own this key measured clearly WORSE (ratio 1.01 -> 1.09, pos-div 2.62
+        // -> 8.03): the downforce adds grip, the drive servo turns grip into speed, and nothing
+        // took the speed back. With all three on, the layer is complete (§95's reverse pass proved
+        // the force-site list is closed) and the post-throttle attitude blow-up halves, 167.6 deg
+        // -> 80.0 deg. Turning this one on alone is a measured regression, not a partial win.
         ConfigValue<uint32_t>                 jolt_wm4_assists;
         // docs §102 (§95.3 ported): the speed governor _KeepGearBox applies before handing torque
         // to the joint - above GetMaxSpeed() (player/attacking) or m_cruisingSpeed (AI), measured
@@ -168,6 +167,10 @@ namespace kraken {
         // zero. Its own lever rather than a part of wm4_assists, so the two can be A/B'd
         // separately - §101 measured that the assists without this one are a net loss.
         ConfigValue<uint32_t>                 jolt_wm4_governor;
+        // docs §103 (§95.3 ported): soil rolling drag, F = -SoilProps::m_resistance * wheelMass *
+        // v / R, applied per wheel at the end of CollideWheelAndLandscape. The last un-ported
+        // every-frame force, and the third lever of the same bundle as wm4_assists/wm4_governor.
+        ConfigValue<uint32_t>                 jolt_wm4_soildrag;
         // docs §39: wheelmodel_core (Pacejka contact) params - same [wheelmodel] names as spring_wheel so tuning transfers.
         ConfigValue<float>                    jolt_wm_tyre_stiffness;
         ConfigValue<float>                    jolt_wm_tyre_thickness;

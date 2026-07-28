@@ -374,6 +374,9 @@ namespace kraken::fix::joltshadow {
         float                           wmSpeedLimit   = 0.0f;
         float                           wmSurfaceSpeed = 0.0f;
         bool                            wmGoverned     = false;
+        // docs §103: soil rolling drag, summed magnitude over the wheels that got it.
+        float                           wmSoilDragN      = 0.0f;
+        float                           wmSoilResistance = 0.0f;
         // docs §59: the parallel harvest listener for this vehicle. Registered on first build and
         // then re-pointed rather than re-registered - see BuildWheelBodies for why the OLD one is
         // deliberately left registered on a rebuild instead of being removed.
@@ -2832,6 +2835,74 @@ namespace kraken::fix::joltshadow {
         state.wmAssistHorizVel  = horizVel;
     }
 
+    // docs §103 (§95.3 ported): soil rolling drag, the last un-ported every-frame force.
+    // ai::CollideWheelAndLandscape (RVA 0x491db0, source lines 193-314) ends with, at line 311:
+    //
+    //   F = -SoilProps::m_resistance * wheel->GetMass() * wheelVelocity * (1.0 / wheelRadius)
+    //
+    // applied to the WHEEL, not the chassis. Three things here were settled by reading the code
+    // rather than by choosing the convenient answer:
+    //   * the mass is the WHEEL's own - `mov edx,[esi]; call [edx+0x110]` dispatches on esi, and
+    //     esi is the wheel (the same object whose [+0x120]->[+0x114]->[vtbl+0x18] chain is its
+    //     Sphere::GetRadius). §95.3 cited [vtbl+0x110] and then called it the wheel's mass, which
+    //     are different claims; this is the one that holds.
+    //   * the scalar is m_resistance (SoilProps +0x20, read into xmm3 at 0x892639), NOT
+    //     m_friction (+0x1c, which feeds a different path at 0x8925e8).
+    //   * it is a plain linear damper on velocity, outside the contact loop and not subject to the
+    //     friction circle - which is exactly why folding rolling resistance into Pacejka (§42) is
+    //     NOT the same mechanism.
+    //
+    // Scale, since §95.3 dismissed this one against the wrong quantity: at 28 m/s on Molokovoz01
+    // it is ~580 N across four wheels against ~935 N of average tractive force. Not 1.4% of
+    // anything.
+    static void ApplySoilRollingDrag(ShadowState& state, const char* label) {
+        if (!state.wheelBodyMode)
+            return;
+        if (kraken::Config::Instance().jolt_wm4_soildrag.value == 0)
+            return;
+        JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+        hta::ai::DynamicScene* scene = hta::ai::DynamicScene::Instance();
+        if (physics == nullptr || scene == nullptr)
+            return;
+        // Same derivation the other two soil lookups in this file use - world units per tile, not
+        // the tile count. Copying the expression rather than the concept: getting this inverted
+        // would sample a soil tile far from the wheel and the drag would look randomly wrong.
+        const float tileSize = (float) hta::ai::CServer::Instance()->GetLevelSize()
+            / (float) hta::ai::CServer::Instance()->GetWorld()->GetLandscape().GetTileSize();
+        if (!(tileSize > 0.0f))
+            return;
+
+        float applied = 0.0f, resistSeen = 0.0f;
+        const size_t nw = std::min(state.wheelBodies.size(), state.wheelSetup.size());
+        for (size_t i = 0; i < nw && i < kMaxHarvestWheels; ++i) {
+            // Only for a wheel actually touching the landscape: the reference applies this from
+            // INSIDE the wheel-vs-landscape collide handler, so an airborne wheel never sees it.
+            if (state.stepListener == nullptr || state.stepListener->diag[i].recsTyre == 0)
+                continue;
+            JPH::Body* wb = physics->GetBodyLockInterfaceNoLock().TryGetBody(state.wheelBodies[i]);
+            if (wb == nullptr || !wb->IsActive())
+                continue;
+
+            const JPH::RVec3 p = wb->GetCenterOfMassPosition();
+            const int32_t soilX = (int32_t) ((float) p.GetX() / tileSize + 0.5f);
+            const int32_t soilZ = (int32_t) ((float) p.GetZ() / tileSize + 0.5f);
+            const hta::ai::DynamicScene::SoilProps& props =
+                scene->GetSoilProps((uint32_t) soilX, (uint32_t) soilZ);
+            if (!(props.m_resistance > 0.0f))
+                continue;
+
+            const float R = std::max(state.wheelSetup[i].radius, 1.0e-3f);
+            const float m = 1.0f / std::max(wb->GetMotionProperties()->GetInverseMass(), 1.0e-8f);
+            const JPH::Vec3 F = -wb->GetLinearVelocity() * (props.m_resistance * m / R);
+            wb->AddForce(F);
+            applied += F.Length();
+            resistSeen = props.m_resistance;
+        }
+        state.wmSoilDragN     = applied;
+        state.wmSoilResistance = resistSeen;
+        (void) label;
+    }
+
     // docs §67 (Этап 1, шаг 5): the per-frame spin command. MAIN THREAD, before
     // PhysicsSystem::Update, from live game fields - nothing here may run inside the step listener
     // or a contact callback.
@@ -4360,6 +4431,10 @@ namespace kraken::fix::joltshadow {
             // these after StepScene and the next step consumes them). Never from a contact
             // callback - AddForce there is silently discarded.
             ApplyArcadeAssists(vehicle, state);
+            // Main thread on purpose: GetSoilProps' thread safety is unverified, which is exactly
+            // why step 4 declined to do the soil lookup from inside the step listener. Here there
+            // is no such problem - mode 2's StepWheelModel already calls it from this same thread.
+            ApplySoilRollingDrag(state, label);
             return true;
         }
 
@@ -4531,6 +4606,13 @@ namespace kraken::fix::joltshadow {
                         state.wmGoverned ? 1 : 0, (double) vehicle->m_brake,
                         (double) (vehicle->GetPrototypeInfo() ? vehicle->GetPrototypeInfo()->m_selfBrakingCoeff : 0.0f),
                         (double) vehicle->m_turboThrottleTime);
+                    // docs §103: soil drag. Printed against the vehicle's weight for scale, since
+                    // the whole reason this was nearly skipped is that §95.3 compared it against
+                    // the wrong quantity and concluded 1.4%.
+                    LOG_INFO("docs §103: soil drag (%s) on=%d totalN=%.0f (%.0f%% of weight) resistance=%.3f",
+                        label, (int) kraken::Config::Instance().jolt_wm4_soildrag.value,
+                        (double) state.wmSoilDragN, (double) (100.0f * state.wmSoilDragN / wN),
+                        (double) state.wmSoilResistance);
                 }
                 // docs §68 (Этап 1, шаг 6): steering, per wheel. Emitted for UNSTEERED wheels too,
                 // and that is the point: their cap prints as FLT_MAX, which is how the log proves
