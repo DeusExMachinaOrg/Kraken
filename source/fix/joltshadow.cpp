@@ -5003,6 +5003,39 @@ namespace kraken::fix::joltshadow {
             LOG_INFO("docs §39 SelfTest[4] classify: ground=%d obstacle=%d -> %s", s.ground, s.obstacle, pass?"PASS":"FAIL");
             ok = ok && pass;
         }
+        { // docs §63 / plan §3.5 - Case 5, the STEP 4 GATE. Built before step 4 wires forces, not
+          // after, because plan §3.5 calls this «самый опасный класс изменения во всём этапе»:
+          // four inputs of this core change MEANING when the force moves from the chassis to the
+          // wheel body, the file itself is not edited, and so the compiler says nothing.
+          //
+          // The one this case pins is `v_p`. The core reconstructs the contact-point velocity as
+          // v_c = v_p + Cross(a*omega, r) (wheelmodel_core.hpp:174), so mode 4 must hand it the
+          // wheel body's point velocity MINUS that same spin term - otherwise the spin is counted
+          // twice and every rolling wheel reports slip it does not have.
+          //
+          // Constructed so the two readings cannot both pass: a wheel rolling WITHOUT slip has a
+          // contact point that is stationary in world space. Fed correctly, the core reconstructs
+          // v_c = 0 and produces no longitudinal force. Fed the raw point velocity, it
+          // reconstructs v_c = Cross(a*omega, r) and invents a large one. The assertion is that
+          // the first is near zero AND the second is not - a test that only checked the first
+          // would pass just as happily on a core that ignored v_p altogether.
+            const vec3 c{0,0,0}, a{1,0,0}, n{0,1,0}, p{0,-R,0};
+            const float omega = 20.0f;                      // rad/s about the axle
+            const vec3  r{p.x - c.x, p.y - c.y, p.z - c.z};
+            const vec3  spinAtContact = Cross(a * omega, r);
+            // Rolling without slip: the contact point is stationary, so v_p is the negated spin.
+            const vec3  v_p_correct{-spinAtContact.x, -spinAtContact.y, -spinAtContact.z};
+
+            WMForce fGood = GeneralizedContactForce(p, n, 0.02f, 1.0f, c, a, v_p_correct, omega, R, tau, m, dt, P);
+            WMForce fRaw  = GeneralizedContactForce(p, n, 0.02f, 1.0f, c, a, vec3{}, omega, R, tau, m, dt, P);
+
+            const bool rollsFree   = std::fabs(fGood.fpar_w) < 1.0f;
+            const bool rawInvents  = std::fabs(fRaw.fpar_w) > 10.0f * std::fabs(fGood.fpar_w) + 1.0f;
+            const bool pass = rollsFree && rawInvents;
+            LOG_INFO("docs §63 SelfTest[5] v_p basis (STEP 4 GATE): correct fpar=%.3f raw fpar=%.3f -> %s",
+                fGood.fpar_w, fRaw.fpar_w, pass ? "PASS" : "FAIL");
+            ok = ok && pass;
+        }
         LOG_INFO("docs §39 wheelmodel_core SelfTest overall: %s", ok ? "PASS" : "FAIL");
     }
 
