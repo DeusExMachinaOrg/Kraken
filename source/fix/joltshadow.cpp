@@ -1666,7 +1666,15 @@ namespace kraken::fix::joltshadow {
                 // docs §107: same shared group, this family member's own subgroup block.
                 wheelBody->SetCollisionGroup(JPH::CollisionGroup(GetVariantGroupFilter(), kVariantGroupId,
                     (JPH::CollisionGroup::SubGroupID) (state.var.familyIndex * kVariantSubGroupStride + i + 1)));
+                if (i == 0)
+                    LOG_INFO("docs §107.3: collision group (%s) wheels: filter=VARIANT group=%u subGroup=%u..%u",
+                        label, kVariantGroupId,
+                        state.var.familyIndex * kVariantSubGroupStride + 1,
+                        state.var.familyIndex * kVariantSubGroupStride + (uint32_t) nWheels);
             } else if (i + 1 <= kMaxWheelsPerVehicleGroupFilter) {
+                if (i == 0)
+                    LOG_INFO("docs §107.3: collision group (%s) wheels: filter=wheel group=%u subGroup=1..%zu",
+                        label, collisionGroupId, nWheels);
                 wheelBody->SetCollisionGroup(JPH::CollisionGroup(
                     GetWheelGroupFilter(), collisionGroupId, (JPH::CollisionGroup::SubGroupID) (i + 1)));
             } else {
@@ -1998,6 +2006,16 @@ namespace kraken::fix::joltshadow {
         } else {
             body->SetCollisionGroup(JPH::CollisionGroup(GetWheelGroupFilter(), collisionGroupId, 0));
         }
+        // docs §107.3: which FILTER TABLE each body ended up on, not just which group. The
+        // hypothesis under test is that two different tables end up sharing one GroupID - Jolt
+        // consults the first body's filter, so a variant's subgroup would index past the smaller
+        // table. That is invisible in any log that prints only group and subgroup, which is why
+        // the pointer is here.
+        LOG_INFO("docs §107.3: collision group (%s) chassis: filter=%s group=%u subGroup=%u familyIdx=%u",
+            label, state.VariantFamilyActive() ? "VARIANT" : "wheel",
+            state.VariantFamilyActive() ? kVariantGroupId : collisionGroupId,
+            state.VariantFamilyActive() ? state.var.familyIndex * kVariantSubGroupStride : 0u,
+            state.var.familyIndex);
 
         // docs §27: read once here (constant for the whole body, not per-wheel) - used by the
         // per-wheel suspension-frequency derivation below. Valid immediately after CreateBody:
