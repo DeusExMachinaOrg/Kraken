@@ -489,6 +489,13 @@ namespace kraken::fix::joltshadow {
             float    steerHz      = 20.0f;
             float    steerDamping = 1.0f;
             uint32_t familyIndex  = 0;   // 0 = the player shadow, 1..N = variants
+            // docs §107.5: diagnostic lever. 1 means this variant does NOT join the shared
+            // collision family and takes its own GroupID like an AI shadow instead. Isolated
+            // variants then physically collide with each other, which is useless for measuring -
+            // its only job is to split the remaining hypothesis space: if the PLAYER's divergence
+            // comes back with the family dissolved, the cause is its group change; if not, the
+            // cause is something shared between shadows of one vehicle.
+            uint32_t isolate      = 0;
         };
         Variant  var;
         // True once any wm4_variant_N line exists - including for the PLAYER shadow, whose var is
@@ -4881,6 +4888,7 @@ namespace kraken::fix::joltshadow {
                 else if (k == "soildrag")      out.soildrag     = asU();
                 else if (k == "steer_hz")      out.steerHz      = asF();
                 else if (k == "steer_damping") out.steerDamping = asF();
+                else if (k == "isolate")       out.isolate      = asU();
                 else LOG_WARNING("docs §107: variant spec has unknown key '%s' - IGNORED. A typo here "
                                  "reads as 'this arm inherited the default' and would report a false null.",
                                  k.c_str());
@@ -5773,15 +5781,20 @@ namespace kraken::fix::joltshadow {
         InitVariantShadowsIfNeeded(playerVehicle);
         const size_t variantCount = g_variantShadows.size();
         bool variantLive[kMaxVariantShadows] = {};
-        if (variantCount > 0)
-            g_playerShadow.variantFamily = true;
+        // The player joins the family only if some variant actually needs it - an all-isolated
+        // set leaves the player exactly as it was, which is what makes the §107.5 comparison mean
+        // something.
+        bool familyNeeded = false;
+        for (size_t i = 0; i < variantCount; ++i)
+            familyNeeded = familyNeeded || (g_variantShadows[i].var.isolate == 0);
+        g_playerShadow.variantFamily = familyNeeded;
 
         // --- Pass 1 (pre-step) ---
         if (playerVehicle != nullptr)
             playerLive = UpdateOneVehiclePreStep(playerVehicle, g_playerShadow, "player", 0, elapsedTime);
 
         for (size_t i = 0; i < variantCount; ++i) {
-            g_variantShadows[i].variantFamily = true;
+            g_variantShadows[i].variantFamily = (g_variantShadows[i].var.isolate == 0);
             // The collision group is SHARED (kVariantGroupId, applied inside the build) while the
             // harvest slot must not be - so variants take slots from the top of the table, where
             // the AI shadows (1..aiCount, counting up) cannot reach them.
