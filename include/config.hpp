@@ -147,6 +147,21 @@ namespace kraken {
         // last verified one would hide a regression behind a completed checkbox; the lever is
         // here so the work that fixes it can turn it on in one line.
         ConfigValue<uint32_t>                 jolt_wm4_steer;
+        // docs §101 (§94 ported): the two ARCADE ASSISTS ai::Vehicle::_ApplyStabilizingForces
+        // applies to every ODE vehicle every frame and the shadow never reproduced - a
+        // speed-proportional downforce and a steering-proportional yaw torque. This is not an
+        // engine artefact: PressingForce and DriftCoeff sit in vehicles.xml next to DiffRatio and
+        // MaxEngineRpm, which we already port. We took the drivetrain and skipped the handling
+        // layer. 1 applies them to the shadow chassis, 0 is the pre-§94 behaviour.
+        //
+        // DEFAULT 0, on the measurement, and the reason is worth reading before flipping it: the
+        // port is exact (constants read from the binary, the force reproduces to the newton) and
+        // it still made divergence WORSE - travel ratio 1.01 -> 1.09, pos-div 2.62 -> 8.03 over 3
+        // interleaved repeats. The downforce adds grip, the drive servo converts grip into speed,
+        // and the thing that restrains the reference at that speed - the §95.3 speed governor in
+        // _KeepGearBox - is still not ported. Porting a SUBSET of the per-frame layer is not a
+        // partial improvement, it is a bias. Turn this on together with the governor, not before.
+        ConfigValue<uint32_t>                 jolt_wm4_assists;
         // docs §39: wheelmodel_core (Pacejka contact) params - same [wheelmodel] names as spring_wheel so tuning transfers.
         ConfigValue<float>                    jolt_wm_tyre_stiffness;
         ConfigValue<float>                    jolt_wm_tyre_thickness;

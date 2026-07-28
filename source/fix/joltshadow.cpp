@@ -366,6 +366,10 @@ namespace kraken::fix::joltshadow {
         float                           wmSpinThrottle  = 0.0f;
         float                           wmSpinBrake     = 0.0f;  // PRE-STEP snapshot
         bool                            wmSpinHandBrake = false; // PRE-STEP snapshot
+        // docs §101: what the ported arcade assists actually applied this frame, for the log.
+        float                           wmAssistDownForce = 0.0f;
+        float                           wmAssistTorque    = 0.0f;
+        float                           wmAssistHorizVel  = 0.0f;
         // docs §59: the parallel harvest listener for this vehicle. Registered on first build and
         // then re-pointed rather than re-registered - see BuildWheelBodies for why the OLD one is
         // deliberately left registered on a rebuild instead of being removed.
@@ -2703,6 +2707,84 @@ namespace kraken::fix::joltshadow {
         return wheelTorque;
     }
 
+    // docs §101 (§94 ported): the two arcade assists ai::Vehicle::_ApplyStabilizingForces
+    // (RVA 0x1d5e60, vehicle.cpp:6717-6769) applies to every ODE vehicle every frame. The shadow
+    // has never reproduced either, and §98/§99 both ended up pointing here: without the downforce
+    // the shadow leaves the ground above ~25 m/s, which dominates every post-throttle metric and
+    // leaves an unloaded steered wheel with nothing to hold it off its stop.
+    //
+    // Every constant below was read out of the binary, not taken from the notes:
+    //   -0.1962 @0x5927d8 (= -0.02*9.81), 5.0 @0x5e59ac, 0.5 @0x5e5968,
+    //   INITIAL_UP_DIRECTION @0x60095c = (0,1,0)
+    //
+    // The shadow evaluates the RULE on its OWN state - its own velocity and its own contact count -
+    // rather than copying the reference's force. Copying would inject reference state into the
+    // thing being compared and make the divergence metric measure nothing.
+    static void ApplyArcadeAssists(hta::ai::Vehicle* vehicle, ShadowState& state) {
+        if (vehicle == nullptr || !state.wheelBodyMode)
+            return;
+        if (kraken::Config::Instance().jolt_wm4_assists.value == 0)
+            return;
+        JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+        if (physics == nullptr)
+            return;
+        JPH::Body* chassis = physics->GetBodyLockInterfaceNoLock().TryGetBody(state.bodyId);
+        if (chassis == nullptr || !chassis->IsActive())
+            return;
+        const hta::ai::VehiclePrototypeInfo* proto = vehicle->GetPrototypeInfo();
+        if (proto == nullptr)
+            return;
+
+        const JPH::Vec3 v    = chassis->GetLinearVelocity();
+        const float     mass = std::max(vehicle->GetMass(), 1.0f);
+        // OUR contact count, not the game's m_numWheelsTouchingGround: the game RESETS that field
+        // to 0 at the end of _ApplyStabilizingForces (mov [esi+0x4b8], ebx), so what it reads at
+        // our pre-step depends on where we sit relative to that reset. The band already knows how
+        // many of our wheels are on the ground, and that is the shadow's own answer to the same
+        // question.
+        const uint32_t wheelsDown = (state.stepListener != nullptr)
+            ? state.stepListener->lastWheelsWithContact : 0;
+        if (wheelsDown == 0)
+            return;
+
+        // --- 1. Downforce. Gated on horizontal speed only (the disassembly squares [esp+0x18] and
+        // [esp+0x20] and skips [esp+0x1c]), so a vehicle falling fast gets none of it.
+        const float horizVel = std::sqrt(v.GetX() * v.GetX() + v.GetZ() * v.GetZ());
+        float downForce = 0.0f;
+        if (horizVel > 5.0f) {
+            downForce = -0.1962f * mass * proto->m_pressingForce * horizVel;
+            chassis->AddForce(JPH::Vec3(0.0f, downForce, 0.0f));
+        }
+
+        // --- 2. Yaw assist. The game turns the vehicle with a torque, straight past the tyres.
+        // curAngle comes from the FIRST wheel with a live object, not from a steered wheel and not
+        // averaged - the loop at 0x1d6100 walks the WheelInfo array and takes the first whose
+        // Wheel* is non-null. Faithful, even though it looks arbitrary.
+        const hta::ai::Wheel* firstWheel = nullptr;
+        for (hta::ai::Wheel* w : state.wheelOrder) {
+            if (w != nullptr) { firstWheel = w; break; }
+        }
+        float torqueMag = 0.0f;
+        if (firstWheel != nullptr) {
+            const float speed = v.Length();               // FULL speed here, not horizontal
+            const JPH::Vec3 fwd = chassis->GetRotation() * JPH::Vec3(0.0f, 0.0f, 1.0f);
+            // comiss 0, dot ; jbe -> +1. So dot >= 0 gives +1, reversing gives -1: the assist
+            // turns the vehicle the same way whether it is going forwards or backwards.
+            const float sgn = (fwd.Dot(v) >= 0.0f) ? 1.0f : -1.0f;
+            const float throttleTerm = std::fabs(0.5f * vehicle->m_throttle) + 0.5f;
+            torqueMag = firstWheel->m_curAngle * mass * speed * vehicle->m_driftCoeff
+                      * vehicle->_GetCabinControlCoeff() * sgn * throttleTerm;
+            // AddRelTorque takes a BODY-relative vector; the base is -INITIAL_UP_DIRECTION, so
+            // body-local -Y. Rotating it into world is what AddRelTorque does internally.
+            const JPH::Vec3 tLocal(0.0f, -torqueMag, 0.0f);
+            chassis->AddTorque(chassis->GetRotation() * tLocal);
+        }
+
+        state.wmAssistDownForce = downForce;
+        state.wmAssistTorque    = torqueMag;
+        state.wmAssistHorizVel  = horizVel;
+    }
+
     // docs §67 (Этап 1, шаг 5): the per-frame spin command. MAIN THREAD, before
     // PhysicsSystem::Update, from live game fields - nothing here may run inside the step listener
     // or a contact callback.
@@ -4223,6 +4305,11 @@ namespace kraken::fix::joltshadow {
             // so the other order would skip the whole vehicle on the frame it woke.
             KeepShadowBodiesAwake(state);
             UpdateWheelSpinCommands(vehicle, state, dt);
+            // AFTER the motor commands, but still pre-step: forces added here are consumed by the
+            // Update that follows, which is the same relationship the reference has (ODE applies
+            // these after StepScene and the next step consumes them). Never from a contact
+            // callback - AddForce there is silently discarded.
+            ApplyArcadeAssists(vehicle, state);
             return true;
         }
 
@@ -4365,6 +4452,20 @@ namespace kraken::fix::joltshadow {
                         (double) vehicle->m_realThrottle, (double) vehicle->m_engineRpm,
                         (double) vehicle->m_averageWheelAVel,
                         vehicle->m_bHandBrake ? 1 : 0, vehicle->m_bAutoBrake ? 1 : 0);
+                    // docs §101: the ported §94 assists. downForce is printed both absolutely and
+                    // as a fraction of the vehicle's own weight, because "60% of its weight at
+                    // 15 m/s" is the claim that made this layer worth porting and it should be
+                    // readable off the log rather than recomputed by hand.
+                    const float wN = std::max(vehicle->GetMass(), 1.0f)
+                                   * std::max(std::fabs(kraken::Config::Instance().gravity.value), 0.1f);
+                    LOG_INFO("docs §101: assists (%s) on=%d horizVel=%.1f m/s downForce=%.0fN (%.0f%% of weight "
+                             "%.0fN) yawTorque=%.0fNm | pressingForce=%.2f driftCoeff=%.3f cabin=%.2f",
+                        label, (int) kraken::Config::Instance().jolt_wm4_assists.value,
+                        (double) state.wmAssistHorizVel, (double) state.wmAssistDownForce,
+                        (double) (100.0f * std::fabs(state.wmAssistDownForce) / wN), (double) wN,
+                        (double) state.wmAssistTorque,
+                        (double) (vehicle->GetPrototypeInfo() ? vehicle->GetPrototypeInfo()->m_pressingForce : 0.0f),
+                        (double) vehicle->m_driftCoeff, (double) vehicle->_GetCabinControlCoeff());
                 }
                 // docs §68 (Этап 1, шаг 6): steering, per wheel. Emitted for UNSTEERED wheels too,
                 // and that is the point: their cap prints as FLT_MAX, which is how the log proves
