@@ -132,6 +132,21 @@ namespace kraken {
         // step. NOT the same thing as [wheelmodel] own_spin, which gates mode 2's scalar spin
         // integrator: that one stays, because mode 2 remains the rollback path on every step.
         ConfigValue<uint32_t>                 jolt_wm4_spin;
+        // docs §68 (Этап 1, шаг 6): the steering degree of freedom. 1 turns RotationZ into a
+        // limited swing axis with a Position motor for wheels the prototype marks steerable; 0
+        // leaves RotationZ MakeFixedAxis for every wheel, which is the step-5 topology. Not
+        // per-wheel: hw->m_steering still decides which wheels are steerable, independently.
+        //
+        // DEFAULT 0, and that is a deliberate divergence from the lost build, which shipped 1.
+        // Step 6 is implemented and its sign, plumbing and tracking are verified (the motor
+        // follows to 0.10 deg when undisturbed), but it does NOT pass the plan's own acceptance
+        // gate: steered wheels are still driven to the invented +-35 deg stop by contact-patch
+        // torque, and merely enabling it moves the straight-line baseline from ratio 1.01 /
+        // pos-div 2.77 m (step 5, 3 repeats) to 0.92 / 24.80 m. The recovered build did not pass
+        // that bar either - docs §98/§99. Defaulting a step ON when it measurably degrades the
+        // last verified one would hide a regression behind a completed checkbox; the lever is
+        // here so the work that fixes it can turn it on in one line.
+        ConfigValue<uint32_t>                 jolt_wm4_steer;
         // docs §39: wheelmodel_core (Pacejka contact) params - same [wheelmodel] names as spring_wheel so tuning transfers.
         ConfigValue<float>                    jolt_wm_tyre_stiffness;
         ConfigValue<float>                    jolt_wm_tyre_thickness;

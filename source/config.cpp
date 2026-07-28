@@ -69,6 +69,7 @@ namespace kraken {
         this->jolt_wm4_joint_at_mount            = { "jolt_harness","wm4_joint_at_mount",              0,     true,  0,     1           };
         this->jolt_wm4_chassis_mass_excl_wheels  = { "jolt_harness","wm4_chassis_mass_excl_wheels",    1,     true,  0,     1           };
         this->jolt_wm4_spin                      = { "jolt_harness","wm4_spin",                        1,     true,  0,     1           };
+        this->jolt_wm4_steer                     = { "jolt_harness","wm4_steer",                       0,     true,  0,     1           };
         this->jolt_wm_tyre_stiffness             = { "wheelmodel","tyre_stiffness",   120000.0f, true, 1.0f,     1e9f    };
         this->jolt_wm_tyre_thickness             = { "wheelmodel","tyre_thickness",   0.1f,      true, 0.0f,     10.0f   };
         this->jolt_wm_tyre_damping               = { "wheelmodel","tyre_damping",     0.5f,      true, 0.0f,     10.0f   };
@@ -176,6 +177,7 @@ namespace kraken {
         this->LoadValue(&this->jolt_wheelmodel);
         this->LoadValue(&this->jolt_wm4_chassis_mass_excl_wheels);
         this->LoadValue(&this->jolt_wm4_spin);
+        this->LoadValue(&this->jolt_wm4_steer);
         this->LoadValue(&this->jolt_wm4_joint_at_mount);
         this->LoadValue(&this->jolt_wm4_compress_fraction);
         this->LoadValue(&this->jolt_wm_tyre_stiffness);
@@ -263,6 +265,7 @@ namespace kraken {
         this->DumpValue(&this->jolt_wheelmodel);
         this->DumpValue(&this->jolt_wm4_chassis_mass_excl_wheels);
         this->DumpValue(&this->jolt_wm4_spin);
+        this->DumpValue(&this->jolt_wm4_steer);
         this->DumpValue(&this->jolt_wm4_joint_at_mount);
         this->DumpValue(&this->jolt_wm4_compress_fraction);
         this->DumpValue(&this->jolt_wm_tyre_stiffness);

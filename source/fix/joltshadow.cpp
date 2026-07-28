@@ -335,6 +335,14 @@ namespace kraken::fix::joltshadow {
             float limit  = 0.0f;   // commanded mMaxTorqueLimit, a magnitude
             float cap    = 0.0f;   // the contact torque cap this wheel was given
             float brakeT = 0.0f;   // commanded SetMaxFriction(RotationX)
+            // docs §68 (шаг 6). steerCap is deliberately the SAME scalar as cap: the one thing the
+            // recovered log actually supports is a single pair (cap=3020 and cmdTq=3020 on wheels
+            // 0/1 in one frame) - the stronger "3049 on wheel 2" claim was refuted, wheel 2 is
+            // unsteered and printed FLT_MAX. So they start shared because that is the evidence,
+            // and they get split only if a measurement demands it.
+            float steerTarget = 0.0f;  // commanded angle in CONSTRAINT space (sign already applied)
+            float steerCap    = 0.0f;
+            bool  steerable   = false;
         };
         std::vector<SpinCmd>            wmSpinCmd;
         // The dt the commands were issued against. The post-step pass turns an accumulated lambda
@@ -1608,7 +1616,6 @@ namespace kraken::fix::joltshadow {
             // R_twist, so steering must be the swing and spin the twist, and the reverse is
             // kinematically wrong.
             six.MakeFixedAxis(EAx::RotationY);
-            six.MakeFixedAxis(EAx::RotationZ);
 
             // docs §67: the sign that carries a game-side angular velocity into constraint space.
             // DERIVED, never a literal - every quantity crossing this boundary is multiplied by
@@ -1625,6 +1632,19 @@ namespace kraken::fix::joltshadow {
             const JPH::Vec3 axleCoreWorld = (chassisRot * ws.axleLocal).Normalized();
             ws.spinSign = (six.mAxisX1.Dot(axleCoreWorld) >= 0.0f) ? +1.0f : -1.0f;
 
+            // docs §68: the sign that carries m_steerRadians into constraint space. The frame is
+            // X = axle, Y = forward, so the implied Z = X x Y - and with the live-confirmed chassis
+            // convention (up = +Y, forward = +Z) that is X_c x Z_c = -Y_c, i.e. the constraint's Z
+            // points DOWN and is ANTI-PARALLEL to the kingpin. So the honest expectation here is
+            // -1, not +1, and this is flagged in the recovered spec as the single most likely
+            // silent inversion in the whole cluster: a hard-coded +1 gives a vehicle that steers
+            // the wrong way at every speed and still passes any test that only checks |angle|.
+            // The sibling bug is on record in this file - using Jolt's "right" = forward x up gave
+            // t = -Z and drove the vehicle backwards in the first bring-up.
+            const JPH::Vec3 constraintZ  = six.mAxisX1.Cross(six.mAxisY1);
+            const JPH::Vec3 kingpinWorld = (chassisRot * ws.steerAxis).Normalized();
+            ws.steerSign = (constraintZ.Dot(kingpinWorld) >= 0.0f) ? +1.0f : -1.0f;
+
             const bool spinDof = cfg.jolt_wm4_spin.value != 0;
             if (spinDof) {
                 // Free twist, for EVERY wheel - not only driven ones. A non-driven wheel still has
@@ -1635,6 +1655,25 @@ namespace kraken::fix::joltshadow {
                 six.mMotorSettings[EAx::RotationX].SetTorqueLimit(0.0f);
             } else {
                 six.MakeFixedAxis(EAx::RotationX);
+            }
+
+            // Steering. MakeFixedAxis for a non-steerable wheel costs zero solver rows, so the
+            // unsteered case is cheaper than the steered one rather than merely equivalent.
+            const bool steerDof = cfg.jolt_wm4_steer.value != 0 && ws.steering;
+            if (steerDof) {
+                // kApproxMaxSteerAngleRadians is INVENTED, not game data - the file says so at its
+                // declaration, and §94.2 confirms ODE's real Hinge2 stops on the steer axis are 0
+                // for unsteered wheels and +-pi for steered ones, i.e. the reference has no 35 deg
+                // limit at all. It is load-bearing (the lost build's log shows wheels sitting AT
+                // the stop with commanded=0.000), so it stays a named constant that can be swept,
+                // never a literal.
+                six.SetLimitedAxis(EAx::RotationZ, -kApproxMaxSteerAngleRadians, +kApproxMaxSteerAngleRadians);
+                six.mMotorSettings[EAx::RotationZ].mSpringSettings.mMode      = JPH::ESpringMode::FrequencyAndDamping;
+                six.mMotorSettings[EAx::RotationZ].mSpringSettings.mFrequency = 20.0f;
+                six.mMotorSettings[EAx::RotationZ].mSpringSettings.mDamping   = 1.0f;
+                six.mMotorSettings[EAx::RotationZ].SetTorqueLimit(0.0f);   // commanded per frame
+            } else {
+                six.MakeFixedAxis(EAx::RotationZ);
             }
 
             JPH::Constraint* c = six.Create(*chassisBody, *wheelBody);  // body 1 = chassis, body 2 = wheel
@@ -1650,6 +1689,8 @@ namespace kraken::fix::joltshadow {
                 // The axis is free either way, so an undriven wheel spins on the tyre force alone.
                 if (spinDof && ws.driven)
                     sc->SetMotorState(EAx::RotationX, JPH::EMotorState::Velocity);
+                if (steerDof)
+                    sc->SetMotorState(EAx::RotationZ, JPH::EMotorState::Position);
             }
 
             state.wheelBodies.push_back(wheelBody->GetID());
@@ -2665,7 +2706,11 @@ namespace kraken::fix::joltshadow {
         using EAx = JPH::SixDOFConstraint::EAxis;
         if (vehicle == nullptr || dt <= 1.0e-6f || !state.wheelBodyMode)
             return;
-        if (kraken::Config::Instance().jolt_wm4_spin.value == 0)
+        // The two DOFs are independent levers - either can be rolled back without the other, so
+        // this runs whenever EITHER is on, and each block checks its own gate.
+        const bool spinDofOn  = kraken::Config::Instance().jolt_wm4_spin.value  != 0;
+        const bool steerDofOn = kraken::Config::Instance().jolt_wm4_steer.value != 0;
+        if (!spinDofOn && !steerDofOn)
             return;
 
         JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
@@ -2760,7 +2805,12 @@ namespace kraken::fix::joltshadow {
             const float cap = R * std::max(mu * fnPrev, mVeh * gAbs / (float) std::max<size_t>(nw, 1));
 
             float target = 0.0f, limit = 0.0f;
-            if (handBrake) {
+            // Every write below touches RotationX, which is MakeFixedAxis when wm4_spin=0 - and
+            // commanding a motor on a fixed axis is not a no-op in Jolt, it asserts. The rollback
+            // lever has to actually roll back.
+            if (!spinDofOn) {
+                // nothing: RotationX is locked, the wheel turns with the chassis
+            } else if (handBrake) {
                 // The handbrake overrides the drive ENTIRELY - throttle and gearbox torque are
                 // ignored, which the recovered log confirms directly (throttle=1.00 and
                 // perWheel=150Nm while cmdTq read 815-3049Nm in the same frame). Applied to every
@@ -2781,8 +2831,10 @@ namespace kraken::fix::joltshadow {
                 sc->SetMotorState(EAx::RotationX, JPH::EMotorState::Off);
             }
 
-            sc->GetMotorSettings(EAx::RotationX).SetTorqueLimit(limit);
-            sc->SetTargetAngularVelocityCS(JPH::Vec3(ws.spinSign * target, 0.0f, 0.0f));
+            if (spinDofOn) {
+                sc->GetMotorSettings(EAx::RotationX).SetTorqueLimit(limit);
+                sc->SetTargetAngularVelocityCS(JPH::Vec3(ws.spinSign * target, 0.0f, 0.0f));
+            }
 
             // The service brake as a FRICTION constraint, per plan:239 - it drives the relative
             // angular velocity to zero under a torque bound, which is what pads do. Flagged
@@ -2792,13 +2844,54 @@ namespace kraken::fix::joltshadow {
             // the §67 line's brake field, and it must not be reported as "what the build did".
             // maxBrakeTorque has no recovered value either, so the same contact cap is reused
             // rather than a new invented constant.
-            sc->SetMaxFriction(EAx::RotationX, brake * cap);
+            if (spinDofOn)
+                sc->SetMaxFriction(EAx::RotationX, brake * cap);
+
+            // docs §68 (Этап 1, шаг 6): the steering command. A Position motor about the
+            // constraint's RotationZ, targeting the live game-logic field m_steerRadians - not an
+            // ODE value, and not rate-smoothed here because the prototype's own SteeringSpeed
+            // already limits how fast that field moves.
+            float steerCS = 0.0f;
+            const bool steerable = steerDofOn && ws.steering;
+            // The steering motor gets its OWN limit, not the contact torque cap. Measured, not
+            // assumed: sharing them put the cap at 370-730 Nm while docs §68.2 showed the
+            // mechanical stop supplying 212-533 Nm to hold the wheel there - the same order, so
+            // the motor lost about a third of the time and the wheels splayed to opposite stops
+            // (measured=-0.611 and +0.611 against commanded 0.03). The straight-line baseline fell
+            // from ratio 1.01 to 0.85 with steering merely enabled.
+            //
+            // The disturbance is real physics, not a bug: the steering axis passes through the
+            // wheel centre, so zero scrub radius and zero trail, and any wander of the contact
+            // patch off the vertical produces R*F about the kingpin - 0.635 m x 800 N is 508 Nm,
+            // which is exactly the observed range. A real steering rack is far stiffer than that;
+            // a driver's wheel is not knocked to full lock by a bump.
+            //
+            // The shared-cap reading came from ONE coincidence in the recovered log (cap=3020 and
+            // cmdTq=3020 on wheels 0/1 in a single frame) and verification refuted the stronger
+            // claim built on it. So it is weak evidence, and the plan's own step-6 instruction is
+            // to tune this limit until the wheel "neither jams nor bulldozes". Finite on purpose:
+            // a kerb must still eventually win, which FLT_MAX would forbid.
+            constexpr float kSteerCapWeightMultiple = 4.0f;   // ~8x the measured 533 Nm disturbance
+            const float steerCap = kSteerCapWeightMultiple * mVeh * gAbs * R;
+            if (steerable) {
+                // Clamped to the mechanical stop before it is commanded: asking a Position motor
+                // for an angle the limits forbid makes it fight the limit constraint every frame,
+                // which reads as a jittering wheel rather than as an out-of-range command.
+                const float steerCmd = std::clamp(vehicle->m_steerRadians,
+                                                  -kApproxMaxSteerAngleRadians, kApproxMaxSteerAngleRadians);
+                steerCS = ws.steerSign * steerCmd;
+                sc->GetMotorSettings(EAx::RotationZ).SetTorqueLimit(steerCap);
+                sc->SetTargetOrientationCS(JPH::Quat::sRotation(JPH::Vec3::sAxisZ(), steerCS));
+            }
 
             ShadowState::SpinCmd& cmd = state.wmSpinCmd[i];
-            cmd.target = target;
-            cmd.limit  = limit;
-            cmd.cap    = cap;
-            cmd.brakeT = brake * cap;
+            cmd.target      = target;
+            cmd.limit       = limit;
+            cmd.cap         = cap;
+            cmd.brakeT      = brake * cap;
+            cmd.steerTarget = steerCS;
+            cmd.steerCap    = steerable ? steerCap : FLT_MAX;  // FLT_MAX = motor never configured
+            cmd.steerable   = steerable;
         }
     }
 
@@ -4247,6 +4340,65 @@ namespace kraken::fix::joltshadow {
                         (double) vehicle->m_realThrottle, (double) vehicle->m_engineRpm,
                         (double) vehicle->m_averageWheelAVel,
                         vehicle->m_bHandBrake ? 1 : 0, vehicle->m_bAutoBrake ? 1 : 0);
+                }
+                // docs §68 (Этап 1, шаг 6): steering, per wheel. Emitted for UNSTEERED wheels too,
+                // and that is the point: their cap prints as FLT_MAX, which is how the log proves
+                // their RotationZ motor was never configured. Suppressing the line for
+                // steerable=0 would remove that check.
+                if (kraken::Config::Instance().jolt_wm4_steer.value != 0 && !state.wmSpinCmd.empty()) {
+                    const float dtLog = std::max(state.lastStepDt, 1.0e-6f);
+                    for (size_t w = 0; w < state.wmSpinCmd.size() && w < state.wheelSetup.size(); ++w) {
+                        const WheelSetup& ws = state.wheelSetup[w];
+                        const ShadowState::SpinCmd& cmd = state.wmSpinCmd[w];
+                        JPH::SixDOFConstraint* sc =
+                            static_cast<JPH::SixDOFConstraint*>(state.wheelConstraints[w]);
+                        // The measured angle comes off the CONSTRAINT, then has steerSign removed
+                        // again so it is comparable with the commanded value in game space. Miss
+                        // that second multiply and err reads 2*angle instead of ~0 on a straight
+                        // road - which looks like a tracking failure and is an instrument bug.
+                        float measured = 0.0f;
+                        if (sc != nullptr) {
+                            JPH::Quat swing, twist;
+                            sc->GetRotationInConstraintSpace().GetSwingTwist(swing, twist);
+                            measured = ws.steerSign * 2.0f * std::atan2(swing.GetZ(), swing.GetW());
+                        }
+                        const float commanded = ws.steerSign * cmd.steerTarget;   // back to game space
+                        const float steerTq = (sc != nullptr)
+                            ? sc->GetTotalLambdaMotorRotation().GetZ() / dtLog : 0.0f;
+                        // sat = 1.00 means the motor is on its cap and the wheel goes where the
+                        // tyre pushes it, not where it was told. The lost build ran at sat=1.00 in
+                        // 18 of 64 steerable frames with up to 36 deg of following error, so this
+                        // is a number to watch, not a formality.
+                        const float sat = (cmd.steerCap > 0.0f && cmd.steerCap < FLT_MAX)
+                            ? std::fabs(steerTq) / cmd.steerCap : 0.0f;
+                        LOG_INFO("docs §68: steer (%s) w=%zu steerable=%d commanded=%.3f rad measured=%.3f rad "
+                                 "err=%.2f deg steerSign=%+.0f steerTq=%.0fNm cap=%.0fNm sat=%.2f",
+                            label, w, cmd.steerable ? 1 : 0, (double) commanded, (double) measured,
+                            (double) ((measured - commanded) * 57.29578f), (double) ws.steerSign,
+                            (double) steerTq, (double) cmd.steerCap, (double) sat);
+                        // docs §68.2: WHY the wheel is where it is. sat=1.00 alone cannot separate
+                        // "an external torque is pinning the wheel against the stop and the motor
+                        // cannot out-pull it" from "nothing is pushing and the motor simply is not
+                        // commanding it back". limRot is GetTotalLambdaRotation()/dt: x is 0 while
+                        // RotationX is free, y is the camber reaction, and z is the LIMIT reaction
+                        // - the torque the mechanical stop itself is supplying. A large z means
+                        // something really is driving the wheel into the stop, and the motor cap
+                        // has to beat THAT number; a z near zero means the cap is not the problem
+                        // and raising it would be tuning against the wrong quantity.
+                        if (sc != nullptr) {
+                            const JPH::Vec3 limRot = sc->GetTotalLambdaRotation() / dtLog;
+                            const JPH::Vec3 wAng = (w < state.wheelBodies.size())
+                                ? kraken::fix::jolt::GetPhysicsSystem()->GetBodyInterface()
+                                      .GetAngularVelocity(state.wheelBodies[w])
+                                : JPH::Vec3::sZero();
+                            LOG_INFO("docs §68.2: steer budget (%s) w=%zu limRot=%.0f/%.0f/%.0f Nm "
+                                     "atStop=%d |wheelAngVel|=%.1f rad/s",
+                                label, w, (double) limRot.GetX(), (double) limRot.GetY(),
+                                (double) limRot.GetZ(),
+                                (std::fabs(measured) > kApproxMaxSteerAngleRadians - 0.005f) ? 1 : 0,
+                                (double) wAng.Length());
+                        }
+                    }
                 }
             }
         }
