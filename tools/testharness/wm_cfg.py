@@ -334,6 +334,10 @@ def verify_drove_on_wheels(since_line):
 
 
 def main():
+    # docs §109.1: before anything else, refuse to run against a stale DLL. This cost one full 2x2
+    # measurement: four arms differing only in a config key the running binary had never heard of,
+    # all four identical, and the numbers looked like a clean null.
+    gamedir.check_dll_current()
     kill()
     clear_trigger()
     built = launch_and_wait()

@@ -419,7 +419,12 @@ namespace kraken::fix::joltshadow {
         bool                            wmSpinHandBrake = false; // PRE-STEP snapshot
         // docs §101: what the ported arcade assists actually applied this frame, for the log.
         float                           wmAssistDownForce = 0.0f;
-        float                           wmAssistTorque    = 0.0f;
+        float                           wmAssistTorque    = 0.0f;   // APPLIED (0 when §109 gates it off)
+        // docs §109: what the yaw assist WOULD have applied, computed even on the off arm. An A/B
+        // that only prints the applied value cannot tell "the gate worked" from "the term was zero
+        // anyway", and this term is zero whenever the driver is not steering - which is most of
+        // every scenario run so far, and exactly why it went unmeasured for so long.
+        float                           wmAssistTorqueRaw = 0.0f;
         float                           wmAssistHorizVel  = 0.0f;
         // docs §102: the speed governor's state, for the log.
         float                           wmSpeedLimit   = 0.0f;
@@ -484,6 +489,7 @@ namespace kraken::fix::joltshadow {
             uint32_t steer        = 0;
             uint32_t steerMode    = 2;
             uint32_t assists      = 1;
+            uint32_t assistYaw    = 1;   // docs §109: sub-gate, yaw torque only
             uint32_t governor     = 1;
             uint32_t soildrag     = 1;
             float    steerHz      = 20.0f;
@@ -509,6 +515,7 @@ namespace kraken::fix::joltshadow {
         uint32_t VarSteer()     const { return var.set ? var.steer     : kraken::Config::Instance().jolt_wm4_steer.value; }
         uint32_t VarSteerMode() const { return var.set ? var.steerMode : kraken::Config::Instance().jolt_wm4_steer_kinematic.value; }
         uint32_t VarAssists()   const { return var.set ? var.assists   : kraken::Config::Instance().jolt_wm4_assists.value; }
+        uint32_t VarAssistYaw() const { return var.set ? var.assistYaw : kraken::Config::Instance().jolt_wm4_assist_yaw.value; }
         uint32_t VarGovernor()  const { return var.set ? var.governor  : kraken::Config::Instance().jolt_wm4_governor.value; }
         uint32_t VarSoilDrag()  const { return var.set ? var.soildrag  : kraken::Config::Instance().jolt_wm4_soildrag.value; }
         float    VarSteerHz()   const { return var.set ? var.steerHz   : kraken::Config::Instance().jolt_wm4_steer_hz.value; }
@@ -2973,12 +2980,18 @@ namespace kraken::fix::joltshadow {
                       * vehicle->_GetCabinControlCoeff() * sgn * throttleTerm;
             // AddRelTorque takes a BODY-relative vector; the base is -INITIAL_UP_DIRECTION, so
             // body-local -Y. Rotating it into world is what AddRelTorque does internally.
-            const JPH::Vec3 tLocal(0.0f, -torqueMag, 0.0f);
-            chassis->AddTorque(chassis->GetRotation() * tLocal);
+            //
+            // docs §109: the sub-gate sits HERE, after the term is computed, so the off arm still
+            // reports the magnitude it declined to apply.
+            if (state.VarAssistYaw() != 0) {
+                const JPH::Vec3 tLocal(0.0f, -torqueMag, 0.0f);
+                chassis->AddTorque(chassis->GetRotation() * tLocal);
+            }
         }
 
         state.wmAssistDownForce = downForce;
-        state.wmAssistTorque    = torqueMag;
+        state.wmAssistTorqueRaw = torqueMag;
+        state.wmAssistTorque    = (state.VarAssistYaw() != 0) ? torqueMag : 0.0f;
         state.wmAssistHorizVel  = horizVel;
     }
 
@@ -4760,12 +4773,22 @@ namespace kraken::fix::joltshadow {
                     // readable off the log rather than recomputed by hand.
                     const float wN = std::max(vehicle->GetMass(), 1.0f)
                                    * std::max(std::fabs(kraken::Config::Instance().gravity.value), 0.1f);
-                    LOG_INFO("docs §101: assists (%s) on=%d horizVel=%.1f m/s downForce=%.0fN (%.0f%% of weight "
-                             "%.0fN) yawTorque=%.0fNm | pressingForce=%.2f driftCoeff=%.3f cabin=%.2f",
-                        label, (int) state.VarAssists(),
+                    // docs §109: curAngle is the yaw assist's ONLY driver-facing input, and it is
+                    // the reference's own field - so it is non-zero whenever the player steers,
+                    // whatever wm4_steer is set to. Printed because "the assist did nothing" and
+                    // "the driver never turned the wheel" look identical in every earlier log.
+                    const hta::ai::Wheel* logFirstWheel = nullptr;
+                    for (hta::ai::Wheel* w : state.wheelOrder) {
+                        if (w != nullptr) { logFirstWheel = w; break; }
+                    }
+                    LOG_INFO("docs §101: assists (%s) on=%d yaw=%d horizVel=%.1f m/s downForce=%.0fN (%.0f%% of weight "
+                             "%.0fN) yawTorque=%.0fNm raw=%.0fNm curAngle=%.4f rad | pressingForce=%.2f "
+                             "driftCoeff=%.3f cabin=%.2f",
+                        label, (int) state.VarAssists(), (int) state.VarAssistYaw(),
                         (double) state.wmAssistHorizVel, (double) state.wmAssistDownForce,
                         (double) (100.0f * std::fabs(state.wmAssistDownForce) / wN), (double) wN,
-                        (double) state.wmAssistTorque,
+                        (double) state.wmAssistTorque, (double) state.wmAssistTorqueRaw,
+                        (double) (logFirstWheel != nullptr ? logFirstWheel->m_curAngle : 0.0f),
                         (double) (vehicle->GetPrototypeInfo() ? vehicle->GetPrototypeInfo()->m_pressingForce : 0.0f),
                         (double) vehicle->m_driftCoeff, (double) vehicle->_GetCabinControlCoeff());
                     // docs §102: the speed governor. surfaceSpeed is the WHEEL SURFACE speed the
@@ -4884,6 +4907,7 @@ namespace kraken::fix::joltshadow {
                 else if (k == "steer")         out.steer        = asU();
                 else if (k == "steer_mode")    out.steerMode    = asU();
                 else if (k == "assists")       out.assists      = asU();
+                else if (k == "assist_yaw")    out.assistYaw    = asU();
                 else if (k == "governor")      out.governor     = asU();
                 else if (k == "soildrag")      out.soildrag     = asU();
                 else if (k == "steer_hz")      out.steerHz      = asF();

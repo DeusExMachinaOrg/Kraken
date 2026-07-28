@@ -161,6 +161,17 @@ namespace kraken {
         // the force-site list is closed) and the post-throttle attitude blow-up halves, 167.6 deg
         // -> 80.0 deg. Turning this one on alone is a measured regression, not a partial win.
         ConfigValue<uint32_t>                 jolt_wm4_assists;
+        // docs §109: sub-lever of wm4_assists that gates ONLY the yaw torque, leaving the downforce
+        // alone. The two assists share one binary function but are unrelated mechanisms - one loads
+        // the tyres, the other turns the chassis past them - and wm4_assists cannot separate them:
+        // switching it off removes the downforce too, and the downforce is the half that carried
+        // §103's win. Without this key the yaw torque cannot be measured at all, and it is the one
+        // piece of the ported handling layer that never has been (§101/§103 both measured the
+        // downforce and said so).
+        //
+        // DEFAULT 1 = the faithful port, i.e. no behaviour change from before this key existed. It
+        // is a MEASUREMENT lever, not a tuning one; the sub-gate exists so the arm can be built.
+        ConfigValue<uint32_t>                 jolt_wm4_assist_yaw;
         // docs §102 (§95.3 ported): the speed governor _KeepGearBox applies before handing torque
         // to the joint - above GetMaxSpeed() (player/attacking) or m_cruisingSpeed (AI), measured
         // on the WHEEL SURFACE speed and only while the driver is not braking, the drive is cut to

@@ -71,6 +71,7 @@ namespace kraken {
         this->jolt_wm4_spin                      = { "jolt_harness","wm4_spin",                        1,     true,  0,     1           };
         this->jolt_wm4_steer                     = { "jolt_harness","wm4_steer",                       0,     true,  0,     1           };
         this->jolt_wm4_assists                   = { "jolt_harness","wm4_assists",                     1,     true,  0,     1           };
+        this->jolt_wm4_assist_yaw                = { "jolt_harness","wm4_assist_yaw",                  1,     true,  0,     1           };
         this->jolt_wm4_governor                  = { "jolt_harness","wm4_governor",                    1,     true,  0,     1           };
         this->jolt_wm4_soildrag                  = { "jolt_harness","wm4_soildrag",                    1,     true,  0,     1           };
         this->jolt_wm4_steer_kinematic           = { "jolt_harness","wm4_steer_kinematic",             2,     true,  0,     2           };
@@ -186,6 +187,7 @@ namespace kraken {
         this->LoadValue(&this->jolt_wm4_spin);
         this->LoadValue(&this->jolt_wm4_steer);
         this->LoadValue(&this->jolt_wm4_assists);
+        this->LoadValue(&this->jolt_wm4_assist_yaw);
         this->LoadValue(&this->jolt_wm4_governor);
         this->LoadValue(&this->jolt_wm4_soildrag);
         this->LoadValue(&this->jolt_wm4_steer_kinematic);
@@ -281,6 +283,7 @@ namespace kraken {
         this->DumpValue(&this->jolt_wm4_spin);
         this->DumpValue(&this->jolt_wm4_steer);
         this->DumpValue(&this->jolt_wm4_assists);
+        this->DumpValue(&this->jolt_wm4_assist_yaw);
         this->DumpValue(&this->jolt_wm4_governor);
         this->DumpValue(&this->jolt_wm4_soildrag);
         this->DumpValue(&this->jolt_wm4_steer_kinematic);
