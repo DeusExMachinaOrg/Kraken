@@ -1147,6 +1147,23 @@ namespace kraken::fix::joltshadow {
         uint32_t lastSurvived          = 0;
         float    lastMaxNormalF        = 0.0f;
 
+        // docs §66: per-wheel band diagnostics. These exist to DISCRIMINATE, not to decorate.
+        // distMax in units of R separates "the wheel is riding on the rim sphere" (~1-tau/R) from
+        // "the tyre sphere is being hit" (~1.00R); the tyre/rim record split separates "the tyre
+        // sub-shape generates no manifolds at all" from "it does and they are being rejected".
+        // Without them, an inert band and a mis-placed wheel look identical from outside.
+        struct WheelDiag {
+            float    fnGround = 0.0f;   // normal force from the GROUND slot alone
+            float    fnTotal  = 0.0f;   // normal force summed over every applied slot
+            float    pen      = 0.0f;   // the tau-clamped penetration actually fed to the core
+            float    penRaw   = 0.0f;   // before the clamp - penRaw > tau means the band saturated
+            float    distMax  = 0.0f;   // max |centre - contactPoint|, in units of R
+            uint32_t recsTyre = 0;
+            uint32_t recsRim  = 0;
+            uint32_t survived = 0;
+        };
+        WheelDiag diag[kMaxHarvestWheels];
+
         void OnStep(const JPH::PhysicsStepListenerContext& inContext) override {
             namespace wm = kraken::fix::wheelmodel;
             const float dt = std::max(inContext.mDeltaTime, 1.0e-6f);
@@ -1183,6 +1200,10 @@ namespace kraken::fix::joltshadow {
                 const JPH::Vec3 axleWorld = (wt.body->GetRotation() * wt.axleLocal).Normalized();
                 const float omega = (wt.body->GetAngularVelocity() - chassisAngVel).Dot(axleWorld);
 
+                WheelDiag& dg = diag[w];
+                dg = WheelDiag();
+                dg.pen = 0.0f;
+
                 wm::WMContact cts[kMaxHarvestRecs];
                 wm::WMGeom    gm[kMaxHarvestRecs];
                 uint32_t      nRec = 0;   // NOT `n` - that is the raw harvested count above
@@ -1191,6 +1212,12 @@ namespace kraken::fix::joltshadow {
                     // Only the TYRE sub-shape feeds the band. A RIM record is harvested and
                     // counted, but must never produce band force: the solver already resolves the
                     // rim contact, so using it here would apply the normal load twice.
+                    // Counted BEFORE the survival test, and split by sub-shape, because "no
+                    // tyre records arrived" and "tyre records arrived and were all rejected" are
+                    // different faults with the same outward symptom.
+                    const float dist = JPH::Vec3(centre - JPH::RVec3(rec.point)).Length();
+                    dg.distMax = std::max(dg.distMax, dist / std::max(wt.radius, 1e-6f));
+                    if (rec.sub == 0) ++dg.recsTyre; else ++dg.recsRim;
                     if (rec.sub != 0)
                         continue;
                     // Reproject rather than trusting the manifold's own penetration depth: for a
@@ -1201,6 +1228,9 @@ namespace kraken::fix::joltshadow {
                     if (penRaw <= 0.0f)
                         continue;
                     ++survived;
+                    ++dg.survived;
+                    dg.penRaw = std::max(dg.penRaw, penRaw);
+                    dg.pen    = std::max(dg.pen, std::min(penRaw, wt.tau));
                     cts[nRec].p = wm::vec3{ rec.point.GetX(), rec.point.GetY(), rec.point.GetZ() };
                     cts[nRec].n = wm::vec3{ rec.normal.GetX(), rec.normal.GetY(), rec.normal.GetZ() };
                     // The tau clamp lives HERE, at the seam, not inside the core - which is what
@@ -1267,7 +1297,11 @@ namespace kraken::fix::joltshadow {
                     // physics problem. Comparing like with like is what makes the flag mean
                     // something.
                     const JPH::Vec3 nrm(cts[idx].n.x, cts[idx].n.y, cts[idx].n.z);
-                    maxNormalF = std::max(maxNormalF, F.Dot(nrm));
+                    const float fn = F.Dot(nrm);
+                    maxNormalF = std::max(maxNormalF, fn);
+                    dg.fnTotal += fn;
+                    if (idx == slots.ground)
+                        dg.fnGround = fn;
                     // The WHEEL body, not the chassis. The chassis feels the load through the
                     // SixDOF, and the r x F torque about the wheel's own COM arises on its own
                     // and two-sidedly - which is the whole point of giving the wheel a body.
@@ -3806,6 +3840,17 @@ namespace kraken::fix::joltshadow {
                     state.stepListener->lastOverflow, state.stepListener->wheelCount,
                     state.stepListener->lastSurvived, (double) state.stepListener->lastMaxNormalF,
                     (double) bound, (double) ratio, over);
+                // docs §66: the per-wheel breakdown. Emitted alongside the summary rather than
+                // instead of it - the summary says whether the band works, this says why not.
+                for (uint32_t w = 0; w < state.stepListener->wheelCount; ++w) {
+                    const auto& d = state.stepListener->diag[w];
+                    const float tw = (w < state.wheelSetup.size()) ? state.wheelSetup[w].tau : 0.0f;
+                    LOG_INFO("docs §66: tyre band (%s) w=%u fnGround=%.0fN fnTotal=%.0fN pen=%.5f penRaw=%.5f "
+                             "tau=%.5f pen/tau=%.2f | recs tyre=%u rim=%u survived=%u distMax=%.2fR",
+                        label, w, (double) d.fnGround, (double) d.fnTotal, (double) d.pen, (double) d.penRaw,
+                        (double) tw, (double) (tw > 0.0f ? d.pen / tw : 0.0f),
+                        d.recsTyre, d.recsRim, d.survived, (double) d.distMax);
+                }
             }
         }
     }
