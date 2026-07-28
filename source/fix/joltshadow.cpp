@@ -4905,6 +4905,20 @@ namespace kraken::fix::joltshadow {
             return;
         g_variantsInitialized = true;
         g_variantInitVehicle  = playerVehicle;
+        // docs §107.8: before dropping the old states, UNTAG their wheel bodies. Those bodies are
+        // abandoned rather than destroyed (the same leak-forever policy as everywhere else here),
+        // and their UserData still says 'WHL' with THIS harvest slot - so they keep writing
+        // contacts into the buffer the NEW variant is about to read. BuildWheelBodies already does
+        // exactly this on its own rebuild path; clearing the vector skipped it, and that is the
+        // whole bug: §66.2 caught a contact 319 wheel-radii away with penRaw = -18.9 m.
+        JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+        if (physics != nullptr) {
+            JPH::BodyInterface& bi = physics->GetBodyInterface();
+            for (ShadowState& old : g_variantShadows)
+                for (JPH::BodyID id : old.wheelBodies)
+                    if (!id.IsInvalid())
+                        bi.SetUserData(id, 0);
+        }
         g_variantShadows.clear();
         g_variantLabels.clear();
         if (playerVehicle == nullptr || specs.empty())
@@ -4966,6 +4980,23 @@ namespace kraken::fix::joltshadow {
         g_aiShadowsInitialized  = true;
         g_aiInitPlayerVehicle   = playerVehicle;
         g_aiTargets.clear();
+        // docs §107.8: the SAME hazard the variant path had, and this one predates it. The comment
+        // below was right that the bodies are abandoned rather than destroyed - but abandoned
+        // wheel bodies keep their 'WHL' UserData with THIS harvest slot, so they go on writing
+        // contacts into a buffer that the rebuilt shadow then reads. Found via the variants, where
+        // §66.2 caught a contact 319 wheel-radii away with penRaw = -18.9 m; here it is by
+        // inspection, not by measurement - the mechanism is identical but this path has not been
+        // observed failing, because it needs mode 4 plus an AI-shadow rebuild.
+        {
+            JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+            if (physics != nullptr) {
+                JPH::BodyInterface& bi = physics->GetBodyInterface();
+                for (ShadowState& old : g_aiShadows)
+                    for (JPH::BodyID id : old.wheelBodies)
+                        if (!id.IsInvalid())
+                            bi.SetUserData(id, 0);
+            }
+        }
         g_aiShadows.clear(); // drops OUR tracking only - any already-built Jolt bodies are abandoned, not destroyed (same leak-forever policy as BuildShadow)
 
         hta::ai::ObjContainer* objects = server->m_pObjects;
