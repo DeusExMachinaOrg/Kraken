@@ -191,6 +191,16 @@ namespace kraken {
         // measured 8591 Nm disturbance to 1 deg needs about 93 Hz. Swept, not guessed.
         ConfigValue<float>                    jolt_wm4_steer_hz;
         ConfigValue<float>                    jolt_wm4_steer_damping;
+        // docs §107: VARIANT SHADOWS - several shadows of the same vehicle in one game launch,
+        // each with its own parameters, so an A/B costs one launch instead of one per arm.
+        // Prefix list, same mechanism as lua_binds Script_N: [jolt_harness] wm4_variant_1, _2, ...
+        // Each value is a comma-separated k=v list over the mode-4 levers, e.g.
+        //     wm4_variant_1=label=steerOn,steer=1
+        //     wm4_variant_2=label=steerOff,steer=0
+        // Keys: label, spin, steer, steer_mode, assists, governor, soildrag, steer_hz,
+        // steer_damping. Anything omitted is inherited from the ordinary config values, so a
+        // variant only has to state what it changes. An empty list leaves the whole feature inert.
+        ConfigValue<std::vector<std::string>> jolt_wm4_variants;
         // docs §39: wheelmodel_core (Pacejka contact) params - same [wheelmodel] names as spring_wheel so tuning transfers.
         ConfigValue<float>                    jolt_wm_tyre_stiffness;
         ConfigValue<float>                    jolt_wm_tyre_thickness;

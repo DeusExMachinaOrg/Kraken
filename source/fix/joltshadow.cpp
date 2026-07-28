@@ -192,6 +192,31 @@ namespace kraken::fix::joltshadow {
         return g_wheelGroupFilter;
     }
 
+    // docs §107: the collision filter for VARIANT shadows - several shadows of the same vehicle
+    // running in one pass with different parameters.
+    //
+    // They spawn at the same pose, so every pair among them has to be suppressed, chassis included.
+    // The ordinary wheel filter cannot do it: it disables chassis-vs-wheel and wheel-vs-sibling,
+    // but Jolt's GroupFilterTable asserts on DisableCollision(i, i), so two chassis bodies sharing
+    // subgroup 0 would still collide. Hence a table where EVERY pair is disabled and each family
+    // member gets its own subgroup block - then sharing one GroupID makes the whole family
+    // mutually transparent while each still collides with the static world, which is the thing
+    // being compared.
+    static constexpr uint32_t kMaxVariantShadows    = 4;   // + the player shadow itself
+    static constexpr uint32_t kVariantSubGroupStride = kMaxWheelsPerVehicleGroupFilter + 1;
+    static constexpr uint32_t kVariantGroupId       = 0;   // the player shadow's own group - it joins the family
+    static JPH::GroupFilterTable* g_variantGroupFilter = nullptr;
+    static JPH::GroupFilterTable* GetVariantGroupFilter() {
+        if (g_variantGroupFilter == nullptr) {
+            const uint32_t n = (kMaxVariantShadows + 1) * kVariantSubGroupStride;
+            g_variantGroupFilter = new JPH::GroupFilterTable(n);
+            for (uint32_t i = 0; i < n; ++i)
+                for (uint32_t j = i + 1; j < n; ++j)
+                    g_variantGroupFilter->DisableCollision(i, j);
+        }
+        return g_variantGroupFilter;
+    }
+
     // Not in extern/hta's ode.hpp yet - declared locally rather than editing that submodule.
     // Confirmed via disassembly (docs §22.3): counts the body's dxJointNode linked list at
     // [body+0x14]/[node+8], i.e. exactly ODE's real, live joint count - not cached anywhere.
@@ -449,6 +474,38 @@ namespace kraken::fix::joltshadow {
         // Hence two fields. Anything that identifies "which vehicle's buffer" uses harvestSlot;
         // anything about "who may collide with whom" uses collisionGroupId.
         uint32_t harvestSlot           = 0;
+
+        // docs §107: per-shadow parameter overrides. When `set` is false every accessor below
+        // falls through to the global config, so a shadow that is not a variant behaves exactly as
+        // before - which is what makes the whole feature inert until a wm4_variant_N key exists.
+        struct Variant {
+            bool     set          = false;
+            uint32_t spin         = 1;
+            uint32_t steer        = 0;
+            uint32_t steerMode    = 2;
+            uint32_t assists      = 1;
+            uint32_t governor     = 1;
+            uint32_t soildrag     = 1;
+            float    steerHz      = 20.0f;
+            float    steerDamping = 1.0f;
+            uint32_t familyIndex  = 0;   // 0 = the player shadow, 1..N = variants
+        };
+        Variant  var;
+        // True once any wm4_variant_N line exists - including for the PLAYER shadow, whose var is
+        // never `set` but which still has to join the family's collision group so the variants do
+        // not collide with it. Filled by the update loop, which is the only place that knows.
+        bool     variantFamily = false;
+        bool VariantFamilyActive() const { return variantFamily; }
+
+        // Read through these, never through the config directly, anywhere the mode-4 paths care.
+        uint32_t VarSpin()      const { return var.set ? var.spin      : kraken::Config::Instance().jolt_wm4_spin.value; }
+        uint32_t VarSteer()     const { return var.set ? var.steer     : kraken::Config::Instance().jolt_wm4_steer.value; }
+        uint32_t VarSteerMode() const { return var.set ? var.steerMode : kraken::Config::Instance().jolt_wm4_steer_kinematic.value; }
+        uint32_t VarAssists()   const { return var.set ? var.assists   : kraken::Config::Instance().jolt_wm4_assists.value; }
+        uint32_t VarGovernor()  const { return var.set ? var.governor  : kraken::Config::Instance().jolt_wm4_governor.value; }
+        uint32_t VarSoilDrag()  const { return var.set ? var.soildrag  : kraken::Config::Instance().jolt_wm4_soildrag.value; }
+        float    VarSteerHz()   const { return var.set ? var.steerHz   : kraken::Config::Instance().jolt_wm4_steer_hz.value; }
+        float    VarSteerDamp() const { return var.set ? var.steerDamping : kraken::Config::Instance().jolt_wm4_steer_damping.value; }
         uint32_t consecutiveSlowFrames  = 0;
 
         // docs §39: per-wheel state for the wheelmodel apply path (parallel to wheelOrder).
@@ -1605,7 +1662,11 @@ namespace kraken::fix::joltshadow {
             // near-equal, and the TYRE/RIM distinction disappears with no symptom at all - the
             // whole banded-contact scheme dies quietly.
             wheelBody->SetUseManifoldReduction(false);
-            if (i + 1 <= kMaxWheelsPerVehicleGroupFilter) {
+            if (state.VariantFamilyActive() && i + 1 <= kMaxWheelsPerVehicleGroupFilter) {
+                // docs §107: same shared group, this family member's own subgroup block.
+                wheelBody->SetCollisionGroup(JPH::CollisionGroup(GetVariantGroupFilter(), kVariantGroupId,
+                    (JPH::CollisionGroup::SubGroupID) (state.var.familyIndex * kVariantSubGroupStride + i + 1)));
+            } else if (i + 1 <= kMaxWheelsPerVehicleGroupFilter) {
                 wheelBody->SetCollisionGroup(JPH::CollisionGroup(
                     GetWheelGroupFilter(), collisionGroupId, (JPH::CollisionGroup::SubGroupID) (i + 1)));
             } else {
@@ -1708,7 +1769,7 @@ namespace kraken::fix::joltshadow {
             const JPH::Vec3 kingpinWorld = (chassisRot * ws.steerAxis).Normalized();
             ws.steerSign = (constraintZ.Dot(kingpinWorld) >= 0.0f) ? +1.0f : -1.0f;
 
-            const bool spinDof = cfg.jolt_wm4_spin.value != 0;
+            const bool spinDof = state.VarSpin() != 0;
             if (spinDof) {
                 // Free twist, for EVERY wheel - not only driven ones. A non-driven wheel still has
                 // to roll, and locking it would drag the vehicle on four skids.
@@ -1722,7 +1783,7 @@ namespace kraken::fix::joltshadow {
 
             // Steering. MakeFixedAxis for a non-steerable wheel costs zero solver rows, so the
             // unsteered case is cheaper than the steered one rather than merely equivalent.
-            const bool steerDof = cfg.jolt_wm4_steer.value != 0 && ws.steering;
+            const bool steerDof = state.VarSteer() != 0 && ws.steering;
             if (steerDof) {
                 // docs §105: the MECHANICAL STOP and the COMMAND LIMIT are different things, and
                 // step 6 conflated them. Wheel::STEERING_LIMIT (pi/4) is what the player-control
@@ -1738,8 +1799,8 @@ namespace kraken::fix::joltshadow {
                 // "~20 Гц / ζ=1" with a tilde and no artefact carries it. A named lever is what
                 // lets it be swept instead of guessed.
                 six.mMotorSettings[EAx::RotationZ].mSpringSettings.mMode      = JPH::ESpringMode::FrequencyAndDamping;
-                six.mMotorSettings[EAx::RotationZ].mSpringSettings.mFrequency = cfg.jolt_wm4_steer_hz.value;
-                six.mMotorSettings[EAx::RotationZ].mSpringSettings.mDamping   = cfg.jolt_wm4_steer_damping.value;
+                six.mMotorSettings[EAx::RotationZ].mSpringSettings.mFrequency = state.VarSteerHz();
+                six.mMotorSettings[EAx::RotationZ].mSpringSettings.mDamping   = state.VarSteerDamp();
                 six.mMotorSettings[EAx::RotationZ].SetTorqueLimit(0.0f);   // commanded per frame
             } else {
                 six.MakeFixedAxis(EAx::RotationZ);
@@ -1927,7 +1988,16 @@ namespace kraken::fix::joltshadow {
         body->SetUserData(reinterpret_cast<uint64_t>(vehicle));
         // docs §37 item 3: chassis is always subgroup 0 within this vehicle's own GroupID - see
         // GetWheelGroupFilter's comment above.
-        body->SetCollisionGroup(JPH::CollisionGroup(GetWheelGroupFilter(), collisionGroupId, 0));
+        // docs §107: with variants active every family member - the player shadow included - moves
+        // onto the all-pairs-disabled table under one shared GroupID, each with its own subgroup
+        // block. The player shadow HAS to join: otherwise the variants would collide with it, and
+        // the baseline arm would be the one being disturbed.
+        if (state.VariantFamilyActive()) {
+            body->SetCollisionGroup(JPH::CollisionGroup(GetVariantGroupFilter(), kVariantGroupId,
+                (JPH::CollisionGroup::SubGroupID) (state.var.familyIndex * kVariantSubGroupStride)));
+        } else {
+            body->SetCollisionGroup(JPH::CollisionGroup(GetWheelGroupFilter(), collisionGroupId, 0));
+        }
 
         // docs §27: read once here (constant for the whole body, not per-wheel) - used by the
         // per-wheel suspension-frequency derivation below. Valid immediately after CreateBody:
@@ -2784,7 +2854,7 @@ namespace kraken::fix::joltshadow {
             out->speedLimit  = speedLimit;
             out->surfaceSpeed = surfSpeed;
             out->governed = (surfSpeed - speedLimit > 0.1f) && (vehicle->m_brake <= brakeFloor);
-            if (out->governed && kraken::Config::Instance().jolt_wm4_governor.value != 0)
+            if (out->governed && state.VarGovernor() != 0)
                 wheelTorque = 0.0f;
         }
 
@@ -2825,7 +2895,7 @@ namespace kraken::fix::joltshadow {
     static void ApplyArcadeAssists(hta::ai::Vehicle* vehicle, ShadowState& state) {
         if (vehicle == nullptr || !state.wheelBodyMode)
             return;
-        if (kraken::Config::Instance().jolt_wm4_assists.value == 0)
+        if (state.VarAssists() == 0)
             return;
         JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
         if (physics == nullptr)
@@ -2910,7 +2980,7 @@ namespace kraken::fix::joltshadow {
     static void ApplySoilRollingDrag(ShadowState& state, const char* label) {
         if (!state.wheelBodyMode)
             return;
-        if (kraken::Config::Instance().jolt_wm4_soildrag.value == 0)
+        if (state.VarSoilDrag() == 0)
             return;
         JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
         hta::ai::DynamicScene* scene = hta::ai::DynamicScene::Instance();
@@ -2970,8 +3040,8 @@ namespace kraken::fix::joltshadow {
             return;
         // The two DOFs are independent levers - either can be rolled back without the other, so
         // this runs whenever EITHER is on, and each block checks its own gate.
-        const bool spinDofOn  = kraken::Config::Instance().jolt_wm4_spin.value  != 0;
-        const bool steerDofOn = kraken::Config::Instance().jolt_wm4_steer.value != 0;
+        const bool spinDofOn  = state.VarSpin()  != 0;
+        const bool steerDofOn = state.VarSteer() != 0;
         if (!spinDofOn && !steerDofOn)
             return;
 
@@ -3118,7 +3188,7 @@ namespace kraken::fix::joltshadow {
             // already limits how fast that field moves.
             float steerCS = 0.0f;
             const bool steerable = steerDofOn && ws.steering;
-            const uint32_t steerMode = kraken::Config::Instance().jolt_wm4_steer_kinematic.value;
+            const uint32_t steerMode = state.VarSteerMode();
             // The steering motor gets its OWN limit, not the contact torque cap. Measured, not
             // assumed: sharing them put the cap at 370-730 Nm while docs §68.2 showed the
             // mechanical stop supplying 212-533 Nm to hold the wheel there - the same order, so
@@ -4612,7 +4682,7 @@ namespace kraken::fix::joltshadow {
                 // ("GetTotalLambdaMotorRotation()[0]/dt tracks the commanded torque", "omega at
                 // 100 km/h does not hit the ceiling") are the motorTq/cmdTq pair and the omega
                 // field, so the gates are read off the log rather than judged by eye.
-                if (kraken::Config::Instance().jolt_wm4_spin.value != 0 && !state.wmSpinCmd.empty()) {
+                if (state.VarSpin() != 0 && !state.wmSpinCmd.empty()) {
                     const float dtLog = std::max(state.lastStepDt, 1.0e-6f);
                     const JPH::Vec3 chassisAngVel =
                         kraken::fix::jolt::GetPhysicsSystem()->GetBodyInterface().GetAngularVelocity(state.bodyId);
@@ -4643,7 +4713,7 @@ namespace kraken::fix::joltshadow {
                              "driven=%u throttle=%.2f spin=%d | PRE-STEP brake=%.2f handBrake=%d",
                         label, state.wmGear, (double) state.wmEngineRpm, (double) state.wmDriveTorque,
                         (double) state.wmPerWheel, state.wmDrivenCount, (double) state.wmSpinThrottle,
-                        (int) kraken::Config::Instance().jolt_wm4_spin.value,
+                        (int) state.VarSpin(),
                         (double) state.wmSpinBrake, state.wmSpinHandBrake ? 1 : 0);
                     // docs §67.2: the RAW driver fields, because m_realThrottle turned out not to
                     // be a throttle. It reaches +-10.00 live while m_brake reads 0.01, so it is
@@ -4667,7 +4737,7 @@ namespace kraken::fix::joltshadow {
                                    * std::max(std::fabs(kraken::Config::Instance().gravity.value), 0.1f);
                     LOG_INFO("docs §101: assists (%s) on=%d horizVel=%.1f m/s downForce=%.0fN (%.0f%% of weight "
                              "%.0fN) yawTorque=%.0fNm | pressingForce=%.2f driftCoeff=%.3f cabin=%.2f",
-                        label, (int) kraken::Config::Instance().jolt_wm4_assists.value,
+                        label, (int) state.VarAssists(),
                         (double) state.wmAssistHorizVel, (double) state.wmAssistDownForce,
                         (double) (100.0f * std::fabs(state.wmAssistDownForce) / wN), (double) wN,
                         (double) state.wmAssistTorque,
@@ -4679,7 +4749,7 @@ namespace kraken::fix::joltshadow {
                     // GetMaxSpeed() can be read off a real run instead of guessed at.
                     LOG_INFO("docs §102: governor (%s) on=%d src=%s limit=%.1f surfaceSpeed=%.1f "
                              "chassisSpeed=%.1f cut=%d | brake=%.3f selfBrake=%.3f turboT=%.2f",
-                        label, (int) kraken::Config::Instance().jolt_wm4_governor.value,
+                        label, (int) state.VarGovernor(),
                         vehicle->m_bIsControlledByPlayer ? "player"
                             : ((int) vehicle->m_attackStatus == 1 ? "attack" : "cruising"),
                         (double) state.wmSpeedLimit, (double) state.wmSurfaceSpeed,
@@ -4692,7 +4762,7 @@ namespace kraken::fix::joltshadow {
                     // the whole reason this was nearly skipped is that §95.3 compared it against
                     // the wrong quantity and concluded 1.4%.
                     LOG_INFO("docs §103: soil drag (%s) on=%d totalN=%.0f (%.0f%% of weight) resistance=%.3f",
-                        label, (int) kraken::Config::Instance().jolt_wm4_soildrag.value,
+                        label, (int) state.VarSoilDrag(),
                         (double) state.wmSoilDragN, (double) (100.0f * state.wmSoilDragN / wN),
                         (double) state.wmSoilResistance);
                 }
@@ -4700,7 +4770,7 @@ namespace kraken::fix::joltshadow {
                 // and that is the point: their cap prints as FLT_MAX, which is how the log proves
                 // their RotationZ motor was never configured. Suppressing the line for
                 // steerable=0 would remove that check.
-                if (kraken::Config::Instance().jolt_wm4_steer.value != 0 && !state.wmSpinCmd.empty()) {
+                if (state.VarSteer() != 0 && !state.wmSpinCmd.empty()) {
                     const float dtLog = std::max(state.lastStepDt, 1.0e-6f);
                     for (size_t w = 0; w < state.wmSpinCmd.size() && w < state.wheelSetup.size(); ++w) {
                         const WheelSetup& ws = state.wheelSetup[w];
@@ -4756,6 +4826,76 @@ namespace kraken::fix::joltshadow {
                     }
                 }
             }
+        }
+    }
+
+    // docs §107: variant shadows - one ShadowState per wm4_variant_N line, all tracking the PLAYER
+    // vehicle, all built and stepped in the same pass. Kept in their own vector rather than reusing
+    // g_aiShadows because the AI ones track DIFFERENT vehicles and their selection logic
+    // (InitAiShadowsIfNeeded) has nothing to do with this.
+    static std::vector<ShadowState> g_variantShadows;
+    static std::vector<std::string> g_variantLabels;
+    static bool                     g_variantsInitialized = false;
+    static hta::ai::Vehicle*        g_variantInitVehicle  = nullptr;
+
+    // Parses one "k=v,k=v" line. Unknown keys are IGNORED WITH A WARNING rather than silently: a
+    // typo'd lever would otherwise read as "this arm inherited the default", which is exactly the
+    // kind of quiet nothing that makes an A/B report a false null.
+    static void ParseVariantSpec(const std::string& spec, ShadowState::Variant& out, std::string& label) {
+        out.set = true;
+        size_t pos = 0;
+        while (pos <= spec.size()) {
+            const size_t comma = spec.find(',', pos);
+            const std::string item = spec.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos);
+            const size_t eq = item.find('=');
+            if (eq != std::string::npos) {
+                std::string k = item.substr(0, eq), v = item.substr(eq + 1);
+                while (!k.empty() && (k.front() == ' ' || k.front() == '\t')) k.erase(k.begin());
+                while (!k.empty() && (k.back()  == ' ' || k.back()  == '\t')) k.pop_back();
+                const auto asU = [&v]() { return (uint32_t) std::strtoul(v.c_str(), nullptr, 10); };
+                const auto asF = [&v]() { return (float) std::atof(v.c_str()); };
+                if      (k == "label")         label            = v;
+                else if (k == "spin")          out.spin         = asU();
+                else if (k == "steer")         out.steer        = asU();
+                else if (k == "steer_mode")    out.steerMode    = asU();
+                else if (k == "assists")       out.assists      = asU();
+                else if (k == "governor")      out.governor     = asU();
+                else if (k == "soildrag")      out.soildrag     = asU();
+                else if (k == "steer_hz")      out.steerHz      = asF();
+                else if (k == "steer_damping") out.steerDamping = asF();
+                else LOG_WARNING("docs §107: variant spec has unknown key '%s' - IGNORED. A typo here "
+                                 "reads as 'this arm inherited the default' and would report a false null.",
+                                 k.c_str());
+            }
+            if (comma == std::string::npos)
+                break;
+            pos = comma + 1;
+        }
+    }
+
+    static void InitVariantShadowsIfNeeded(hta::ai::Vehicle* playerVehicle) {
+        const auto& specs = kraken::Config::Instance().jolt_wm4_variants.value;
+        if (g_variantsInitialized && playerVehicle == g_variantInitVehicle)
+            return;
+        g_variantsInitialized = true;
+        g_variantInitVehicle  = playerVehicle;
+        g_variantShadows.clear();
+        g_variantLabels.clear();
+        if (playerVehicle == nullptr || specs.empty())
+            return;
+
+        const size_t n = std::min<size_t>(specs.size(), kMaxVariantShadows);
+        if (specs.size() > n)
+            LOG_WARNING("docs §107: %zu variant specs given but only %zu are built - the rest are "
+                        "DROPPED, not silently merged.", specs.size(), n);
+        for (size_t i = 0; i < n; ++i) {
+            ShadowState st;
+            std::string label = "var" + std::to_string(i + 1);
+            ParseVariantSpec(specs[i], st.var, label);
+            st.var.familyIndex = (uint32_t) (i + 1);   // 0 belongs to the player shadow
+            g_variantShadows.push_back(std::move(st));
+            g_variantLabels.push_back(label);
+            LOG_INFO("docs §107: variant %zu '%s' <- %s", i + 1, label.c_str(), specs[i].c_str());
         }
     }
 
@@ -5609,9 +5749,28 @@ namespace kraken::fix::joltshadow {
         bool aiLive[kMaxAiShadowsPerFrame] = {};
         char aiLabels[kMaxAiShadowsPerFrame][16]; // filled in pass 1, reused as-is (same index) in pass 3
 
+        // docs §107: variant shadows of the PLAYER vehicle. Selected before pass 1 so the family
+        // flag is set on every member BEFORE any body is built - the collision group is chosen at
+        // build time and cannot be changed retroactively without rebuilding.
+        InitVariantShadowsIfNeeded(playerVehicle);
+        const size_t variantCount = g_variantShadows.size();
+        bool variantLive[kMaxVariantShadows] = {};
+        if (variantCount > 0)
+            g_playerShadow.variantFamily = true;
+
         // --- Pass 1 (pre-step) ---
         if (playerVehicle != nullptr)
             playerLive = UpdateOneVehiclePreStep(playerVehicle, g_playerShadow, "player", 0, elapsedTime);
+
+        for (size_t i = 0; i < variantCount; ++i) {
+            g_variantShadows[i].variantFamily = true;
+            // The collision group is SHARED (kVariantGroupId, applied inside the build) while the
+            // harvest slot must not be - so variants take slots from the top of the table, where
+            // the AI shadows (1..aiCount, counting up) cannot reach them.
+            const uint32_t slot = kMaxVehicleSlots - 1 - (uint32_t) i;
+            variantLive[i] = UpdateOneVehiclePreStep(playerVehicle, g_variantShadows[i],
+                                                     g_variantLabels[i].c_str(), slot, elapsedTime);
+        }
 
         for (size_t i = 0; i < aiShadowCount; ++i) {
             std::snprintf(aiLabels[i], sizeof(aiLabels[i]), "ai%zu", i);
@@ -5626,6 +5785,8 @@ namespace kraken::fix::joltshadow {
         bool anyLive = playerLive;
         for (size_t i = 0; i < aiShadowCount; ++i)
             anyLive = anyLive || aiLive[i];
+        for (size_t i = 0; i < variantCount; ++i)
+            anyLive = anyLive || variantLive[i];
         if (anyLive) {
             if (prof) {
                 const auto m0 = std::chrono::steady_clock::now();
@@ -5660,6 +5821,15 @@ namespace kraken::fix::joltshadow {
                     continue;
                 UpdateOneVehiclePostStep(g_aiTargets[i], g_aiShadows[i], aiAllowApply, aiLabels[i]);
             }
+        }
+
+        // docs §107: variants NEVER apply back into ODE, whatever jolt_apply says. Two shadows of
+        // one vehicle both writing into it would be meaningless, and the whole point is that they
+        // are passive comparisons - so the flag is hard-coded false here rather than read.
+        for (size_t i = 0; i < variantCount; ++i) {
+            if (!variantLive[i])
+                continue;
+            UpdateOneVehiclePostStep(playerVehicle, g_variantShadows[i], false, g_variantLabels[i].c_str());
         }
 
         // docs §52: accumulate this frame's total Jolt-side wall time BEFORE JoltProfileFrameEnd
