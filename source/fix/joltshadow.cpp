@@ -1155,12 +1155,38 @@ namespace kraken::fix::joltshadow {
         struct WheelDiag {
             float    fnGround = 0.0f;   // normal force from the GROUND slot alone
             float    fnTotal  = 0.0f;   // normal force summed over every applied slot
+            // Broken out because "fnTotal is exactly twice fnGround" is what exposed the side-slot
+            // weight bug, and reading that off a difference of two aggregates is a trick nobody
+            // should have to repeat. With these, a slot being double-counted is visible directly.
+            float    fnObst   = 0.0f;
+            float    fnSide   = 0.0f;
             float    pen      = 0.0f;   // the tau-clamped penetration actually fed to the core
             float    penRaw   = 0.0f;   // before the clamp - penRaw > tau means the band saturated
             float    distMax  = 0.0f;   // max |centre - contactPoint|, in units of R
             uint32_t recsTyre = 0;
             uint32_t recsRim  = 0;
             uint32_t survived = 0;
+            // The split distMax could not make. A max over BOTH sub-shapes cannot tell
+            // "resting on the rim with the tyre contact merely speculative" (rim ~= (R-tau)/R,
+            // tyre >= 1.00R) from "floating clear of the ground with both speculative" (both
+            // >= 1.00R). Those two want opposite fixes, so the summary max is not enough.
+            // Nearest approach, not farthest: the closest point is the one that decides whether
+            // anything is touching, and a manifold's other points are on the same body anyway.
+            float distTyre = 0.0f;   // min tyre-record distance, in units of R (0 = none seen)
+            float distRim  = 0.0f;   // min rim-record  distance, in units of R (0 = none seen)
+            // penRaw over ALL tyre records INCLUDING the rejected ones, signed. dg.penRaw above
+            // is a max over survivors only, so it reads 0.00000 whenever nothing survives - which
+            // is precisely the case under investigation, and precisely when the number is needed.
+            // Signed and in metres it says HOW FAR short the band falls: -0.005 is a wheel hanging
+            // 5 mm clear, -0.00001 is a seam/epsilon problem. Different faults, same survived=0.
+            float penRawAny    = 0.0f;
+            bool  penRawAnySet = false;
+            // Whether this wheel was SKIPPED because its body is asleep. Without it the struct
+            // keeps whatever the last awake step wrote, and a frozen snapshot is indistinguishable
+            // from a live one - which is exactly how a parked vehicle read as "the band engages,
+            // survived=1" while the §59/63 summary for the same step read wheelsWithContact=0.
+            // A diagnostic that silently reports stale data is worse than one that reports nothing.
+            bool asleep = false;
         };
         WheelDiag diag[kMaxHarvestWheels];
 
@@ -1181,8 +1207,15 @@ namespace kraken::fix::joltshadow {
                 // AddForce on a sleeping body is a no-op, so an ungated loop either wakes every
                 // vehicle every step or silently stops driving one that fell asleep. Neither
                 // failure announces itself.
-                if (!wt.body->IsActive())
+                if (!wt.body->IsActive()) {
+                    // Clear FIRST, then mark. Leaving the previous step's numbers in place is what
+                    // made a sleeping vehicle look like a working band (see WheelDiag::asleep).
+                    if (w < kMaxHarvestWheels) {
+                        diag[w] = WheelDiag();
+                        diag[w].asleep = true;
+                    }
                     continue;
+                }
                 WheelHarvest& buf = g_wheelHarvest[readParity][slot][w];
                 const uint32_t n    = buf.count.load(std::memory_order_relaxed);
                 const uint32_t used = std::min(n, kMaxHarvestRecs);
@@ -1215,9 +1248,16 @@ namespace kraken::fix::joltshadow {
                     // Counted BEFORE the survival test, and split by sub-shape, because "no
                     // tyre records arrived" and "tyre records arrived and were all rejected" are
                     // different faults with the same outward symptom.
-                    const float dist = JPH::Vec3(centre - JPH::RVec3(rec.point)).Length();
-                    dg.distMax = std::max(dg.distMax, dist / std::max(wt.radius, 1e-6f));
-                    if (rec.sub == 0) ++dg.recsTyre; else ++dg.recsRim;
+                    const float dist  = JPH::Vec3(centre - JPH::RVec3(rec.point)).Length();
+                    const float distR = dist / std::max(wt.radius, 1e-6f);
+                    dg.distMax = std::max(dg.distMax, distR);
+                    if (rec.sub == 0) {
+                        ++dg.recsTyre;
+                        dg.distTyre = (dg.distTyre == 0.0f) ? distR : std::min(dg.distTyre, distR);
+                    } else {
+                        ++dg.recsRim;
+                        dg.distRim  = (dg.distRim  == 0.0f) ? distR : std::min(dg.distRim,  distR);
+                    }
                     if (rec.sub != 0)
                         continue;
                     // Reproject rather than trusting the manifold's own penetration depth: for a
@@ -1225,6 +1265,13 @@ namespace kraken::fix::joltshadow {
                     // lift-off self-handling - penRaw goes negative and the record simply drops,
                     // with no OnContactRemoved bookkeeping to get wrong.
                     const float penRaw = wt.radius - JPH::Vec3(centre - JPH::RVec3(rec.point)).Dot(rec.normal);
+                    // Captured BEFORE the test that discards it, and kept as the LEAST negative
+                    // (i.e. the closest this wheel came to engaging) rather than an average, which
+                    // a single far-away manifold point would drag away from the answer.
+                    if (!dg.penRawAnySet || penRaw > dg.penRawAny) {
+                        dg.penRawAny    = penRaw;
+                        dg.penRawAnySet = true;
+                    }
                     if (penRaw <= 0.0f)
                         continue;
                     ++survived;
@@ -1265,15 +1312,27 @@ namespace kraken::fix::joltshadow {
                 wm::WMParams P = params;
                 P.inertia = wt.inertia;   // the real disc inertia, not mode 2's flat constant
 
-                auto forceFor = [&](int idx) -> wm::WMForce {
+                // The WEIGHT differs by slot: radial (wr) for ground and obstacle, LATERAL (wl) for
+                // side. Factoring the three calls into one lambda quietly collapsed that, and the
+                // single shared `wr` is not a small error - Classify picks the side slot from ALL
+                // records, not just non-ground ones, so a lone ground contact with any wl > 0 lands
+                // in BOTH slots and, evaluated with the same weight, yields the SAME force twice.
+                //
+                // It measured exactly that: fnTotal = 1638 N against a 1638 N vehicle looked like a
+                // perfect result, but fnGround was 819 N - a ratio of exactly 2.00, in every pass.
+                // Statics hides this completely (a doubled spring just settles at half the
+                // penetration and still sums to the weight), so only the ratio gave it away.
+                // The mode-2 reference does it correctly; this is a porting error, not a design
+                // difference, which is why the three calls are spelled out here as they are there.
+                auto forceFor = [&](int idx, float w) -> wm::WMForce {
                     if (idx < 0)
                         return wm::WMForce();
-                    return wm::GeneralizedContactForce(cts[idx].p, cts[idx].n, gm[idx].pen, gm[idx].wr,
+                    return wm::GeneralizedContactForce(cts[idx].p, cts[idx].n, gm[idx].pen, w,
                         c, a, vpAt(cts[idx].p), omega, wt.radius, wt.tau, wt.mass, dt, P);
                 };
-                const wm::WMForce fG = forceFor(slots.ground);
-                const wm::WMForce fO = forceFor(slots.obstacle);
-                const wm::WMForce fS = forceFor(slots.side);
+                const wm::WMForce fG = forceFor(slots.ground,   slots.ground   >= 0 ? gm[slots.ground].wr   : 0.0f);
+                const wm::WMForce fO = forceFor(slots.obstacle, slots.obstacle >= 0 ? gm[slots.obstacle].wr : 0.0f);
+                const wm::WMForce fS = forceFor(slots.side,     slots.side     >= 0 ? gm[slots.side].wl     : 0.0f);
 
                 // Deliberately NO maxForce cap here. Mode 2 clamps at jolt_wm_max_g * m * g with
                 // m the per-corner SPRUNG mass (~33-42 kg), giving ~2000-2500 N. With m now the
@@ -1300,8 +1359,12 @@ namespace kraken::fix::joltshadow {
                     const float fn = F.Dot(nrm);
                     maxNormalF = std::max(maxNormalF, fn);
                     dg.fnTotal += fn;
-                    if (idx == slots.ground)
-                        dg.fnGround = fn;
+                    // Assigned by which SLOT is being applied, not by index: the same index can
+                    // legitimately occupy two slots, and attributing by index would hide exactly
+                    // the overlap these fields exist to show.
+                    if (&f == &fG)      dg.fnGround = fn;
+                    else if (&f == &fO) dg.fnObst   = fn;
+                    else                dg.fnSide   = fn;
                     // The WHEEL body, not the chassis. The chassis feels the load through the
                     // SixDOF, and the r x F torque about the wheel's own COM arises on its own
                     // and two-sidedly - which is the whole point of giving the wheel a body.
@@ -2082,6 +2145,27 @@ namespace kraken::fix::joltshadow {
         return true;
     }
 
+    // Deliberately OUTSIDE UpdateShadowInputs and free of its `constraint != nullptr` guard: mode 4
+    // has no VehicleConstraint and returns from the pre-step before UpdateShadowInputs is ever
+    // reached, so anything that lives in there is dead code for the mode that needs it most.
+    // That is not hypothetical - it is exactly the bug this function was extracted to fix.
+    static void KeepShadowBodiesAwake(ShadowState& state) {
+        JPH::BodyInterface& bi = kraken::fix::jolt::GetPhysicsSystem()->GetBodyInterface();
+        bi.ActivateBody(state.bodyId);
+        // docs §97: the mode-4 wheel bodies need the same treatment, for the same reason and one
+        // step worse. They receive force ONLY from VehicleStepListener::OnStep, and a step
+        // listener is skipped for sleeping bodies - so a wheel that sleeps can never be woken by
+        // the thing that is supposed to drive it. That is not slow recovery, it is a latch:
+        // asleep -> listener skipped -> no force -> stays asleep, for the rest of the session.
+        //
+        // Measured, not assumed. A 5 s full-throttle run logged 112 §66.2 lines in the drive
+        // window and every one read [ASLEEP]. The band itself was already carrying load in the
+        // awake frames before the latch closed (penRaw +0.00127..+0.00237 m, 128-285 N), so the
+        // "band does not engage" symptom was never about the band.
+        for (JPH::BodyID wid : state.wheelBodies)
+            bi.ActivateBody(wid);
+    }
+
     static void UpdateShadowInputs(hta::ai::Vehicle* vehicle, ShadowState& state) {
         if (state.constraint == nullptr)
             return;
@@ -2097,7 +2181,7 @@ namespace kraken::fix::joltshadow {
         // swap) was long enough for it to actually fall asleep first. ActivateBody is a cheap
         // no-op if already active, so it's simplest to just call it unconditionally here rather
         // than track sleep state ourselves.
-        kraken::fix::jolt::GetPhysicsSystem()->GetBodyInterface().ActivateBody(state.bodyId);
+        KeepShadowBodiesAwake(state);
 
         JPH::WheeledVehicleController* controller =
             static_cast<JPH::WheeledVehicleController*>(state.constraint->GetController());
@@ -3775,8 +3859,10 @@ namespace kraken::fix::joltshadow {
         // and running both would support the chassis twice. The wheel bodies also stopped being
         // sensors at step 3, so the rim is a real contact - a second, parallel support path would
         // not merely double the load, it would fight the SixDOF.
-        if (state.wheelBodyMode)
+        if (state.wheelBodyMode) {
+            KeepShadowBodiesAwake(state);
             return true;
+        }
 
         if (state.wheelModelMode) {
             // docs §52: StepWheelModel is the dominant main-thread cost in wheelmodel mode
@@ -3850,6 +3936,20 @@ namespace kraken::fix::joltshadow {
                         label, w, (double) d.fnGround, (double) d.fnTotal, (double) d.pen, (double) d.penRaw,
                         (double) tw, (double) (tw > 0.0f ? d.pen / tw : 0.0f),
                         d.recsTyre, d.recsRim, d.survived, (double) d.distMax);
+                    // A SECOND line rather than more fields on the first one. The §66 format above
+                    // was recovered character-for-character from the lost build, and it is one of
+                    // the few places where the restored code can still be checked against that
+                    // build's own logs; widening it would spend that check to save a line.
+                    LOG_INFO("docs §66.2: band split (%s) w=%u distTyre=%.3fR distRim=%.3fR "
+                             "penRawAny=%+.5f (m, incl. rejected) tau=%.5f | fn ground=%.0f obst=%.0f side=%.0f%s",
+                        label, w, (double) d.distTyre, (double) d.distRim,
+                        (double) d.penRawAny, (double) tw,
+                        (double) d.fnGround, (double) d.fnObst, (double) d.fnSide,
+                        d.asleep ? "  [ASLEEP - body not simulated, nothing measured this step]"
+                          : (!d.penRawAnySet) ? "  [no tyre records]"
+                          : (d.penRawAny > 0.0f) ? ""
+                          : (d.distRim > 0.0f && d.distRim < 0.999f) ? "  [rim loaded, tyre clear]"
+                          : "  [both clear of ground]");
                 }
             }
         }

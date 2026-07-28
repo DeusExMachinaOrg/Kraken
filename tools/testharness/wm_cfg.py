@@ -256,34 +256,81 @@ CONTACT_RES = (
 )
 
 
+# A wheel body that is asleep is NOT simulated, so its §66 line reports zeros no matter how well
+# the band works. Counting those zeros as "not grounded" makes the check unpassable in mode 4 for
+# the ordinary case of a parked vehicle - measured live: 152 of 180 §66.2 lines were ASLEEP, and
+# the only awake frames after the pin (4 of them, one pass) showed the band engaged at penRaw
+# +0.00127..+0.00237 m. The pre-flight probe was rejecting a setup that was demonstrably fine.
+ASLEEP_RE = re.compile(r"\[ASLEEP")
+
+
 def wheels_on_ground(since_line):
-    """Best evidence of ground contact found in the log after `since_line`. (ok, detail)."""
+    """Best evidence of ground contact after `since_line`. (ok, asleep_only, detail).
+
+    `asleep_only` distinguishes "no evidence because nothing was measured" from "measured, and
+    the wheels are off the ground" - the first is normal for a parked mode-4 vehicle, the second
+    is the §67.7 fault this check exists to catch. They are not the same finding.
+    """
     with open(LOG, encoding="utf-8", errors="replace") as f:
         lines = f.readlines()[since_line:]
-    best, seen = 0, 0
-    for line in lines:
+    best, seen, awake, asleep = 0, 0, 0, 0
+    for i, line in enumerate(lines):
         for rx in CONTACT_RES:
             m = rx.search(line)
-            if m:
-                seen += 1
+            if not m:
+                continue
+            seen += 1
+            # The ASLEEP marker lives on the §66.2 line, which the emitter writes IMMEDIATELY
+            # after the §66 line for the same wheel - so the sleep state of THIS record is on the
+            # next line, not this one. Counting the marker as its own record instead (the obvious
+            # reading) made every sleeping wheel contribute one "awake" §66 line and one "asleep"
+            # §66.2 line, producing an exactly-50/50 split and a best of 0. The 50/50 was the tell.
+            nxt = lines[i + 1] if i + 1 < len(lines) else ""
+            if ASLEEP_RE.search(nxt):
+                asleep += 1
+            else:
+                awake += 1
                 best = max(best, int(m.group(1)))
-    return best > 0, "%d contact lines, best=%d" % (seen, best)
+            break
+    detail = "%d contact lines (%d awake, %d asleep), best=%d" % (seen, awake, asleep, best)
+    return best > 0, (awake == 0 and asleep > 0), detail
 
 
 def verify_grounded_or_abort(max_attempts=5, pause=2.0):
+    """Returns True if contact was PROVEN here, False if the proof is deferred to the drive window."""
     before = log_line_count()
     for attempt in range(1, max_attempts + 1):
         time.sleep(pause)
-        ok, detail = wheels_on_ground(before)
+        ok, asleep_only, detail = wheels_on_ground(before)
         if ok:
             print(f"  grounded: {detail}")
-            return
+            return True
+        if asleep_only:
+            # Deferred, not waived. A vehicle dropped into a void FALLS - it does not settle and
+            # sleep - so sleeping is itself evidence of resting on something. But "something" is
+            # not "its wheels", so the claim is not accepted here: verify_drove_on_wheels() below
+            # re-checks it against the actual measurement window, where the vehicle is moving and
+            # cannot be asleep. That turns a pre-flight guess into a post-hoc fact.
+            print(f"  at rest, wheel bodies asleep - contact check deferred to the drive window: {detail}")
+            return False
         print(f"  not grounded yet (attempt {attempt}/{max_attempts}): {detail}")
     raise RuntimeError(
         "ABORT: no wheel reports ground contact after pinning - the vehicle is not resting on its "
         "wheels, so any number this run produced would describe a broken setup, not the model "
         "(docs §67.7). Most likely it was dropped into the pose of a smaller vehicle by "
         "switch_vehicle.txt; use a save where this vehicle is native.")
+
+
+def verify_drove_on_wheels(since_line):
+    """The deferred half of the §67.7 check, run against the window that was actually measured."""
+    ok, asleep_only, detail = wheels_on_ground(since_line)
+    if ok:
+        print(f"  drive window grounded: {detail}")
+        return
+    raise RuntimeError(
+        "ABORT: no wheel reported ground contact during the DRIVE window either (%s). The "
+        "pre-flight check was deferred because the wheel bodies were asleep; driving should have "
+        "woken them, so this is the §67.7 fault, not a sleeping vehicle." % detail)
 
 
 def main():
@@ -301,7 +348,7 @@ def main():
     confirmed = verify_vehicle_or_retry(PIN_VEHICLE, PIN_FINGERPRINT)
     print(f"confirmed: {confirmed.split('joltshadow - ')[-1]}")
     time.sleep(2.0)  # settle after the pin's own rebuild
-    verify_grounded_or_abort()
+    contact_proven = verify_grounded_or_abort()
 
     steer_amp = float(os.environ.get("WM_STEER", "0.0"))
     if steer_amp != 0.0:
@@ -333,14 +380,21 @@ def main():
         if os.path.exists(p):
             os.remove(p)
     since = time.strftime("%H:%M:%S")
+    since_line = log_line_count()
     trigger_epoch = time.time()
     harness.trigger_run(base_dir=BASE_DIR, token=token)
     status = harness.wait_for_done(token, base_dir=BASE_DIR, timeout=SETTLE+DRIVE+12.0)
     time.sleep(1.0)
-    print(f"=== cfg '{token}' status={status} drive={DRIVE}s since={since} ===")
-    analyze(since, trigger_epoch)
-    kill()  # don't leave hta.exe idling/still-logging between invocations - bit us once already
-            # (a "stale idle tail" looked like a runaway state until traced back to this)
+    # kill() in a finally: the deferred contact check RAISES on failure, and an abort that leaves
+    # hta.exe idling and still logging has already cost this project one misdiagnosis (see below).
+    try:
+        if not contact_proven:
+            verify_drove_on_wheels(since_line)
+        print(f"=== cfg '{token}' status={status} drive={DRIVE}s since={since} ===")
+        analyze(since, trigger_epoch)
+    finally:
+        kill()  # don't leave hta.exe idling/still-logging between invocations - bit us once already
+                # (a "stale idle tail" looked like a runaway state until traced back to this)
 
 
 if __name__ == "__main__":
