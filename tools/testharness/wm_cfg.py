@@ -359,7 +359,36 @@ def main():
     contact_proven = verify_grounded_or_abort()
 
     steer_amp = float(os.environ.get("WM_STEER", "0.0"))
-    if steer_amp != 0.0:
+    hb_mode = os.environ.get("WM_SCENARIO", "")
+    if hb_mode in ("handbrake", "coast"):
+        # docs §113: step 5's check (4), "ручник держит на уклоне", which was never run.
+        #
+        # Both arms share a STOP phase, and that is the whole design. The first attempt let the
+        # vehicle coast from speed, which measures leftover momentum plus gravity and cannot
+        # separate them - an unbraked vehicle that rolls 30 m might be rolling downhill or might
+        # simply still be moving. So: drive, brake to a full stop, and only THEN release the
+        # service brake, with the handbrake either on or off. Anything that moves after that is
+        # gravity, which is what the check is about.
+        #
+        # The hold is long on purpose: a stick-slip failure that takes two seconds to start reads
+        # as a pass in a short window, and that is the failure most worth catching.
+        hold = float(os.environ.get("WM_HOLD", "8.0"))
+        stop = 3.0
+        t0 = SETTLE + DRIVE
+        hand = (hb_mode == "handbrake")
+        scen = harness.Scenario(samples=[
+            harness.Sample(t=0.0, throttle=0.0),
+            harness.Sample(t=SETTLE, throttle=0.0),
+            harness.Sample(t=SETTLE+0.05, throttle=1.0),
+            harness.Sample(t=t0, throttle=1.0),
+            # come to a genuine standstill first, service brake only
+            harness.Sample(t=t0+0.05, throttle=0.0, brake=1.0),
+            harness.Sample(t=t0+stop, throttle=0.0, brake=1.0),
+            # release everything; the handbrake alone is what may or may not hold it
+            harness.Sample(t=t0+stop+0.05, throttle=0.0, handbrake=hand),
+            harness.Sample(t=t0+stop+hold, throttle=0.0, handbrake=hand),
+        ])
+    elif steer_amp != 0.0:
         # docs §68 (шаг 6): straight for the first half, then hard lock for the second. Kept
         # OPT-IN via WM_STEER so every earlier straight-line baseline stays comparable - changing
         # the scenario for everyone would silently invalidate the numbers already recorded.
@@ -391,7 +420,11 @@ def main():
     since_line = log_line_count()
     trigger_epoch = time.time()
     harness.trigger_run(base_dir=BASE_DIR, token=token)
-    status = harness.wait_for_done(token, base_dir=BASE_DIR, timeout=SETTLE+DRIVE+12.0)
+    # Timeout from the scenario's OWN last sample, not from SETTLE+DRIVE: the §113 handbrake
+    # scenarios run a stop phase plus a long hold after the drive, and the old fixed formula left
+    # one second of slack, which silently truncated the very window being measured.
+    scenario_end = max(s.t for s in scen.samples)
+    status = harness.wait_for_done(token, base_dir=BASE_DIR, timeout=scenario_end+8.0)
     time.sleep(1.0)
     # kill() in a finally: the deferred contact check RAISES on failure, and an abort that leaves
     # hta.exe idling and still logging has already cost this project one misdiagnosis (see below).
