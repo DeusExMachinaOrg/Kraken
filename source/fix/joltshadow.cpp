@@ -124,6 +124,19 @@ namespace kraken::fix::joltshadow {
     // docs §112 (шаг 8): how many shadows were allowed to sleep this frame. Without this the
     // sleep lever's effect is indistinguishable from noise in the frame time - "it got faster"
     // has to be traceable to "N of 75 shadows stopped simulating".
+    // docs §114 (шаг 6, проверка 2): the largest world-space AABB shift any kinematic steer
+    // assignment has produced this session, and the steer angle it happened at. Zero means the
+    // assignment provably moved no collision geometry - see the call site for why that is expected
+    // and why it is worth measuring anyway.
+    static float g_steerAabbShiftMax = 0.0f;
+    static float g_steerAabbShiftAt  = 0.0f;
+    // Tracked SEPARATELY from the shift, and that separation is the whole point. The first version
+    // only recorded the angle when the shift grew - so a shift that is always exactly zero left the
+    // angle at zero as well, and "no geometry moved at full lock" became indistinguishable from
+    // "the wheel never turned". A null result has to prove the test actually ran.
+    static float g_steerCmdMaxSeen   = 0.0f;
+    static uint64_t g_steerAssignments = 0;
+
     struct SleepStats {
         uint64_t sleptShadows = 0;
         uint64_t awakeShadows = 0;
@@ -3395,9 +3408,35 @@ namespace kraken::fix::joltshadow {
                     JPH::Quat swing, twist;
                     wheelLocal.GetSwingTwist(swing, twist);
                     const JPH::Quat steerRot = JPH::Quat::sRotation(ws.steerAxis.Normalized(), steerCmd);
+                    // docs §114 (шаг 6, проверка 2): "упор руля в бордюр не продавливает препятствие
+                    // бесконечной силой". An ASSIGNMENT is exactly the mechanism that could shove
+                    // geometry through a wall, so the check is more pointed here than for a motor.
+                    //
+                    // The answer is structural: the wheel is a StaticCompoundShape of two
+                    // CONCENTRIC spheres, both at Vec3::sZero() (see BuildWheelBodies), and a
+                    // rotationally symmetric shape rotated about its own centre occupies exactly
+                    // the space it already occupied. So this call moves no collision geometry at
+                    // all and cannot push anything anywhere.
+                    //
+                    // That is an argument, and this project measures arguments. The world-space
+                    // bounds are captured either side of the call: if the claim holds they are
+                    // bit-identical, and if a future wheel shape stops being symmetric (the plan's
+                    // open sphere-vs-cylinder question) this starts reporting non-zero the day it
+                    // happens, instead of the check silently going stale.
+                    const JPH::AABox aabbBefore = wb->GetWorldSpaceBounds();
                     physics->GetBodyInterface().SetRotation(
                         state.wheelBodies[i], (chassisRot * steerRot * twist).Normalized(),
                         JPH::EActivation::DontActivate);
+                    const JPH::AABox aabbAfter = wb->GetWorldSpaceBounds();
+                    const float aabbShift = std::max(
+                        (aabbAfter.mMin - aabbBefore.mMin).Abs().ReduceMax(),
+                        (aabbAfter.mMax - aabbBefore.mMax).Abs().ReduceMax());
+                    ++g_steerAssignments;
+                    g_steerCmdMaxSeen = std::max(g_steerCmdMaxSeen, std::fabs(steerCmd));
+                    if (aabbShift > g_steerAabbShiftMax) {
+                        g_steerAabbShiftMax = aabbShift;
+                        g_steerAabbShiftAt  = std::fabs(steerCmd);
+                    }
                 } else {
                     sc->GetMotorSettings(EAx::RotationZ).SetTorqueLimit(steerCap);
                     sc->SetTargetOrientationCS(JPH::Quat::sRotation(JPH::Vec3::sAxisZ(), steerCS));
@@ -6013,6 +6052,11 @@ namespace kraken::fix::joltshadow {
                 // time. "It got faster" has to be traceable to "N of M shadows stopped simulating",
                 // otherwise the lever and the run-to-run noise are the same observation. Reported
                 // per frame (the counters are reset here), not cumulative.
+                LOG_INFO("docs §114: kinematic steer AABB shift max=%.9f m (at |steer|=%.4f rad) | "
+                         "assignments=%llu maxSteerSeen=%.4f rad - a zero shift only means "
+                         "something if maxSteerSeen is large",
+                    (double) g_steerAabbShiftMax, (double) g_steerAabbShiftAt,
+                    (unsigned long long) g_steerAssignments, (double) g_steerCmdMaxSeen);
                 LOG_INFO("docs §112: shadow sleep on=%d slept=%llu awake=%llu of %llu | kept awake by: "
                          "throttle=%llu brake=%llu speed=%llu hand=%llu changed=%llu margin=%llu",
                     (int) kraken::Config::Instance().jolt_wm4_sleep.value,
