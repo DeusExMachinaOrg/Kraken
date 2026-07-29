@@ -61,6 +61,7 @@ namespace kraken::fix::testharness {
         std::ofstream       telemetry;
         bool                tornWheel = false; // one-shot latch for testharness_tear_wheel_at_t
         std::string        lastVehicleSwitch; // debounce for switch_vehicle.txt, same pattern as lastTrigger
+        std::string        lastSaveLoad;      // docs §115: debounce for load_save.txt, same pattern again
     };
 
     static State g_state;
@@ -380,7 +381,26 @@ namespace kraken::fix::testharness {
         std::string token;
         std::getline(switchFile, token);
         if (token.empty() || token == state.lastVehicleSwitch) return;
-        state.lastVehicleSwitch = token;
+        // docs §115: the debounce is CONSUMED only once the switch actually happens - see the end
+        // of this function. It used to be marked here, before the "is the game ready" checks below,
+        // so a request that arrived while ai::Player or CServer was still null was swallowed
+        // permanently: the warning was logged, the token was already recorded as handled, and the
+        // request never fired. That is precisely the window right after a save load, which is when
+        // a re-pin is needed most - and the symptom was the save's own vehicle silently staying put
+        // under the name of the one that was asked for.
+        // everything from '#' on is a NONCE, not part of the prototype name. The
+        // debounce is on the token changing, which means asking for the SAME vehicle twice in one
+        // session is silently ignored - fine when a session was one launch and one pin, wrong now
+        // that a session loads several saves and has to re-pin after each. Re-pinning a vehicle
+        // that a save load has just replaced is exactly the case, and it failed silently: the
+        // request was dropped and the save's own vehicle stayed, under the name of the one asked
+        // for. A nonce makes each request distinct without touching the name.
+        const std::string rawToken = token;   // debounce on the raw line, nonce included
+        const size_t hash = token.find('#');
+        if (hash != std::string::npos)
+            token.erase(hash);
+        while (!token.empty() && (token.back() == '\r' || token.back() == ' ')) token.pop_back();
+        if (token.empty()) return;
 
         hta::ai::Player* player = hta::ai::Player::Instance();
         if (player == nullptr) {
@@ -395,10 +415,14 @@ namespace kraken::fix::testharness {
 
         const int32_t prototypeId = server->GetPrototypeId(hta::CStr(token.c_str()));
         if (prototypeId == -1) {
+            // A name the server does not know will never resolve, however long we wait, so this
+            // one IS consumed - otherwise a typo would re-warn every tick forever.
+            state.lastVehicleSwitch = rawToken;
             LOG_WARNING("Vehicle switch: unknown vehicle prototype '%s'", token.c_str());
             return;
         }
 
+        state.lastVehicleSwitch = rawToken;
         player->ChangeVehicleByNew(prototypeId, true);
         LOG_INFO("Vehicle switch: changed player vehicle to prototype '%s' (id=%d)", token.c_str(), prototypeId);
     }
@@ -631,15 +655,62 @@ namespace kraken::fix::testharness {
 
     // Sole pointer parameter -> __fastcall and __thiscall place it identically (ecx),
     // and MSVC disallows __thiscall on a free function definition (C3865).
+    // docs §115: load a NAMED save mid-session, without relaunching the process.
+    //
+    // Every measurement script here used to relaunch hta.exe per data point, because that was the
+    // only way to change which save was loaded - the autoload fires once per process and picks the
+    // most recently WRITTEN save directory, so selecting a save meant touching its mtime and
+    // starting over. That cost ~90 s per data point and is a large part of why several checks were
+    // run at n=1.
+    //
+    // Same drop-box protocol as switch_vehicle.txt: one line, the save's directory name, debounced
+    // on change. Resolved across profiles rather than hardcoding one, for the same reason
+    // FindMostRecentSaveDir walks them - profile folder names are per-install and often non-ASCII.
+    static void CheckSaveLoad(State& state, void* self) {
+        std::ifstream loadFile(state.baseDir / "load_save.txt");
+        if (!loadFile.is_open()) return;
+
+        std::string token;
+        std::getline(loadFile, token);
+        while (!token.empty() && (token.back() == '\r' || token.back() == ' ')) token.pop_back();
+        if (token.empty() || token == state.lastSaveLoad) return;
+        state.lastSaveLoad = token;
+
+        std::error_code ec;
+        for (const auto& profileEntry : fs::directory_iterator("data\\profiles", ec)) {
+            if (ec || !profileEntry.is_directory()) continue;
+            fs::path candidate = profileEntry.path() / "saves" / token;
+            std::error_code existsEc;
+            if (!fs::is_directory(candidate, existsEc)) continue;
+
+            // LoadSavedGame wants the "maps" subfolder, same as the autoload path does.
+            const std::string dir = (candidate / "maps").string();
+            LOG_INFO("load_save: loading '%s'", dir.c_str());
+            hta::CStr saveDir(dir.c_str());
+            const bool ok = CallLoadSavedGame(self, &saveDir);
+            // The harness waits on this exact string, so a failed load reports itself rather than
+            // timing out silently and looking like a hung game.
+            LOG_INFO("load_save: LoadSavedGame returned %d for '%s'", ok ? 1 : 0, token.c_str());
+            return;
+        }
+        LOG_WARNING("load_save: no save directory named '%s' under data/profiles/*/saves - ignored",
+            token.c_str());
+        LOG_INFO("load_save: LoadSavedGame returned 0 for '%s'", token.c_str());
+    }
+
     static void __fastcall ProcessAllEventsHook(void* self) {
         Real_ProcessAllEvents(self);
-        if (!g_autoloadAttempted) {
+        if (kraken::Config::Instance().testharness_autoload.value != 0 && !g_autoloadAttempted) {
             g_autoloadFrameCounter++;
             if (g_autoloadFrameCounter >= AUTOLOAD_DELAY_FRAMES) {
                 g_autoloadAttempted = true;
                 TryAutoLoadSave(self);
             }
         }
+        // Only once the initial load is settled: issuing a load while the first one is still in
+        // flight is the same reentrancy the autoload delay exists to avoid.
+        if (g_autoloadAttempted || kraken::Config::Instance().testharness_autoload.value == 0)
+            CheckSaveLoad(g_state, self);
     }
 
     void Apply() {
@@ -664,10 +735,12 @@ namespace kraken::fix::testharness {
         // losing cardan's cosmetic chassis-animation fix while it's active is a non-issue.
         routines::ChangeCall((void*) 0x005EC7AD, &KeepThrottleHook);
 
-        if (config.testharness_autoload.value != 0) {
-            LOG_INFO("Auto-load enabled, will load the most recent save once ProcessAllEvents first runs");
-            routines::ChangeCall((void*) 0x005A7FFF, &ProcessAllEventsHook);
-        }
+        // docs §115: the hook is now installed whenever the harness is on, not only for autoload -
+        // it also serves load_save.txt, which is what lets one launch cover several saves. The
+        // autoload behaviour itself is still gated on its own key, inside the hook.
+        routines::ChangeCall((void*) 0x005A7FFF, &ProcessAllEventsHook);
+        LOG_INFO("ProcessAllEvents hooked (auto-load=%d, load_save.txt drop-box active)",
+            (int) config.testharness_autoload.value);
 
         if (config.testharness_god_mode.value != 0) {
             g_godMode.enabled = true;
