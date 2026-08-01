@@ -65,7 +65,12 @@ class Session:
     # -- lifecycle ---------------------------------------------------------------------------
     def _kill(self):
         subprocess.run(["taskkill", "/F", "/IM", "hta.exe"], capture_output=True)
-        time.sleep(2.0)
+        # Longer than it looks like it needs to be. A force-killed game - and a wedged one always
+        # is - takes a while to release its files, and relaunching too soon produced a process that
+        # printed its init lines and then died without ever building a shadow, which reads as
+        # "game did not reach the menu" 120 s later. That failure ended a 12-launch measurement on
+        # its second point.
+        time.sleep(6.0)
 
     def _log(self):
         try:
@@ -81,23 +86,36 @@ class Session:
                 with open(p, "w") as f:
                     f.write("")
 
-    def start(self, vehicle=None, save=None, wait=120.0):
-        """Launch the game, reach the menu, then load `save` and pin `vehicle` explicitly."""
+    def start(self, vehicle=None, save=None, wait=120.0, attempts=3):
+        """Launch the game, reach the menu, then load `save` and pin `vehicle` explicitly.
+
+        Retries the launch. The game fails to come up often enough under automation that a single
+        attempt makes any multi-launch measurement a lottery - one dead launch used to abort a
+        whole 12-point sweep at its second point.
+        """
         gamedir.check_dll_current()      # docs §109.1 - never measure a stale build
-        self._kill()
         os.makedirs(self.base_dir, exist_ok=True)
-        self._clear_dropbox()
-        subprocess.Popen([gamedir.EXE], cwd=gamedir.WORKDIR, close_fds=True)
-        # Wait only for the game to reach the menu - the placeholder shadow (mass=100, chassis
-        # 6.00x1.00x3.00) is the signal that it is alive and ticking.
-        deadline = time.time() + wait
-        while time.time() < deadline:
-            time.sleep(3.0)
-            if any("built (player)" in l for l in self._log()):
+        for attempt in range(attempts):
+            self._kill()
+            self._clear_dropbox()
+            subprocess.Popen([gamedir.EXE], cwd=gamedir.WORKDIR, close_fds=True)
+            # Wait only for the game to reach the menu - the placeholder shadow (mass=100, chassis
+            # 6.00x1.00x3.00) is the signal that it is alive and ticking.
+            deadline = time.time() + wait
+            ok = False
+            while time.time() < deadline:
+                time.sleep(3.0)
+                if any("built (player)" in l for l in self._log()):
+                    ok = True
+                    break
+            if ok:
                 break
+            print("  (launch attempt %d/%d did not reach the menu - retrying)"
+                  % (attempt + 1, attempts), flush=True)
         else:
             self._kill()
-            raise RuntimeError("game did not reach the menu within %.0fs" % wait)
+            raise RuntimeError("game did not reach the menu within %.0fs x %d attempts"
+                               % (wait, attempts))
         time.sleep(6.0)
         self.started = True
         # The level is loaded EXPLICITLY rather than by waiting on autoload. Autoload fires once
@@ -166,12 +184,30 @@ class Session:
                 os.remove(p)
         end = max(s.t for s in scenario.samples)
         harness.trigger_run(base_dir=self.base_dir, token=token)
-        try:
-            status = harness.wait_for_done(token, base_dir=self.base_dir, timeout=end + extra_timeout)
-        except TimeoutError:
-            # A scenario that never reports back means the process is wedged or gone. Returning a
-            # status instead of raising is what lets a long session lose ONE data point rather than
-            # all of them - a whole 13-scenario run died here once because run 4 hung.
+        # Wait on PROGRESS, not on a fixed deadline. The scenario clock advances with the game's
+        # physics step, not with wall time, so under load it runs slower than real time - at 11.7
+        # fps a 17 s scenario takes far longer than 17 s to play out. A fixed `end + slack` timeout
+        # then reports "timeout" for a scenario that is running perfectly well, which is exactly
+        # what made twelve consecutive measurement points fail and what probably explains the
+        # "hangs" recorded earlier in the session.
+        done_path = os.path.join(self.base_dir, "output_%s.done" % token)
+        csv_path = os.path.join(self.base_dir, "output_%s.csv" % token)
+        hard_deadline = time.time() + end + extra_timeout + 300.0
+        last_size, last_change = -1, time.time()
+        status = None
+        while time.time() < hard_deadline:
+            if os.path.exists(done_path):
+                with open(done_path) as f:
+                    status = f.read().strip()
+                break
+            size = os.path.getsize(csv_path) if os.path.exists(csv_path) else -1
+            if size != last_size:
+                last_size, last_change = size, time.time()
+            elif time.time() - last_change > 45.0:
+                # Genuinely stuck: nothing written for 45 s and no completion marker.
+                return [], "timeout"
+            time.sleep(1.0)
+        if status is None:
             return [], "timeout"
         rows = harness.load_telemetry(token, base_dir=self.base_dir) if status == "ok" else []
         return rows, status
