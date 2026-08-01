@@ -538,6 +538,8 @@ namespace kraken::fix::joltshadow {
             uint32_t steerMode    = 2;
             uint32_t assists      = 1;
             uint32_t assistYaw    = 1;   // docs §109: sub-gate, yaw torque only
+            uint32_t engineBrake  = 0;   // docs §120: off by default, the magnitude is not recovered
+            float    engineBrakeScale = 1.0f;
             uint32_t governor     = 1;
             uint32_t soildrag     = 1;
             float    steerHz      = 20.0f;
@@ -564,6 +566,8 @@ namespace kraken::fix::joltshadow {
         uint32_t VarSteerMode() const { return var.set ? var.steerMode : kraken::Config::Instance().jolt_wm4_steer_kinematic.value; }
         uint32_t VarAssists()   const { return var.set ? var.assists   : kraken::Config::Instance().jolt_wm4_assists.value; }
         uint32_t VarAssistYaw() const { return var.set ? var.assistYaw : kraken::Config::Instance().jolt_wm4_assist_yaw.value; }
+        uint32_t VarEngineBrake() const { return var.set ? var.engineBrake : kraken::Config::Instance().jolt_wm4_engine_brake.value; }
+        float VarEngineBrakeScale() const { return var.set ? var.engineBrakeScale : kraken::Config::Instance().jolt_wm4_engine_brake_scale.value; }
         uint32_t VarGovernor()  const { return var.set ? var.governor  : kraken::Config::Instance().jolt_wm4_governor.value; }
         uint32_t VarSoilDrag()  const { return var.set ? var.soildrag  : kraken::Config::Instance().jolt_wm4_soildrag.value; }
         float    VarSteerHz()   const { return var.set ? var.steerHz   : kraken::Config::Instance().jolt_wm4_steer_hz.value; }
@@ -3314,6 +3318,30 @@ namespace kraken::fix::joltshadow {
                 // speed); the limit is a magnitude, so the direction lives entirely in the target.
                 target = gb.omegaTarget * ((throttle >= 0.0f) ? 1.0f : -1.0f);
                 limit  = std::fabs(throttle) * gb.perWheel;
+                // docs §120 (§118 ported): ENGINE BRAKING. The reference's force cap has no
+                // throttle factor at all - _KeepGearBox builds dParamFMax2 from the gear ratio,
+                // the diff, the wheel radius and the WHEEL SURFACE SPEED (§118.1), so off throttle
+                // the servo still holds the wheel to the engine-RPM-derived target and brakes it.
+                // The line above, with its |throttle| factor, releases the wheel entirely instead:
+                // measured, the shadow keeps 18% of its wheel speed over an 8 s coast where the
+                // reference reaches zero (§117).
+                //
+                // §120 MEASURED AND REFUTED - THIS IS NOT THE ENGINE-BRAKING PORT. Do not enable it
+                // expecting one. Lifting the torque limit makes the wheel FASTER, not slower:
+                //
+                //     coast, wheel speed retained    reference 0%   off 0%   scale 0.3 54%   1.0 34%
+                //
+                // The reason is the TARGET, not the cap. `gb.omegaTarget` is the wheel speed at
+                // which the engine would hit its REDLINE - a static ceiling from m_maxEngineRpm -
+                // whereas the reference's dParamVel2 comes from [esi+0x23c], the CURRENT engine RPM,
+                // which decays once the throttle is released. Give a velocity servo a redline target
+                // and any torque at all, and it holds the wheel up there instead of braking it.
+                //
+                // A real port therefore has to change what the gearbox TARGETS - a decaying
+                // RPM-derived speed - and only then does the cap matter. Left in place, defaulted
+                // off, as the measurement that says where the work actually is.
+                if (state.VarEngineBrake() != 0)
+                    limit = std::max(limit, state.VarEngineBrakeScale() * gb.perWheel);
             } else {
                 // Free-rolling: no motor at all, the tyre force alone spins it.
                 sc->SetMotorState(EAx::RotationX, JPH::EMotorState::Off);
@@ -5050,6 +5078,8 @@ namespace kraken::fix::joltshadow {
                 else if (k == "steer_mode")    out.steerMode    = asU();
                 else if (k == "assists")       out.assists      = asU();
                 else if (k == "assist_yaw")    out.assistYaw    = asU();
+                else if (k == "engine_brake")  out.engineBrake  = asU();
+                else if (k == "engine_brake_scale") out.engineBrakeScale = asF();
                 else if (k == "governor")      out.governor     = asU();
                 else if (k == "soildrag")      out.soildrag     = asU();
                 else if (k == "steer_hz")      out.steerHz      = asF();

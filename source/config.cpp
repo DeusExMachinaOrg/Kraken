@@ -72,6 +72,8 @@ namespace kraken {
         this->jolt_wm4_steer                     = { "jolt_harness","wm4_steer",                       0,     true,  0,     1           };
         this->jolt_wm4_assists                   = { "jolt_harness","wm4_assists",                     1,     true,  0,     1           };
         this->jolt_wm4_assist_yaw                = { "jolt_harness","wm4_assist_yaw",                  1,     true,  0,     1           };
+        this->jolt_wm4_engine_brake              = { "jolt_harness","wm4_engine_brake",                0,     true,  0,     1           };
+        this->jolt_wm4_engine_brake_scale        = { "jolt_harness","wm4_engine_brake_scale",          1.0f,  true,  0.0f,  10.0f       };
         this->jolt_step_listener_batch           = { "jolt",       "step_listener_batch",             0,     true,  0,     64          };
         this->jolt_wm4_sleep                     = { "jolt_harness","wm4_sleep",                       0,     true,  0,     1           };
         this->jolt_wm4_governor                  = { "jolt_harness","wm4_governor",                    1,     true,  0,     1           };
@@ -190,6 +192,8 @@ namespace kraken {
         this->LoadValue(&this->jolt_wm4_steer);
         this->LoadValue(&this->jolt_wm4_assists);
         this->LoadValue(&this->jolt_wm4_assist_yaw);
+        this->LoadValue(&this->jolt_wm4_engine_brake);
+        this->LoadValue(&this->jolt_wm4_engine_brake_scale);
         this->LoadValue(&this->jolt_step_listener_batch);
         this->LoadValue(&this->jolt_wm4_sleep);
         this->LoadValue(&this->jolt_wm4_governor);
@@ -288,6 +292,8 @@ namespace kraken {
         this->DumpValue(&this->jolt_wm4_steer);
         this->DumpValue(&this->jolt_wm4_assists);
         this->DumpValue(&this->jolt_wm4_assist_yaw);
+        this->DumpValue(&this->jolt_wm4_engine_brake);
+        this->DumpValue(&this->jolt_wm4_engine_brake_scale);
         this->DumpValue(&this->jolt_step_listener_batch);
         this->DumpValue(&this->jolt_wm4_sleep);
         this->DumpValue(&this->jolt_wm4_governor);

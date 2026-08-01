@@ -172,6 +172,18 @@ namespace kraken {
         // DEFAULT 1 = the faithful port, i.e. no behaviour change from before this key existed. It
         // is a MEASUREMENT lever, not a tuning one; the sub-gate exists so the arm can be built.
         ConfigValue<uint32_t>                 jolt_wm4_assist_yaw;
+        // docs §120 (§117/§118): ENGINE BRAKING. The reference's Hinge2 force cap has no throttle
+        // factor - it is built from the gearing and the WHEEL SURFACE SPEED - so off throttle the
+        // servo still brakes the wheel toward the engine-RPM target. The port gates its cap on
+        // |throttle|, releasing the wheel entirely: measured, the shadow keeps 18% of its wheel
+        // speed over an 8 s coast where the reference reaches zero.
+        //
+        // DEFAULT 0 because the MAGNITUDE is not recovered - §118 resolved the shape of the
+        // reference's expression but left two of its terms unidentified, so there is no faithful
+        // constant to port and inventing one silently would be worse than leaving a lever. The
+        // scale multiplies the gearbox's own per-wheel torque.
+        ConfigValue<uint32_t>                 jolt_wm4_engine_brake;
+        ConfigValue<float>                    jolt_wm4_engine_brake_scale;
         // docs §112 (Этап 1, шаг 8): Jolt's PhysicsSettings::mStepListenersBatchSize. Step
         // listeners are handed to workers in batches of this size (Jolt default 8); with 75 shadows
         // each owning a VehicleStepListener that is ~10 batches, so this sets how finely the wheel
