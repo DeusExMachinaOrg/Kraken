@@ -51,6 +51,7 @@ add_library(kraken SHARED
 
     source/net/enet_transport.cpp
     source/net/session.cpp
+    source/net/vehicle_snapshot.cpp
     source/net/runtime.cpp
 )
 
@@ -142,4 +143,15 @@ if(BUILD_TESTING)
     target_link_libraries(kraken_net_peer_test PRIVATE enet)
     set_property(TARGET kraken_net_peer_test PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+
+    add_executable(kraken_net_vehicle_snapshot_test
+        tests/net_vehicle_snapshot.cpp
+        source/net/vehicle_snapshot.cpp
+    )
+    target_compile_features(kraken_net_vehicle_snapshot_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_vehicle_snapshot_test PRIVATE include)
+    set_property(TARGET kraken_net_vehicle_snapshot_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_vehicle_snapshot
+        COMMAND kraken_net_vehicle_snapshot_test)
 endif()
