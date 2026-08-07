@@ -37,6 +37,29 @@ FINGERPRINTS = {
     "Scout01":     ("mass=100.0", "chassis=4.00x1.00x2.00"),
     "Ural01":      ("mass=303.0", "chassis=5.00x3.00x12.00"),
     "Bug01":       ("mass=132.0", "chassis=3.00x2.00x8.00"),
+    # docs §139: rest of the established 23-vehicle "wheeled prototypes" roster
+    # (stage2-plan.md §2.5), same values as tools/testharness/wm_cfg.py's own FINGERPRINTS
+    # dict (kept duplicated, matching that file's existing precedent rather than introducing
+    # a new shared-import dependency between the two).
+    "Belaz01":       ("mass=392.0", "chassis=4.00x4.50x12.00"),
+    "Mirotvorec01":  ("mass=411.0", "chassis=5.00x2.50x12.00"),
+    "Cruiser01":     ("mass=104.0", "chassis=10.00x1.00x5.00"),
+    "Scout02":       ("mass=100.0", "chassis=4.00x1.00x2.00"),
+    "Scout03":       ("mass=100.0", "chassis=4.00x1.00x2.00"),
+    "ArcadeScout01": ("mass=100.0", "chassis=3.00x2.00x2.00"),
+    "Hunter01":      ("mass=100.0", "chassis=10.00x1.00x5.00"),
+    "Hunter02":      ("mass=100.0", "chassis=10.00x1.00x5.00"),
+    "Dozer01":       ("mass=127.0", "chassis=18.00x1.00x13.00"),
+    "Traktor01":     ("mass=125.0", "chassis=18.00x1.00x13.00"),
+    "Fighter01":     ("mass=100.0", "chassis=6.00x1.00x3.00"),
+    "Fighter02":     ("mass=100.0", "chassis=6.00x1.00x3.00"),
+    "Fighter03":     ("mass=100.0", "chassis=6.00x1.00x3.00"),
+    "Formula01":     ("mass=351.0", "chassis=8.00x8.00x8.00"),
+    "Sml101":        ("mass=100.0", "chassis=2.00x1.00x4.00"),
+    "Sml201":        ("mass=100.0", "chassis=4.00x1.00x2.00"),
+    "Sml301":        ("mass=100.0", "chassis=4.00x1.00x1.00"),
+    "Sml401":        ("mass=100.0", "chassis=4.00x1.00x1.00"),
+    "Tank01":        ("mass=187.0", "chassis=18.00x1.00x13.00"),
 }
 
 
@@ -161,8 +184,14 @@ class Session:
     def load_save(self, save, vehicle=None, wait=40.0):
         """Load a save WITHOUT relaunching (docs §115). Re-pins the vehicle afterwards if asked."""
         before = len(self._log())
+        # docs §139: '#<nonce>' keeps every request distinct, same reasoning and mechanism as
+        # pin_vehicle's own nonce just below - the game debounces load_save.txt on the token
+        # CONTENT (CheckSaveLoad, testharness.cpp), so reloading the SAME save twice in a row
+        # (e.g. to reset a vehicle to its spawn pose between fleet-sweep pins) used to be silently
+        # dropped and then reported as a 40s timeout for a request that was never even attempted.
+        self._pin_nonce += 1
         with open(os.path.join(self.base_dir, "load_save.txt"), "w") as f:
-            f.write(save + "\n")
+            f.write("%s#%d\n" % (save, self._pin_nonce))
         deadline = time.time() + wait
         while time.time() < deadline:
             time.sleep(2.0)

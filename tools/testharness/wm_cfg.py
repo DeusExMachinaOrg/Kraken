@@ -109,6 +109,27 @@ FINGERPRINTS = {
     "Belaz01":       ("mass=392.0", "chassis=4.00x4.50x12.00"),
     "Mirotvorec01":  ("mass=411.0", "chassis=5.00x2.50x12.00"),
     "Cruiser01":     ("mass=104.0", "chassis=10.00x1.00x5.00"),
+    # docs §139: remaining 16 of the established 23-vehicle "wheeled prototypes" roster
+    # (stage2-plan.md §2.5) - fleet friction/suspension calibration needs all 23, not just the
+    # 7 above (a convenience sample for §124's own regression sweep). Captured live the same
+    # way (discover_vehicles.py), main-menu placeholder scene (mass/chassis don't depend on
+    # terrain, unlike anything settling/driving-related - see feedback_verify_on_real_save_not_menu).
+    "Scout02":       ("mass=100.0", "chassis=4.00x1.00x2.00"),
+    "Scout03":       ("mass=100.0", "chassis=4.00x1.00x2.00"),
+    "ArcadeScout01": ("mass=100.0", "chassis=3.00x2.00x2.00"),
+    "Hunter01":      ("mass=100.0", "chassis=10.00x1.00x5.00"),
+    "Hunter02":      ("mass=100.0", "chassis=10.00x1.00x5.00"),
+    "Dozer01":       ("mass=127.0", "chassis=18.00x1.00x13.00"),
+    "Traktor01":     ("mass=125.0", "chassis=18.00x1.00x13.00"),
+    "Fighter01":     ("mass=100.0", "chassis=6.00x1.00x3.00"),
+    "Fighter02":     ("mass=100.0", "chassis=6.00x1.00x3.00"),
+    "Fighter03":     ("mass=100.0", "chassis=6.00x1.00x3.00"),
+    "Formula01":     ("mass=351.0", "chassis=8.00x8.00x8.00"),
+    "Sml101":        ("mass=100.0", "chassis=2.00x1.00x4.00"),
+    "Sml201":        ("mass=100.0", "chassis=4.00x1.00x2.00"),
+    "Sml301":        ("mass=100.0", "chassis=4.00x1.00x1.00"),
+    "Sml401":        ("mass=100.0", "chassis=4.00x1.00x1.00"),
+    "Tank01":        ("mass=187.0", "chassis=18.00x1.00x13.00"),
 }
 PIN_FINGERPRINT = FINGERPRINTS.get(PIN_VEHICLE, MOLOKOVOZ_FINGERPRINT)
 

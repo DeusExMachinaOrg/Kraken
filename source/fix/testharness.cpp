@@ -747,9 +747,23 @@ namespace kraken::fix::testharness {
 
         std::string token;
         std::getline(loadFile, token);
-        while (!token.empty() && (token.back() == '\r' || token.back() == ' ')) token.pop_back();
         if (token.empty() || token == state.lastSaveLoad) return;
+        // docs §139 (fleet calibration sweep): the debounce used to be on the trimmed save name
+        // itself, with no nonce - unlike CheckVehicleSwitch just above, which already solved this
+        // exact problem. Reloading the SAME save twice in a row (needed to reset a vehicle to its
+        // spawn pose between fleet-sweep pins, instead of inheriting the previous vehicle's pose -
+        // see fleet_calibration_sweep.py) was silently swallowed: state.lastSaveLoad already
+        // equalled the incoming token, so every reload after the first one in a run was a no-op,
+        // and the harness's own 40s wait then reported "did not load" for a request that was never
+        // even attempted. Same fix as CheckVehicleSwitch: everything from '#' on is a NONCE, not
+        // part of the save directory name - debounce on the raw line (nonce included), resolve
+        // the directory from the trimmed part.
         state.lastSaveLoad = token;
+        const size_t hash = token.find('#');
+        if (hash != std::string::npos)
+            token.erase(hash);
+        while (!token.empty() && (token.back() == '\r' || token.back() == ' ')) token.pop_back();
+        if (token.empty()) return;
 
         std::error_code ec;
         for (const auto& profileEntry : fs::directory_iterator("data\\profiles", ec)) {

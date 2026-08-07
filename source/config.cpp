@@ -95,9 +95,15 @@ namespace kraken {
         // specifically after that risk was explained. See docs sec124 and sec126 (the "O" key
         // recovery mitigation, itself not always sufficient for this exact failure).
         this->jolt_wm4_contact_constraint        = { "jolt_harness","wm4_contact_constraint",          1,     true,  0,     1           };
+        // docs §139: real per-wheel m_mU into wheelmodel_core's live grip (wheelmodel=4 only).
+        // Off by default, see include/config.hpp for the full rationale.
+        this->jolt_wm4_per_wheel_mu              = { "jolt_harness","wm4_per_wheel_mu",               0,     true,  0,     1           };
         this->jolt_wm4_steer_kinematic           = { "jolt_harness","wm4_steer_kinematic",             2,     true,  0,     2           };
         this->jolt_wm4_steer_hz                  = { "jolt_harness","wm4_steer_hz",                    20.0f, true,  1.0f,  500.0f      };
         this->jolt_wm4_steer_damping             = { "jolt_harness","wm4_steer_damping",               1.0f,  true,  0.05f, 10.0f       };
+        // docs §139.9 (task #63): was a hardcoded 20/10 (joltshadow.cpp §124.12's override).
+        this->jolt_wm4_drive_vel_steps           = { "jolt_harness","wm4_drive_vel_steps",              20,    true,  0,     200         };
+        this->jolt_wm4_drive_pos_steps           = { "jolt_harness","wm4_drive_pos_steps",              10,    true,  0,     200         };
         this->jolt_wm4_variants                  = { "jolt_harness","wm4_variant_" };
         this->jolt_wm_tyre_stiffness             = { "wheelmodel","tyre_stiffness",   120000.0f, true, 1.0f,     1e9f    };
         this->jolt_wm_tyre_thickness             = { "wheelmodel","tyre_thickness",   0.1f,      true, 0.0f,     10.0f   };
@@ -225,9 +231,12 @@ namespace kraken {
         this->LoadValue(&this->jolt_wm4_diag_interval);
         this->LoadValue(&this->jolt_chassis_inertia_ode_box);
         this->LoadValue(&this->jolt_wm4_contact_constraint);
+        this->LoadValue(&this->jolt_wm4_per_wheel_mu);
         this->LoadValue(&this->jolt_wm4_steer_kinematic);
         this->LoadValue(&this->jolt_wm4_steer_hz);
         this->LoadValue(&this->jolt_wm4_steer_damping);
+        this->LoadValue(&this->jolt_wm4_drive_vel_steps);
+        this->LoadValue(&this->jolt_wm4_drive_pos_steps);
         this->LoadValue(&this->jolt_wm4_variants);
         this->LoadValue(&this->jolt_wm4_joint_at_mount);
         this->LoadValue(&this->jolt_wm4_compress_fraction);
@@ -336,9 +345,12 @@ namespace kraken {
         this->DumpValue(&this->jolt_wm4_diag_interval);
         this->DumpValue(&this->jolt_chassis_inertia_ode_box);
         this->DumpValue(&this->jolt_wm4_contact_constraint);
+        this->DumpValue(&this->jolt_wm4_per_wheel_mu);
         this->DumpValue(&this->jolt_wm4_steer_kinematic);
         this->DumpValue(&this->jolt_wm4_steer_hz);
         this->DumpValue(&this->jolt_wm4_steer_damping);
+        this->DumpValue(&this->jolt_wm4_drive_vel_steps);
+        this->DumpValue(&this->jolt_wm4_drive_pos_steps);
         this->DumpValue(&this->jolt_wm4_joint_at_mount);
         this->DumpValue(&this->jolt_wm4_compress_fraction);
         this->DumpValue(&this->jolt_wm4_susp_max_scale);

@@ -302,6 +302,16 @@ namespace kraken {
         // the strut within a step. Staged behind this flag per docs §124's plan - starts as a
         // pure no-op stub (step 1) before any force actually moves.
         ConfigValue<uint32_t>                 jolt_wm4_contact_constraint;
+        // docs §139 (fleet friction calibration): wheelmodel_core's Pacejka grip (WMParams::mu,
+        // "grip"/jolt_wm_grip) is ONE global number shared by every wheel of every vehicle under
+        // wheelmodel=4 - unlike the reference ODE, which already differs friction per wheel type
+        // via WheelPrototypeInfo::m_mU (vehicleparts.xml). That real per-vehicle data is already
+        // read into this file (see StepWheelModel's own §42.9 fix, which does exactly this for
+        // the mode-2 path) but was never wired into the mode-4 (wheelBodyMode) path that's
+        // actually shipped. 1 multiplies each wheel's WMParams::mu by its own m_mU, mirroring
+        // §42.9 exactly; m_mU=1.0 for most wheels, so this is a no-op for the common case. Off by
+        // default pending the A/B measurement this flag exists to make possible.
+        ConfigValue<uint32_t>                 jolt_wm4_per_wheel_mu;
         // docs §105/§106: how the steer DOF holds its angle. 2 = the LITERAL port - the RotationZ
         // motor is switched OFF and the wheel's orientation is ASSIGNED each frame from the
         // commanded steer and its current spin, exactly as _TurnWheelByAngle ->
@@ -322,6 +332,12 @@ namespace kraken {
         // measured 8591 Nm disturbance to 1 deg needs about 93 Hz. Swept, not guessed.
         ConfigValue<float>                    jolt_wm4_steer_hz;
         ConfigValue<float>                    jolt_wm4_steer_damping;
+        // docs §139.9 (task #63, Mirotvorec01 drive-motor chatter): the wheel SixDOF constraint's
+        // solver-step override was previously hardcoded (20/10, joltshadow.cpp) - config-driven so
+        // a live A/B doesn't need a rebuild per candidate value. Defaults match the prior literal,
+        // so leaving this untouched changes nothing.
+        ConfigValue<uint32_t>                 jolt_wm4_drive_vel_steps;
+        ConfigValue<uint32_t>                 jolt_wm4_drive_pos_steps;
         // docs §107: VARIANT SHADOWS - several shadows of the same vehicle in one game launch,
         // each with its own parameters, so an A/B costs one launch instead of one per arm.
         // Prefix list, same mechanism as lua_binds Script_N: [jolt_harness] wm4_variant_1, _2, ...

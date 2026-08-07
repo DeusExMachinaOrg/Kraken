@@ -393,8 +393,16 @@ namespace kraken::fix::joltshadow {
         // (1.0 = trust ODE's real values as-is). See BuildShadow's wheel loop for the derivation.
         float suspensionFrequency; // multiplies the derived stiffness (JPH::SpringSettings::mStiffness, N/m)
         float suspensionDamping;   // multiplies the derived damping (JPH::SpringSettings::mDamping, N*s/m)
-        float frictionLongScale;   // uniform multiplier on WheelSettingsWV's default longitudinal friction curve
-        float frictionLatScale;    // uniform multiplier on WheelSettingsWV's default lateral friction curve
+        // docs §139 step 2: these two axes have TWO consumers now, selected by which vehicle path
+        // is actually live. Under the plain JPH::VehicleConstraint path (wheelmodel 0, no wheel
+        // bodies) they still scale WheelSettingsWV's default longitudinal/lateral friction curve,
+        // same as originally written. Under wheelmodel=4 (wheelBodyMode, real wheel bodies +
+        // wheelmodel_core) that constraint is built but never stepped, so these instead multiply
+        // wheelmodel_core's own WMParams - frictionLongScale onto grip (mu), frictionLatScale onto
+        // the Pacejka stiffness factor (B) - applied once per rebuild in WheelModelParamsFromConfig,
+        // gated on wheelBodyMode so the wheelmodel 0/2 semantics are untouched. See that function.
+        float frictionLongScale;
+        float frictionLatScale;
     };
 
     static TuningParams DefaultTuningParams() {
@@ -453,6 +461,11 @@ namespace kraken::fix::joltshadow {
         float cSusp    = 0.0f;   // N*s/m, same derivation
         float tau      = 0.0f;   // tyre band half-thickness (m) - written by the step-2 body build
         float unsprungMass = 0.0f; // the wheel's own mass, hta::ai::Wheel::GetMass()
+        // docs §139: this wheel's real WheelPrototypeInfo::m_mU (1.0 when the prototype has none)
+        // - always captured as plain data, same as kSusp/cSusp above. Whether it actually reaches
+        // the live force model is gated at the [jolt_harness] wm4_per_wheel_mu consumption sites
+        // (VehicleStepListener::WheelTick::muScale, WheelContactConstraint::mMuScale), not here.
+        float muScale  = 1.0f;
 
         // Both derived rather than assumed, at steps 5 and 6. +-1. Zero here means "not yet
         // derived", which is a value neither step can produce, so it cannot be mistaken for one.
@@ -729,7 +742,11 @@ namespace kraken::fix::joltshadow {
     // docs §39: gather wheelmodel_core params from config into the plain-float WMParams the
     // engine-agnostic core expects. Read fresh each step so live kraken.ini edits retune without
     // a rebuild (the whole point of exposing them).
-    static kraken::fix::wheelmodel::WMParams WheelModelParamsFromConfig() {
+    // docs §139 step 2: `applyTuningAxes` defaults false so StepWheelModel's mode-2 (no wheel
+    // bodies) call site is unaffected - the autotuner's friction axes are dead there too (that
+    // path predates wheelmodel_core's own tuning knobs), but repurposing them was only asked for
+    // wheelBodyMode. BuildShadow's wheelBodyMode call site passes true.
+    static kraken::fix::wheelmodel::WMParams WheelModelParamsFromConfig(bool applyTuningAxes = false) {
         const kraken::Config& c = kraken::Config::Instance();
         kraken::fix::wheelmodel::WMParams p;
         p.k_t         = c.jolt_wm_tyre_stiffness.value;
@@ -743,6 +760,12 @@ namespace kraken::fix::joltshadow {
         p.stick_speed = c.jolt_wm_stick_speed.value;
         p.inertia     = c.jolt_wm_wheel_inertia.value;
         p.rollingResist = c.jolt_wm_rolling_resist.value;
+        if (applyTuningAxes) {
+            // docs §139 step 2: TuningParams' own comment explains why these two axes land here
+            // for wheelBodyMode instead of WheelSettingsWV's friction curve.
+            p.mu *= g_activeTuning.frictionLongScale;
+            p.B  *= g_activeTuning.frictionLatScale;
+        }
         return p;
     }
 
@@ -1181,8 +1204,28 @@ namespace kraken::fix::joltshadow {
     // the default until this is proven live under vehicle swaps.
     struct PendingJoltDestroy {
         std::vector<JPH::BodyID>                bodies;
+        // docs §139: constraints that WERE added to the physics system (physics->AddConstraint)
+        // and need RemoveConstraint (and, for a VehicleConstraint, RemoveStepListener) before
+        // their Ref is released. Kept separate from unregisteredConstraints below because a
+        // single rebuild's "old" state can contain BOTH kinds at once (see the enqueue site in
+        // BuildShadow): the plain JPH::VehicleConstraint (state.constraint) is built but never
+        // added when the OLD build was wheelmodel mode (§39), while that SAME old build's
+        // per-wheel SixDOFConstraint/WheelContactConstraint objects (state.wheelConstraints/
+        // wheelContactConstraints, wheelBodyMode only) WERE added - one flag could not describe
+        // both correctly, which vector an object is pushed into is a stand-in for its own flag.
         std::vector<JPH::Ref<JPH::Constraint>>  constraints;
-        bool                                    constraintsRegistered = false;
+        // Built but never registered (e.g. state.constraint under wheelmodel mode) - just needs
+        // its Ref released, no RemoveConstraint/RemoveStepListener call (it was never added, and
+        // calling Remove* on something never added is not a documented-safe operation).
+        std::vector<JPH::Ref<JPH::Constraint>>  unregisteredConstraints;
+        // docs §54.5 renamed to what it actually gates (was `constraintsRegistered`, which read
+        // as "safe to call RemoveConstraint" - the real hazard it guards against is untracked
+        // wheel-proxy bodies/constraints existing at all, specific to the plain VehicleConstraint
+        // path; see the guard below). false for a wheelBodyMode (wheelmodel=4) rebuild, where
+        // every body/constraint this queue would ever touch is tracked in ShadowState and no
+        // wheel proxies are ever built (TryBuildWheelProxiesOnceSettled returns early for both
+        // wheelModelMode and wheelBodyMode - see its call site in UpdateOneVehiclePreStep).
+        bool                                    untrackedReferenceRisk = false;
     };
     static std::mutex                      g_pendingDestroyMutex;
     static std::vector<PendingJoltDestroy> g_pendingDestroys;
@@ -1190,7 +1233,18 @@ namespace kraken::fix::joltshadow {
     static void EnqueueJoltDestroy(PendingJoltDestroy&& item) {
         if (kraken::Config::Instance().jolt_deferred_destroy.value == 0)
             return; // leak-forever (historical default): abandon, never destroy
-        if (item.bodies.empty() && item.constraints.empty())
+        // docs §139 TEMP DEBUG: only once the flag is actually on (the common/default case is
+        // deferred_destroy=0, and this fires on every rebuild - unconditional would spam the
+        // normal-play log for nothing). Left in per this file's own precedent (§124.7/§125,
+        // "temporary instrumentation, not a permanent diagnostic contract") - useful for whoever
+        // picks up the hang this flag currently triggers during a save-load AI-shadow burst
+        // (see docs §139's writeup: enqueue itself confirmed correct, deadlock/hang suspected
+        // downstream, not root-caused in this pass).
+        LOG_INFO("docs §139 debug: EnqueueJoltDestroy called - bodies=%zu constraints=%zu "
+                 "unregisteredConstraints=%zu untrackedReferenceRisk=%d",
+            item.bodies.size(), item.constraints.size(), item.unregisteredConstraints.size(),
+            (int) item.untrackedReferenceRisk);
+        if (item.bodies.empty() && item.constraints.empty() && item.unregisteredConstraints.empty())
             return;
         // docs §54.5: HARD restriction, established by live bisection, not by theory. Destroying a
         // rebuilt shadow is safe in wheelmodel mode and reliably fatal on the VehicleConstraint
@@ -1201,20 +1255,21 @@ namespace kraken::fix::joltshadow {
         // the doomed bodies (implemented in the drain) did NOT fix it, so at least one more
         // untracked reference to a destroyed object exists and has not been identified.
         //
-        // Rather than keep guessing at an unexplained crash on a code path that Этап 1 deletes
-        // outright (wheel proxies and the whole non-simulated VehicleConstraint container go away
-        // when wheels become real bodies), the queue simply refuses to accept work it cannot prove
-        // it owns. When Этап 1's topology lands, wheel bodies and their SixDOF constraints ARE
-        // tracked per ShadowState, so they can be enqueued explicitly and this restriction lifted
-        // deliberately, with a live test, instead of by assumption.
-        if (item.constraintsRegistered) {
+        // docs §139: restriction LIFTED for wheelBodyMode (wheelmodel=4) rebuilds specifically -
+        // Этап 1's topology landed a while ago and wheel bodies/SixDOF struts/WheelContactConstraints
+        // ARE tracked per ShadowState (state.wheelBodies/wheelConstraints/wheelContactConstraints),
+        // explicitly enqueued alongside the chassis at the same call site (BuildShadow), and no
+        // wheel proxies exist on this path - exactly the condition §54.5 said would justify lifting
+        // it. Still refuses the plain VehicleConstraint path (untrackedReferenceRisk=true there),
+        // which is untouched by this change and stays on leak-forever.
+        if (item.untrackedReferenceRisk) {
             static bool s_warnedOnce = false;
             if (!s_warnedOnce) {
                 s_warnedOnce = true;
                 LOG_WARNING("docs §54.5: deferred_destroy=1 ignored for the VehicleConstraint path - "
                             "untracked wheel-proxy bodies/constraints still reference the chassis and "
                             "destroying it crashes (reproduced 4/4). Falling back to leak-forever here. "
-                            "Only the wheelmodel path (jolt_wheelmodel=2) actually destroys.");
+                            "wheelmodel=2/4 rebuilds still destroy properly (docs §139).");
             }
             return;
         }
@@ -1241,18 +1296,27 @@ namespace kraken::fix::joltshadow {
         size_t destroyedBodies = 0, destroyedConstraints = 0, sweptConstraints = 0;
         for (PendingJoltDestroy& item : items) {
             // 1. stop it being called back, 2. stop it being solved, 3. only then free bodies.
+            // docs §139: everything in `constraints` WAS added (physics->AddConstraint) by
+            // construction - see the struct's own comment for why that's now guaranteed per
+            // vector rather than per a single bool.
             for (JPH::Ref<JPH::Constraint>& c : item.constraints) {
                 if (c == nullptr)
                     continue;
-                if (item.constraintsRegistered) {
-                    JPH::VehicleConstraint* vc = dynamic_cast<JPH::VehicleConstraint*>(c.GetPtr());
-                    if (vc != nullptr)
-                        physics->RemoveStepListener(vc);
-                    physics->RemoveConstraint(c.GetPtr());
-                }
+                JPH::VehicleConstraint* vc = dynamic_cast<JPH::VehicleConstraint*>(c.GetPtr());
+                if (vc != nullptr)
+                    physics->RemoveStepListener(vc);
+                physics->RemoveConstraint(c.GetPtr());
                 ++destroyedConstraints;
             }
             item.constraints.clear(); // Ref<> release: frees whatever no longer has an owner
+
+            // Built but never added (e.g. state.constraint under wheelmodel mode, §39) - no
+            // Remove* call is safe/meaningful on something Jolt's constraint manager never held.
+            for (JPH::Ref<JPH::Constraint>& c : item.unregisteredConstraints) {
+                if (c != nullptr)
+                    ++destroyedConstraints;
+            }
+            item.unregisteredConstraints.clear();
 
             // docs §54.5 - THE crash that this whole mechanism tripped over, found live and
             // deterministically reproducible: destroying a body that some OTHER, still-registered
@@ -1483,6 +1547,10 @@ namespace kraken::fix::joltshadow {
             float      inertia = 1.0f;
             JPH::Vec3  axleLocal{1.0f, 0.0f, 0.0f};
             bool       driven  = false;
+            // docs §139: [jolt_harness] wm4_per_wheel_mu multiplier for this wheel - 1.0 (no-op)
+            // unless the flag is on, gated at the point this is populated (BuildWheelBodies), not
+            // read fresh here, so this hot loop stays a plain multiply either way.
+            float      muScale = 1.0f;
         };
         JPH::Body* chassis = nullptr;
         uint32_t   slot    = 0;
@@ -1642,7 +1710,8 @@ namespace kraken::fix::joltshadow {
         // file already accepts for the leaked strut/body themselves (docs §124.1).
         void SetStatic(JPH::PhysicsSystem* inPhysics, JPH::Body* inChassis, uint32_t inSlot,
                 uint32_t inWheelIndex, float inRadius, float inTau, float inMass, float inInertia,
-                JPH::Vec3Arg inAxleLocal, const kraken::fix::wheelmodel::WMParams& inParams) {
+                JPH::Vec3Arg inAxleLocal, const kraken::fix::wheelmodel::WMParams& inParams,
+                float inMuScale) {
             mPhysics    = inPhysics;
             mChassis    = inChassis;
             mSlot       = inSlot;
@@ -1653,6 +1722,9 @@ namespace kraken::fix::joltshadow {
             mInertia    = inInertia;
             mAxleLocal  = inAxleLocal;
             mParams     = inParams;
+            // docs §139: 1.0 (no-op) unless the caller already gated this on
+            // [jolt_harness] wm4_per_wheel_mu - see the call site in BuildWheelBodies.
+            mMuScale    = inMuScale;
         }
 
         // docs §124: which slot each of the 3 parallel per-contact solves below belongs to -
@@ -1917,6 +1989,7 @@ namespace kraken::fix::joltshadow {
             const float weight = (inSlot == kSide) ? mGm[idx].wl : mGm[idx].wr;   // docs §124's OnStep comment on why
             wm::WMParams P = mParams;
             P.inertia = mInertia;
+            P.mu *= mMuScale;   // docs §139: real per-wheel m_mU, 1.0 (no-op) unless the flag is on
 
             const wm::WMForce f = wm::GeneralizedContactForce(pW, n, mGm[idx].pen, weight,
                 mCentre, aW, vpW, omega, mRadius, mTau, mMass, inDt, P);
@@ -1974,6 +2047,7 @@ namespace kraken::fix::joltshadow {
         float                mInertia    = 1.0f;
         JPH::Vec3             mAxleLocal{ 1.0f, 0.0f, 0.0f };
         kraken::fix::wheelmodel::WMParams mParams;
+        float                mMuScale    = 1.0f;   // docs §139, see SetStatic
 
         // docs §124 step 2 cache - see CacheContact/ClearContact. Written by OnStep, read by
         // SetupVelocityConstraint, later in the SAME step.
@@ -2165,6 +2239,7 @@ namespace kraken::fix::joltshadow {
 
             wm::WMParams P = params;
             P.inertia = wt.inertia;   // the real disc inertia, not mode 2's flat constant
+            P.mu *= wt.muScale;   // docs §139: real per-wheel m_mU, 1.0 (no-op) unless the flag is on
 
             // The WEIGHT differs by slot: radial (wr) for ground and obstacle, LATERAL (wl) for
             // side. Factoring the three calls into one lambda quietly collapsed that, and the
@@ -2608,9 +2683,12 @@ namespace kraken::fix::joltshadow {
                 // wheel body reaches a genuine zero-velocity equilibrium with the harvest system
                 // reporting recs=0 on every wheel throughout, which points at contact NEVER being
                 // found at all (not "found too slowly"), not at the solver failing to converge.
+                // docs §139.9 (task #63): was a hardcoded 20/10 - now config-driven so a live A/B
+                // sweep (Mirotvorec01 drive-motor chatter under hard steer) doesn't need a rebuild
+                // per candidate value. Defaults unchanged from the prior literal.
                 if (cfg.jolt_wm4_contact_constraint.value != 0) {
-                    sc->SetNumVelocityStepsOverride(20);
-                    sc->SetNumPositionStepsOverride(10);
+                    sc->SetNumVelocityStepsOverride(cfg.jolt_wm4_drive_vel_steps.value);
+                    sc->SetNumPositionStepsOverride(cfg.jolt_wm4_drive_pos_steps.value);
                 }
                 // Velocity mode only for DRIVEN wheels here; a free-roller gets no motor until
                 // something (the handbrake) needs one, and the per-frame code switches it then.
@@ -2690,7 +2768,7 @@ namespace kraken::fix::joltshadow {
         }
         state.stepListener->chassis    = chassisBody;
         state.stepListener->slot       = state.harvestSlot;
-        state.stepListener->params     = WheelModelParamsFromConfig();
+        state.stepListener->params     = WheelModelParamsFromConfig(/*applyTuningAxes=*/true);
         state.stepListener->wheelCount = (uint32_t) std::min<size_t>(state.wheelBodies.size(), kMaxHarvestWheels);
         for (uint32_t w = 0; w < state.stepListener->wheelCount; ++w) {
             JPH::Body* wb = physics->GetBodyLockInterfaceNoLock().TryGetBody(state.wheelBodies[w]);
@@ -2708,6 +2786,11 @@ namespace kraken::fix::joltshadow {
             state.stepListener->wheels[w].mass = (wb != nullptr)
                 ? 1.0f / std::max(wb->GetMotionProperties()->GetInverseMass(), 1.0e-8f)
                 : 10.0f;
+            // docs §139: gate HERE, once per rebuild, not in the hot per-iteration force call -
+            // 1.0 (no-op) when the flag is off, regardless of what the real prototype mu is.
+            const float wheelMuScale = kraken::Config::Instance().jolt_wm4_per_wheel_mu.value != 0
+                ? state.wheelSetup[w].muScale : 1.0f;
+            state.stepListener->wheels[w].muScale = wheelMuScale;
             // docs §124 step 2: route this wheel's contact cache to its own constraint (nullptr
             // when the flag is off, or the vector is short for some other reason) - OnStep's own
             // cc!=nullptr guard already treats a nullptr entry as "old path only", so leaving
@@ -2720,7 +2803,7 @@ namespace kraken::fix::joltshadow {
                 cc->SetStatic(physics, chassisBody, state.harvestSlot, w,
                     state.wheelSetup[w].radius, state.wheelSetup[w].tau,
                     state.stepListener->wheels[w].mass, state.stepListener->wheels[w].inertia,
-                    state.wheelSetup[w].axleLocal, state.stepListener->params);
+                    state.wheelSetup[w].axleLocal, state.stepListener->params, wheelMuScale);
             }
         }
 
@@ -2901,17 +2984,50 @@ namespace kraken::fix::joltshadow {
         // which case this is exactly the historical leak-forever behaviour.
         // Placed after the new body is known to exist so a failed rebuild doesn't destroy a
         // still-working shadow.
-        if (!state.bodyId.IsInvalid() || state.constraint != nullptr) {
+        //
+        // docs §139: ALSO captures the old wheelBodyMode topology (state.wheelBodies/
+        // wheelConstraints/wheelContactConstraints) here, at the SAME point and in the SAME
+        // PendingJoltDestroy item as the chassis - not from BuildWheelBodies' own clear() later.
+        // Found live: a 23-vehicle fleet sweep that chained rebuilds in one process leaked wheel
+        // bodies/SixDOF struts/WheelContactConstraints on every switch (this data was never
+        // enqueued at all before - only the chassis was) and crashed with a real access violation
+        // once ~124 leaked constraints had piled up. Combining chassis+wheels into ONE item
+        // matters for ordering, not just completeness: within a single item the drain removes ALL
+        // constraints (including the per-wheel SixDOFConstraint/WheelContactConstraint, which
+        // reference the chassis body) before destroying ANY body, so the old chassis can never be
+        // freed while a not-yet-processed wheel constraint still points at it. Two separate items
+        // (chassis enqueued here, wheels enqueued later from BuildWheelBodies) would not have that
+        // guarantee - the chassis item could drain and free the chassis body before the wheel
+        // item's constraints, still referencing it, ever got RemoveConstraint'd.
+        // state.wheelBodies is still the OLD vehicle's data here - BuildWheelBodies (called later
+        // in this function, only when state.wheelBodyMode) is what clears/repopulates it.
+        if (!state.bodyId.IsInvalid() || state.constraint != nullptr || !state.wheelBodies.empty()) {
             PendingJoltDestroy old;
             if (!state.bodyId.IsInvalid())
                 old.bodies.push_back(state.bodyId);
             if (state.constraint != nullptr) {
-                old.constraints.push_back(state.constraint);
-                // wheelmodel mode never calls AddConstraint/AddStepListener (see below), so the
-                // old constraint is only "registered" when the previous build was the
-                // VehicleConstraint path.
-                old.constraintsRegistered = !state.wheelModelMode;
+                // wheelmodel mode never calls AddConstraint/AddStepListener (§39) - the plain
+                // VehicleConstraint is only ever actually registered on the old VehicleConstraint
+                // path (mode 0).
+                if (state.wheelModelMode)
+                    old.unregisteredConstraints.push_back(state.constraint);
+                else
+                    old.constraints.push_back(state.constraint);
             }
+            for (JPH::BodyID wheelId : state.wheelBodies)
+                if (!wheelId.IsInvalid())
+                    old.bodies.push_back(wheelId);
+            for (JPH::Constraint* c : state.wheelConstraints)
+                if (c != nullptr)
+                    old.constraints.push_back(c);            // real SixDOFConstraint, always AddConstraint'd
+            for (JPH::Constraint* c : state.wheelContactConstraints)
+                if (c != nullptr)
+                    old.constraints.push_back(c);            // real WheelContactConstraint, always AddConstraint'd
+            // Risk is specific to the plain VehicleConstraint path's untracked wheel-proxy
+            // bodies/constraints (§54.5) - never built under wheelModelMode (see
+            // TryBuildWheelProxiesOnceSettled's own guard), so a wheelBodyMode rebuild's combined
+            // item (chassis + wheels, all tracked, no proxies) is safe to actually destroy.
+            old.untrackedReferenceRisk = !state.wheelModelMode;
             EnqueueJoltDestroy(std::move(old));
         }
 
@@ -3180,6 +3296,10 @@ namespace kraken::fix::joltshadow {
             setup.kSusp         = ws->mSuspensionSpring.mStiffness;
             setup.cSusp         = ws->mSuspensionSpring.mDamping;
             setup.unsprungMass  = wheel->GetMass();
+            // docs §139: same field, same fallback, StepWheelModel's own §42.9 fix already reads
+            // for the mode-2 path - captured here unconditionally as data (see the field's own
+            // comment); gated at consumption, not here.
+            setup.muScale       = wheelProto != nullptr ? wheelProto->m_mU : 1.0f;
             setup.driven        = wheel->m_driven;
             setup.steering      = wheel->m_steering != hta::ai::Wheel::STEERING_NO;
             // docs §133: see the WheelSetup field's own comment - read-only, safe (an existing
@@ -3598,7 +3718,16 @@ namespace kraken::fix::joltshadow {
             return;
 
         DivergenceSample d = ComputeDivergence(vehicle, state);
-        LOG_INFO("Shadow divergence (%s): pos=%.3fm vel=%.3fm/s angle=%.1fdeg (jolt com=[%.1f %.1f %.1f] ode com=[%.1f %.1f %.1f])",
+        // docs §140.1: the two COM triplets used to print at %.1f - a 0.1 m grid. Every
+        // *_travel_m / ratio in the whole §139 calibration was derived from THESE numbers by
+        // fleet_calibration_sweep.py's analyze(), so all of them were quantised to 0.1 m. For a
+        // vehicle covering 15-30 m that is ~0.3% and harmless, which is why it went unnoticed;
+        // for a stuck shadow covering under a metre the grid is the same size as the signal, and
+        // it produced a real false inference (§139.8 read repeated sqrt(0.3^2+0.7^2)=0.7615773
+        // as bit-for-bit determinism, i.e. as physics, when it was just the format string).
+        // %.3f = millimetre resolution: still compact, and now the measurement resolves what the
+        // physics actually does. Pure logging change, no behaviour touched.
+        LOG_INFO("Shadow divergence (%s): pos=%.3fm vel=%.3fm/s angle=%.1fdeg (jolt com=[%.3f %.3f %.3f] ode com=[%.3f %.3f %.3f])",
             label, (double) d.posDrift, (double) d.velDrift, (double) d.angleDriftDeg,
             (double) d.joltCom.GetX(), (double) d.joltCom.GetY(), (double) d.joltCom.GetZ(),
             (double) d.odeCom.GetX(), (double) d.odeCom.GetY(), (double) d.odeCom.GetZ());

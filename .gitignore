@@ -11,3 +11,7 @@ __pycache__
 **/*.lib
 **/*.ilk
 **/*.pdb
+
+# Measurement outputs from tools/testharness sweeps (docs §139/§140). Findings belong in
+# docs/sec*.md; the raw per-run JSON is a local artefact and no such file has ever been tracked.
+tools/testharness/*.json
