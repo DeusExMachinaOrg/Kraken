@@ -7,6 +7,7 @@
 #include "ext/logger.hpp"
 #include "ext/runtime.hpp"
 #include "ext/impulse.hpp"
+#include "net/runtime.hpp"
 
 #include "fix/fileserver.hpp"
 #include "fix/physic.hpp"
@@ -29,9 +30,10 @@
 #include "fix/mortarvolleylauncherfix.hpp"
 #include "fix/gunlights.hpp"
 #include "fix/bossmetalarm.hpp"
+#include "fix/testharness.hpp"
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
-    Config* G_CONFIG = new Config();
+    Config* G_CONFIG = nullptr;
 
     void ConstantHotfix() {
         routines::Override(sizeof(uint32_t), (void*) 0x0057BCAF, (char*) &G_CONFIG->save_height.value);
@@ -57,10 +59,15 @@ namespace kraken {
 
     API void EntryPoint(HANDLE module) {
         G_MODULE = module;
+        // EntryPoint is called after DLL loading; avoid file I/O and heap work
+        // from Config's constructor while the Windows loader lock is held.
+        if (G_CONFIG == nullptr)
+            G_CONFIG = new Config();
 
         logger::Init();
         runtime::Init();
         impulse::Init();
+        net::runtime::Apply(G_CONFIG);
 
         LOG_INFO("Prepare patches");
         ConstantHotfix();
@@ -75,7 +82,15 @@ namespace kraken {
         fix::ultrawide::Apply();
         fix::fastloading::Apply();
         //fix::kineticfriction::Apply();
-        fix::cardan::Apply();
+        if (fix::testharness::IsEnabled()) {
+            // Both features own the same _KeepThrottle call site. The harness
+            // is a deterministic test mode, so Cardan is explicitly disabled.
+            LOG_INFO("Test harness enabled; skipping cardan fix");
+            fix::testharness::Apply();
+        }
+        else {
+            fix::cardan::Apply();
+        }
         fix::tactics::Apply();
         fix::complexschwarz::Apply();
         fix::skinfix::Apply();

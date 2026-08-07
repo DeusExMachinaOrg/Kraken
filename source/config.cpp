@@ -44,6 +44,11 @@ namespace kraken {
         this->mortarvolleylauncherfix           = { "constants", "mortarvolleylauncherfix",         1,     true,  0,     1           };
         this->gunlights                         = { "constants", "gunlights",                       1,     true,  0,     1           };
         this->boss01_fast_charge                = { "constants", "boss01_fast_charge",              1,     true,  0,     1           };
+        this->multiplayer_enabled               = { "multiplayer", "enabled",                       0,     true,  0,     1           };
+        this->multiplayer_host                  = { "multiplayer", "host",                          1,     true,  0,     1           };
+        this->multiplayer_address               = { "multiplayer", "address",                       std::string("127.0.0.1")          };
+        this->multiplayer_port                  = { "multiplayer", "port",                          27015, true,  1024,  65535       };
+        this->multiplayer_max_peers             = { "multiplayer", "max_peers",                     16,    true,  2,     16          };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -105,6 +110,11 @@ namespace kraken {
         this->LoadValue(&this->mortarvolleylauncherfix);
         this->LoadValue(&this->gunlights);
         this->LoadValue(&this->boss01_fast_charge);
+        this->LoadValue(&this->multiplayer_enabled);
+        this->LoadValue(&this->multiplayer_host);
+        this->LoadValue(&this->multiplayer_address);
+        this->LoadValue(&this->multiplayer_port);
+        this->LoadValue(&this->multiplayer_max_peers);
     };
 
     void Config::Dump() {
@@ -144,6 +154,11 @@ namespace kraken {
         this->DumpValue(&this->mortarvolleylauncherfix);
         this->DumpValue(&this->gunlights);
         this->DumpValue(&this->boss01_fast_charge);
+        this->DumpValue(&this->multiplayer_enabled);
+        this->DumpValue(&this->multiplayer_host);
+        this->DumpValue(&this->multiplayer_address);
+        this->DumpValue(&this->multiplayer_port);
+        this->DumpValue(&this->multiplayer_max_peers);
     };
 
     template<typename T>

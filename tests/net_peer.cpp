@@ -1,0 +1,113 @@
+#include "net/session.hpp"
+#include "net/transport.hpp"
+
+#include <array>
+#include <chrono>
+#include <cstdlib>
+#include <iostream>
+#include <string>
+#include <thread>
+#include <vector>
+
+using namespace std::chrono_literals;
+
+int main(int argc, char** argv)
+{
+    using namespace kraken::net;
+
+    if (argc < 2 || (std::string(argv[1]) != "host" &&
+                     std::string(argv[1]) != "client")) {
+        std::cerr << "usage: kraken_net_peer_test <host|client> [port] [address]\n";
+        return 64;
+    }
+
+    const bool is_host = std::string(argv[1]) == "host";
+    const std::uint16_t port = argc >= 3
+        ? static_cast<std::uint16_t>(std::strtoul(argv[2], nullptr, 10))
+        : kDefaultPort;
+    const std::string address = argc >= 4 ? argv[3] : "127.0.0.1";
+
+    EnetTransport transport;
+    SessionConfig config{};
+    config.role = is_host ? SessionRole::Server : SessionRole::Client;
+    config.transport.bind_endpoint = {is_host ? "0.0.0.0" : "127.0.0.1", port};
+    config.transport.max_peers = 16;
+    Session session(transport, config);
+
+    if (!session.start()) {
+        std::cerr << "start failed\n";
+        return 1;
+    }
+    if (!is_host && !session.connect(Endpoint{address, port})) {
+        std::cerr << "connect failed\n";
+        return 2;
+    }
+
+    std::vector<PeerId> peers;
+    bool connected = false;
+    bool received_rtt = false;
+    unsigned rtt_samples = 0;
+    auto next_ping = std::chrono::steady_clock::now();
+    const auto deadline = std::chrono::steady_clock::now() + 20s;
+    std::array<SessionEvent, 32> events{};
+
+    std::cout << (is_host ? "listening" : "connecting") << " port=" << port
+              << " address=" << address << std::endl;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        const TransportResult result = session.pump();
+        if (!result && result.code != TransportResultCode::WouldBlock) {
+            std::cerr << "pump failed code=" << static_cast<unsigned>(result.code) << '\n';
+            return 3;
+        }
+
+        const std::size_t count = session.drain_events(events);
+        for (std::size_t index = 0; index < count; ++index) {
+            const SessionEvent& event = events[index];
+            switch (event.type) {
+            case SessionEventType::PeerConnected:
+                connected = true;
+                peers.push_back(event.peer);
+                std::cout << "connected peer=" << event.peer << std::endl;
+                break;
+            case SessionEventType::PeerDisconnected:
+                std::cout << "disconnected peer=" << event.peer << std::endl;
+                break;
+            case SessionEventType::RoundTripTime:
+                received_rtt = true;
+                ++rtt_samples;
+                std::cout << "rtt peer=" << event.peer
+                          << " ms=" << event.round_trip_time_ms << std::endl;
+                break;
+            case SessionEventType::ProtocolError:
+                std::cerr << "protocol_error peer=" << event.peer
+                          << " code=" << static_cast<unsigned>(event.protocol_error)
+                          << std::endl;
+                break;
+            case SessionEventType::Message:
+                break;
+            }
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (connected && now >= next_ping) {
+            next_ping = now + 1s;
+            for (PeerId peer : peers)
+                (void)session.ping(peer);
+        }
+        if (received_rtt && rtt_samples >= 10)
+            break;
+        std::this_thread::sleep_for(1ms);
+    }
+
+    session.stop();
+    if (!connected) {
+        std::cerr << "timeout waiting for handshake\n";
+        return 4;
+    }
+    if (!received_rtt) {
+        std::cerr << "timeout waiting for RTT\n";
+        return 5;
+    }
+    return 0;
+}

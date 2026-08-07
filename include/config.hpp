@@ -72,6 +72,13 @@ namespace kraken {
         ConfigValue<uint32_t>                 gunlights;
         ConfigValue<uint32_t>                 boss01_fast_charge;
 
+        // Multiplayer (listen-server MVP)
+        ConfigValue<uint32_t>                 multiplayer_enabled;
+        ConfigValue<uint32_t>                 multiplayer_host;
+        ConfigValue<std::string>              multiplayer_address;
+        ConfigValue<uint32_t>                 multiplayer_port;
+        ConfigValue<uint32_t>                 multiplayer_max_peers;
+
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;
         ConfigValue<float>                    gun_gadgets_max_schwarz_part;
