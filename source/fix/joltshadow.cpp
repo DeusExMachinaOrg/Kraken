@@ -1622,6 +1622,12 @@ namespace kraken::fix::joltshadow {
             // last had one. Temporary instrumentation, not a permanent diagnostic contract.
             float dbg_v_par = 0.0f, dbg_v_lat = 0.0f, dbg_stick = 0.0f;
             float dbg_capPar = 0.0f, dbg_damperPar = 0.0f, dbg_D = 0.0f;
+            // docs §140.2i: the post-clamp, post-stick-blend forces this wheel actually applies,
+            // plus this wheel's fore-aft offset from the COM. Together they answer the standing
+            // question directly: at full lock, do the front (+) and middle (0) steered axles push
+            // AGAINST each other, and does the sum over wheels come out ~zero?
+            float dbg_f_par = 0.0f, dbg_f_lat = 0.0f;
+            float foreAft   = 0.0f;
             // docs §124 step 3: the NEW path's own normal force (WheelContactConstraint's solved
             // impulse/dt), read back into the SAME wheel this step for a like-for-like comparison
             // against fnGround/fnObst/fnSide above - the step-3 verification gate. Stay 0 when the
@@ -2264,6 +2270,15 @@ namespace kraken::fix::joltshadow {
             const wm::WMForce fS = forceFor(slots.side,     slots.side     >= 0 ? gm[slots.side].wl     : 0.0f);
             dg.dbg_v_par = fG.dbg_v_par; dg.dbg_v_lat = fG.dbg_v_lat; dg.dbg_stick = fG.dbg_stick;
             dg.dbg_capPar = fG.dbg_capPar; dg.dbg_damperPar = fG.dbg_damperPar; dg.dbg_D = fG.dbg_D;
+            // docs §140.2i, see WheelDiag's own comment. foreAft is this wheel's signed distance
+            // ahead of the chassis COM along the chassis forward axis - the same quantity the
+            // reference-side "docs §28" line already prints for ODE, so the two are directly
+            // comparable and the axle a wheel belongs to is readable straight off the log line.
+            dg.dbg_f_par = fG.dbg_f_par; dg.dbg_f_lat = fG.dbg_f_lat;
+            if (chassis != nullptr) {
+                const JPH::Vec3 fwdW = chassis->GetRotation() * JPH::Vec3(0.0f, 0.0f, 1.0f);
+                dg.foreAft = (float) JPH::Vec3(centre - chassis->GetCenterOfMassPosition()).Dot(fwdW);
+            }
 
             // Deliberately NO maxForce cap here. Mode 2 clamps at jolt_wm_max_g * m * g with
             // m the per-corner SPRUNG mass (~33-42 kg), giving ~2000-2500 N. With m now the
@@ -6544,6 +6559,12 @@ namespace kraken::fix::joltshadow {
                              "capPar=%.1fN damperPar=%+.1fN D=%.1fN",
                         label, w, (double) d.dbg_v_par, (double) d.dbg_v_lat, (double) d.dbg_stick,
                         (double) d.dbg_capPar, (double) d.dbg_damperPar, (double) d.dbg_D);
+                    // docs §140.2i: the applied tyre force split, per wheel, with the wheel's
+                    // fore-aft station. A separate line rather than more fields on the §125 one -
+                    // that format is quoted verbatim in the docs and in parsing scripts already
+                    // written against it, and widening it would silently break them.
+                    LOG_INFO("docs §140: wheel force (%s) w=%u foreAft=%+.3f f_par=%+.1fN f_lat=%+.1fN",
+                        label, w, (double) d.foreAft, (double) d.dbg_f_par, (double) d.dbg_f_lat);
                     // docs §124 step 3: new-path (WheelContactConstraint/AxisConstraintPart)
                     // normal force next to the old path's, for the step-3 verification gate -
                     // "matched within ~1%" on a static settle. Reads 0/0/0 whenever the flag is

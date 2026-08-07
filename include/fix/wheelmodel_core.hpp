@@ -142,6 +142,13 @@ namespace kraken::fix::wheelmodel {
         // number. Zero-initialized so a return-before-friction (pen<=0, tLen~0, etc.) reads as 0.
         float dbg_v_par = 0.0f, dbg_v_lat = 0.0f, dbg_stick = 0.0f;
         float dbg_capPar = 0.0f, dbg_damperPar = 0.0f, dbg_D = 0.0f;
+        // docs §140.2i: the FINAL longitudinal/lateral force actually applied for this contact,
+        // after the friction circle, the no-overshoot clamps AND the stick blend - i.e. what the
+        // wheel really pushes with, not any intermediate. Needed to test whether the front and
+        // middle steered axles (Mirotvorec01 has both, at different fore-aft positions but
+        // commanded to the SAME angle) push AGAINST each other at full lock, which is the
+        // standing explanation for the shadow stopping dead there while ODE drives on.
+        float dbg_f_par = 0.0f, dbg_f_lat = 0.0f;
     };
 
     inline WMForce GeneralizedContactForce(
@@ -251,6 +258,9 @@ namespace kraken::fix::wheelmodel {
 
             out.dbg_v_par = v_par; out.dbg_v_lat = v_lat; out.dbg_stick = stick;
             out.dbg_capPar = capPar; out.dbg_damperPar = damperPar; out.dbg_D = D;
+            // docs §140.2i: captured HERE, after every clamp and the stick blend above, so these
+            // are the forces that actually reach Fvec on the next line - not a pre-clamp value.
+            out.dbg_f_par = f_par; out.dbg_f_lat = f_lat;
 
             Fvec = Fvec + t * f_par + l * f_lat;
             out.fpar_w = f_par * w;
