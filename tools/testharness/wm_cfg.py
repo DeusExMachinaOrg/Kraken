@@ -104,6 +104,11 @@ FINGERPRINTS = {
     # same launch as Molokovoz01 above, not read off one run's log by eye - the strict check only
     # means anything if the value it checks against came from the tool built to produce it.
     "Bug01":       ("mass=132.0", "chassis=3.00x2.00x8.00"),
+    # docs §124: fleet sweep before considering flipping wm4_contact_constraint's default.
+    # Captured live on save 00000009 (capture_fleet_fingerprints.py), same discipline as above.
+    "Belaz01":       ("mass=392.0", "chassis=4.00x4.50x12.00"),
+    "Mirotvorec01":  ("mass=411.0", "chassis=5.00x2.50x12.00"),
+    "Cruiser01":     ("mass=104.0", "chassis=10.00x1.00x5.00"),
 }
 PIN_FINGERPRINT = FINGERPRINTS.get(PIN_VEHICLE, MOLOKOVOZ_FINGERPRINT)
 

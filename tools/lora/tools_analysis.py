@@ -47,27 +47,74 @@ def register(mcp):
             return [{"error": "No .text section found and no range specified"}]
 
         code = sess.pe.get_data(search_rva, search_len)
+
+        # A LINEAR capstone sweep of a whole .text does NOT work and fails SILENTLY: md.disasm()
+        # is a generator that stops dead at the first byte it cannot decode, and a 5.8 MB .text is
+        # full of jump tables, alignment padding and data islands. The old implementation did
+        # exactly that and therefore returned [] for essentially every target - including
+        # dJointSetHinge2Param, which calls_in_function proves is called from
+        # ai::Vehicle::_KeepGearBox at 0x1e1265. Two separate investigations recorded "no call site
+        # found" on the strength of that empty list before the cause was noticed.
+        #
+        # So direct rel32 branches are found by scanning for the OPCODE instead. E8 (call rel32)
+        # and E9 (jmp rel32) are five bytes, displacement relative to the end of the instruction.
+        # A false positive needs four data bytes that happen to encode exactly the displacement to
+        # the target, which is not a coincidence that happens by accident; a hit can always be
+        # confirmed with disasm at the reported address. Everything found this way is reported with
+        # method="opcode-scan".
+        results = []
+        seen: set[int] = set()
+        n = len(code)
+        for i in range(n - 5):
+            op = code[i]
+            if op != 0xE8 and op != 0xE9:
+                continue
+            disp = int.from_bytes(code[i + 1:i + 5], "little", signed=True)
+            if sess.image_base + search_rva + i + 5 + disp != target_va:
+                continue
+            caller_rva = search_rva + i
+            seen.add(caller_rva)
+            results.append({
+                "from_rva": hex(caller_rva),
+                "from_va": hex(sess.image_base + caller_rva),
+                "caller": pdb_mod.sym_at_rva(sess, caller_rva) or hex(caller_rva),
+                "type": "call" if op == 0xE8 else "jmp",
+                "method": "opcode-scan",
+            })
+
+        # Short/conditional branches and anything else capstone can reach are still worth having,
+        # so the decode pass is kept - but restarted after each bad byte instead of giving up, and
+        # only as a SUPPLEMENT to the scan above. Results already found are not duplicated.
         mode = CS_MODE_64 if sess.is_64 else CS_MODE_32
         md = Cs(CS_ARCH_X86, mode)
-
-        results = []
         branch_mnemonics = {"call", "jmp", "je", "jne", "jg", "jl", "jge", "jle", "ja", "jb", "jae", "jbe"}
-        for insn in md.disasm(code, sess.image_base + search_rva):
-            if insn.mnemonic in branch_mnemonics:
+        offset = 0
+        while offset < n:
+            last_end = offset
+            for insn in md.disasm(code[offset:], sess.image_base + search_rva + offset):
+                last_end = insn.address - sess.image_base - search_rva + insn.size
+                if insn.mnemonic not in branch_mnemonics:
+                    continue
                 try:
                     op_val = int(insn.op_str, 16)
-                    if op_val == target_va:
-                        caller_rva = insn.address - sess.image_base
-                        caller_name = pdb_mod.sym_at_rva(sess, caller_rva) or hex(caller_rva)
-                        results.append({
-                            "from_rva": hex(caller_rva),
-                            "from_va": hex(insn.address),
-                            "caller": caller_name,
-                            "type": insn.mnemonic,
-                        })
                 except ValueError:
-                    pass
+                    continue
+                if op_val != target_va:
+                    continue
+                caller_rva = insn.address - sess.image_base
+                if caller_rva in seen:
+                    continue
+                seen.add(caller_rva)
+                results.append({
+                    "from_rva": hex(caller_rva),
+                    "from_va": hex(insn.address),
+                    "caller": pdb_mod.sym_at_rva(sess, caller_rva) or hex(caller_rva),
+                    "type": insn.mnemonic,
+                    "method": "decode",
+                })
+            offset = max(last_end, offset + 1)
 
+        results.sort(key=lambda r: int(r["from_rva"], 16))
         return results
 
     @mcp.tool()

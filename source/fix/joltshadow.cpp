@@ -34,7 +34,11 @@
 #include <Jolt/Physics/Collision/GroupFilterTable.h>
 #include <Jolt/Physics/Constraints/SliderConstraint.h>
 #include <Jolt/Physics/Constraints/SixDOFConstraint.h> // docs §58 (Этап 1, шаг 2): the wheel strut
+#include <Jolt/Physics/IslandBuilder.h>        // docs §124: WheelContactConstraint::BuildIslands
+#include <Jolt/Physics/LargeIslandSplitter.h>  // docs §124: WheelContactConstraint::BuildIslandSplits
+#include <Jolt/Physics/Body/BodyManager.h>     // docs §124: WheelContactConstraint::BuildIslands
 
+#include "hta/ai/BreakableObject.hpp"
 #include "hta/ai/CServer.hpp"
 #include "hta/ai/DynamicScene.hpp"
 #include "hta/ai/Geom.hpp"
@@ -51,6 +55,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <limits>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -194,6 +199,37 @@ namespace kraken::fix::joltshadow {
     static inline uint32_t WheelUserDataSlot(uint64_t ud) { return (uint32_t) ((ud >> 16) & 0xFFFFu); }
     static inline uint32_t WheelUserDataIndex(uint64_t ud){ return (uint32_t) (ud & 0xFFFFu); }
 
+    // docs §66: crash fix, confirmed live via a full disassembly of the fault (no PDB for
+    // kraken.dll itself, so this was done by hand: pefile+capstone against the deployed DLL,
+    // cross-referenced with the crash log's own stack trace and kraken.map). A static prop body's
+    // BreakableObject* tag (propTag/ResolveBreakableOwner, jolt.cpp) is resolved ONCE, at level
+    // export, and never refreshed - unlike g_aiTargets (docs §Stage-3-Шаг-5's own crash fix,
+    // same shape of bug), nothing here re-confirms the tagged object is still the SAME live one
+    // before every use. Live crash during combat: `breakable->GetMass()` faulted reading
+    // address 0x110 - the vtable slot for GetMass(), meaning `*breakable` (the vtable pointer
+    // itself) was 0. The read of `*breakable` at offset 0 did NOT fault, so the pointer was
+    // mapped/readable, just pointing at memory that's since been zeroed - a live prop's C++
+    // object got invalidated (destroyed, pooled, or reused) while the static Jolt body's stale
+    // tag kept pointing at it, most likely something combat-specific (an explosion or gunfire
+    // interacting with level geometry) that this session's earlier, controlled ram-tests never
+    // exercised.
+    //
+    // Not a full liveness fix - a proper one would need jolt.cpp's export to track a live set
+    // and invalidate entries as objects are destroyed, refreshed each frame the way
+    // GetCurrentlyLiveVehicles() does for vehicles. That's the right long-term shape but a
+    // bigger change and props can number in the thousands where vehicles number in the tens, so
+    // a per-frame full-container rescan from a Jolt WORKER thread (these Handle* functions run
+    // from OnContactAdded/OnContactPersisted, not the main thread) isn't a safe drop-in either.
+    // This is the minimal, thread-safe, evidence-matched guard: a polymorphic object's first
+    // word is its vtable pointer, and reading it is exactly as safe as the crash already proved
+    // it is for THIS failure mode (mapped-but-zeroed memory) - it converts that crash into a
+    // skip. It will NOT catch every possible corruption (a non-null-but-wrong vtable, or memory
+    // that's been fully unmapped rather than zeroed, would still fault) - it catches the one
+    // that's actually been observed live.
+    static inline bool LooksLikeLiveBreakableObject(const hta::ai::BreakableObject* obj) {
+        return obj != nullptr && *reinterpret_cast<void* const*>(const_cast<hta::ai::BreakableObject*>(obj)) != nullptr;
+    }
+
     // docs §59/§63 (Этап 1, шаг 3): the harvest buffer. The narrow phase runs on worker threads
     // and the step listener runs in a different job in the SAME step, so the contact data has to
     // cross that boundary without a lock and without allocating. A fixed per-wheel record array
@@ -214,6 +250,13 @@ namespace kraken::fix::joltshadow {
         JPH::Vec3 normal;  // unit, pointing OUT of the surface toward the wheel
         float     depth;   // manifold penetration depth - diagnostics only; the band reprojects
         uint32_t  sub;     // 0 = TYRE (radius R), 1 = RIM (radius R - tau)
+        // docs §124 step 3: the body on the SURFACE side of this contact (terrain, a prop,
+        // another vehicle's chassis - whatever the wheel is touching). Resolved fresh by BodyID
+        // each step in WheelContactConstraint::SetupVelocityConstraint rather than kept as a
+        // Body* here, because it can be removed/replaced between harvest (this step's narrow
+        // phase, a worker thread) and use (next step's Setup) - BodyID equality-checks the
+        // occupant's generation on lookup (BodyManager::TryGetBody), a raw pointer would not.
+        JPH::BodyID other;
     };
     struct WheelHarvest {
         std::atomic<uint32_t> count;
@@ -321,7 +364,13 @@ namespace kraken::fix::joltshadow {
     // component of its position/rotation/velocity is non-finite, ApplyJoltToVehicle skips
     // writing this frame entirely and leaves ODE in sole control - self-healing per frame,
     // no persistent "disabled" state, matching wheelmodel's own pattern exactly.
-    static constexpr float kMaxAppliedSpeedMps = 60.0f;
+    //
+    // Was a hardcoded 60.0 constexpr; docs/stage2-plan.md §2.5's cross-vehicle sweep found
+    // ArcadeScout01 legitimately clearing it under full throttle, so it's now
+    // config.jolt_wm4_max_speed_mps (kraken.ini [jolt_harness] wm4_max_speed_mps, default 100).
+    static float MaxAppliedSpeedMps() {
+        return kraken::Config::Instance().jolt_wm4_max_speed_mps.value;
+    }
 
     static bool AllFinite(std::initializer_list<float> values) {
         for (float v : values)
@@ -412,6 +461,36 @@ namespace kraken::fix::joltshadow {
 
         bool driven   = false;
         bool steering = false;
+
+        // docs §133 (task #58, wheel-spin visual bug): the native reference render path
+        // (ai::PhysicBody::TransferPhysicParamsToSceneGraphNode, disassembled via tools/lora
+        // against game.pdb) never uses a global left/right mirror at all - it composes the
+        // physics body's raw world rotation with THIS per-object, per-geom offset
+        // (ai::PhysicBody::GetNodeRelativeRotation(), itself Inverse(bodyGeomRefRotation) *
+        // geom->GetRotation()) before writing to the SgNode. Captured once per wheel, at build
+        // time - it is a static attachment-time property (ODE geom placement relative to its
+        // owning body), not something that changes per frame.
+        JPH::Quat nodeRelativeRotation = JPH::Quat::sIdentity();
+
+        // docs §136 (task #58, wheel-spin visual bug - real fix, not the rejected §65.8
+        // per-vehicle-name list): the wheel BODY is spawned at chassisRot (comment at its
+        // construction explains why - the constraint frame math wants wheel-local==chassis-local
+        // at t=0), discarding the wheel's own NATIVE rotation - which is exactly the
+        // artist-authored placement (including any mesh mirroring) that native ODE's geom starts
+        // from and simply integrates a side-agnostic world-space spin on top of (confirmed this
+        // session: dJointSetHinge2Axis1/2 and dParamVel2 are BOTH computed purely from chassis
+        // rotation, zero per-wheel branching - ODE needs no correction because its STARTING POSE
+        // already carries the mirror; nothing about its motion does).
+        //
+        // Captured once at body-build time as `Inverse(chassisRot) * wheel->GetRotation()` -
+        // measured live: exactly identity (0 deg) on all 4 of Fighter01's wheels, exactly 180 deg
+        // on Molokovoz01's right wheels only. Composing it back on the JOLT side (visualRot =
+        // jointBodyRot * visualMirrorDelta) reconstructs precisely the native quaternion, because
+        // both engines apply the identical world-space spin - see this field's use in
+        // ApplyJoltToVehicleWheelModel for the derivation. Touches ONLY the cosmetic writeback;
+        // the wheel body's own rotation (used everywhere else - constraint frames, axleLocal
+        // projection, the tyre model) is completely unchanged.
+        JPH::Quat visualMirrorDelta = JPH::Quat::sIdentity();
     };
 
     struct ShadowState {
@@ -429,11 +508,31 @@ namespace kraken::fix::joltshadow {
         bool                            wheelBodyMode = false;
         std::vector<JPH::BodyID>        wheelBodies;
         std::vector<JPH::Constraint*>   wheelConstraints;
+        // docs §124 step 1: the wheel's ground-contact constraint, parallel to wheelOrder/
+        // wheelConstraints. Starts life as a pure no-op stub (empty Setup/Solve) - see
+        // WheelContactConstraint. Only meaningful when jolt_wm4_contact_constraint != 0; empty
+        // otherwise, same as the rest of this file's convention for gated features.
+        std::vector<JPH::Constraint*>   wheelContactConstraints;
         // The as-built disc inertia, kept so the step-5 spin work and the reflected-drivetrain
         // term can reuse it per gear instead of re-deriving it from mass and radius each time.
         // Ixx is about the axle, Ir about the two radial axes.
         std::vector<float>              wmDiscInertiaX;
         std::vector<float>              wmDiscInertiaR;
+        // Fix for the steer-drift bug reported live (kraken.ini wm4_steer_kinematic=2): the
+        // steer-assignment code used to extract "twist" (pure spin, to preserve) via
+        // wheelLocal.GetSwingTwist() off the WHEEL BODY'S CURRENT orientation every frame - but
+        // that orientation is itself disturbed each frame by real physics (gyroscopic coupling
+        // at high spin rate, lateral tyre force reacting through the SixDOF) between one
+        // assignment and the next, and swing-twist decomposition has no way to tell "real spin"
+        // apart from "disturbance that crept in since the last assignment" - so the disturbance
+        // got preserved as if it were spin instead of corrected. Confirmed live: holding full
+        // lock for ~10s while accelerating 10->20 m/s made measured decay from the commanded
+        // angle down through zero and out the other side. Tracking spin as its OWN accumulated
+        // scalar (integrated from angular velocity, never read back off the body) makes the
+        // steer and spin components fully independent - disturbance can still perturb the body
+        // between frames, but the NEXT assignment rebuilds strictly from steerCmd + this
+        // accumulator, so nothing it doesn't explicitly integrate can leak in as "spin".
+        std::vector<float>              wmSpinAngle;
 
         // docs §67 (Этап 1, шаг 5): what the main thread COMMANDED the spin motors this frame,
         // kept so the post-step pass can print it beside what the solver actually delivered.
@@ -465,6 +564,20 @@ namespace kraken::fix::joltshadow {
         float                           wmSpinThrottle  = 0.0f;
         float                           wmSpinBrake     = 0.0f;  // PRE-STEP snapshot
         bool                            wmSpinHandBrake = false; // PRE-STEP snapshot
+        // docs §137.2 (task #60, Molokovoz01 standstill creep, real-terrain follow-up): latches
+        // once the standstill snap first catches the vehicle genuinely stopped - see the snap
+        // block's own comment in UpdateOneVehiclePostStep for why a one-shot "speed already below
+        // threshold" gate does not hold on real (sloped) terrain.
+        bool                            restHeld = false;
+        // docs §137.3 (same task, ordering fix): the wheel orientation each wheel body had at the
+        // instant restHeld first latched - see UpdateOneVehiclePostStep's own comment for why
+        // zeroing velocity alone cannot stop the VISIBLE creep (ApplyJoltToVehicleWheelModel reads
+        // the body's rotation and writes it to the mesh BEFORE the velocity snap ever runs, so a
+        // one-frame disturbance is already on screen by the time velocity gets corrected).
+        std::vector<JPH::Quat>         wheelLockedRot;
+        // docs §137.4 (task #60, temporary diagnostic): previous frame's WRITTEN visual rotation,
+        // per wheel - see its own comment at the ApplyJoltToVehicleWheelModel call site.
+        std::vector<JPH::Quat>         dbgPrevVisualRot;
         // docs §101: what the ported arcade assists actually applied this frame, for the log.
         float                           wmAssistDownForce = 0.0f;
         float                           wmAssistTorque    = 0.0f;   // APPLIED (0 when §109 gates it off)
@@ -481,6 +594,12 @@ namespace kraken::fix::joltshadow {
         // docs §103: soil rolling drag, summed magnitude over the wheels that got it.
         float                           wmSoilDragN      = 0.0f;
         float                           wmSoilResistance = 0.0f;
+        // docs §122: body damping. Read BACK off the bodies rather than echoed from the config, so
+        // the off arm reports the as-built values it declined to change instead of printing the
+        // values it would have written - the §109 discipline, for the same reason.
+        float                           wmDampLinear     = 0.0f;
+        float                           wmDampAngular    = 0.0f;
+        uint32_t                        wmDampBodies     = 0;
         // docs §59: the parallel harvest listener for this vehicle. Registered on first build and
         // then re-pointed rather than re-registered - see BuildWheelBodies for why the OLD one is
         // deliberately left registered on a rebuild instead of being removed.
@@ -542,6 +661,9 @@ namespace kraken::fix::joltshadow {
             float    engineBrakeScale = 1.0f;
             uint32_t governor     = 1;
             uint32_t soildrag     = 1;
+            uint32_t bodyDamping  = 0;   // docs §122: off by default, same as the global lever
+            float    dampingLinear  = 0.1f;
+            float    dampingAngular = 0.3f;
             float    steerHz      = 20.0f;
             float    steerDamping = 1.0f;
             uint32_t familyIndex  = 0;   // 0 = the player shadow, 1..N = variants
@@ -570,6 +692,9 @@ namespace kraken::fix::joltshadow {
         float VarEngineBrakeScale() const { return var.set ? var.engineBrakeScale : kraken::Config::Instance().jolt_wm4_engine_brake_scale.value; }
         uint32_t VarGovernor()  const { return var.set ? var.governor  : kraken::Config::Instance().jolt_wm4_governor.value; }
         uint32_t VarSoilDrag()  const { return var.set ? var.soildrag  : kraken::Config::Instance().jolt_wm4_soildrag.value; }
+        uint32_t VarBodyDamping()   const { return var.set ? var.bodyDamping    : kraken::Config::Instance().jolt_body_damping.value; }
+        float    VarDampingLinear() const { return var.set ? var.dampingLinear  : kraken::Config::Instance().jolt_damping_linear.value; }
+        float    VarDampingAngular()const { return var.set ? var.dampingAngular : kraken::Config::Instance().jolt_damping_angular.value; }
         float    VarSteerHz()   const { return var.set ? var.steerHz   : kraken::Config::Instance().jolt_wm4_steer_hz.value; }
         float    VarSteerDamp() const { return var.set ? var.steerDamping : kraken::Config::Instance().jolt_wm4_steer_damping.value; }
         uint32_t consecutiveSlowFrames  = 0;
@@ -1025,7 +1150,8 @@ namespace kraken::fix::joltshadow {
     // docs §40: forward declaration - defined below (near StepWheelModel), but BuildShadow (right
     // here) needs to call it during initial construction, before its own definition appears.
     static void InitWheelModelSuspension(JPH::PhysicsSystem* physics, ShadowState& state,
-                                         const hta::CVector& pos, const hta::Quaternion& rot);
+                                         const hta::CVector& pos, const hta::Quaternion& rot,
+                                         const char* label);
 
     // ------------------------------------------------------------------------------------------
     // docs §54.4 (Этап 1, шаг -1F): deferred destruction of abandoned Jolt bodies/constraints.
@@ -1332,6 +1458,13 @@ namespace kraken::fix::joltshadow {
     //
     // At step 3 it applies NO force. It reprojects each harvested contact into a penetration,
     // decides which records survive, and records what it saw. Step 4 turns that into force.
+    // docs §124 step 2: forward-declared so VehicleStepListener can hold routing pointers to it
+    // (OnStep pushes each step's contact geometry into whichever wheel's constraint is live).
+    // Defined below VehicleStepListener, since it reuses VehicleStepListener::WheelDiag's shape;
+    // OnStep is therefore declared in-class but DEFINED out-of-line, after WheelContactConstraint,
+    // so its body can call into a complete type instead of just this forward declaration.
+    class WheelContactConstraint;
+
     class VehicleStepListener final : public JPH::PhysicsStepListener {
     public:
         // Filled at build time. Deliberately a POD snapshot rather than a ShadowState* - the AI
@@ -1355,6 +1488,13 @@ namespace kraken::fix::joltshadow {
         uint32_t   slot    = 0;
         uint32_t   wheelCount = 0;
         WheelTick  wheels[kMaxHarvestWheels];
+        // docs §124 step 2: routing only, not a data owner - tells OnStep WHERE to push this
+        // step's contact cache (nullptr when wm4_contact_constraint is off, or index is past
+        // kMaxHarvestWheels). The cache itself lives ON the constraint, never here: a leaked/
+        // abandoned constraint from a prior vehicle rebuild must keep describing its OWN wheel
+        // forever, not silently start reading whatever the next vehicle's build overwrites this
+        // slot with. Populated in BuildWheelBodies alongside wheels[] itself.
+        WheelContactConstraint* contactConstraints[kMaxHarvestWheels] = {};
         // Snapshotted on the main thread at build time: the listener must not reach into the
         // config singleton from a worker, and a value that changed mid-step would make the two
         // halves of one force disagree.
@@ -1409,200 +1549,728 @@ namespace kraken::fix::joltshadow {
             // survived=1" while the §59/63 summary for the same step read wheelsWithContact=0.
             // A diagnostic that silently reports stale data is worse than one that reports nothing.
             bool asleep = false;
+            // docs §125 debug taps (standstill-creep investigation) - straight passthrough of
+            // GeneralizedContactForce's own dbg_* fields for the GROUND slot, whichever wheel
+            // last had one. Temporary instrumentation, not a permanent diagnostic contract.
+            float dbg_v_par = 0.0f, dbg_v_lat = 0.0f, dbg_stick = 0.0f;
+            float dbg_capPar = 0.0f, dbg_damperPar = 0.0f, dbg_D = 0.0f;
+            // docs §124 step 3: the NEW path's own normal force (WheelContactConstraint's solved
+            // impulse/dt), read back into the SAME wheel this step for a like-for-like comparison
+            // against fnGround/fnObst/fnSide above - the step-3 verification gate. Stay 0 when the
+            // flag is off or a slot has no contact, same convention as the fields above.
+            float fnGroundNew = 0.0f, fnObstNew = 0.0f, fnSideNew = 0.0f;
+            int   dbgGroundReason = -9;   // docs §124.7 debug (temporary) - see WheelContactConstraint::DbgGroundReason
+            uint32_t dbgWarmStartCalls = 0, dbgSolveCalls = 0;   // docs §124.7 debug (temporary)
+            uint32_t dbgBuildIslandsCalls = 0;   // docs §124.11 debug (temporary)
+            float posY = 0.0f, chassisPosY = 0.0f;   // docs §124.12 debug (temporary)
+            float posX = 0.0f, posZ = 0.0f;          // docs §124.12 debug (temporary)
+            bool chassisActive = false;              // docs §124.12 debug (temporary)
+            float wheelAngVel = 0.0f, wheelLinVel = 0.0f;   // docs §124.12 debug (temporary)
+            bool userDataTagOk = false; uint64_t userDataRaw = 0;   // docs §124.12 debug (temporary)
+            const void* dbgThis = nullptr;   // docs §124.12 debug (temporary)
+            float dbgPen = 0.0f, dbgVn = 0.0f;   // docs §124.7 debug (temporary)
+            // docs §131 debug (temporary, §56 chassis-rests-on-terrain finding): chassis world
+            // "up" vector's Y component - 1.0 = perfectly upright, 0.0 = on its side, -1.0 =
+            // upside down. §130 confirmed the chassis (not any wheel) is in stable contact with
+            // a static body, and §124.12 already showed chassisPosY sitting abnormally close to
+            // wheel height - this checks whether that is a pure vertical sinking (chassis still
+            // upright, just too low) or the vehicle actually landed tipped/rolled.
+            float chassisUpY = 1.0f;
         };
         WheelDiag diag[kMaxHarvestWheels];
 
-        void OnStep(const JPH::PhysicsStepListenerContext& inContext) override {
-            namespace wm = kraken::fix::wheelmodel;
-            const float dt = std::max(inContext.mDeltaTime, 1.0e-6f);
-            // Read the buffer the PREVIOUS step's narrow phase filled - see StepPhysicsProfiled
-            // for why the parity is advanced on the main thread and why this is the other one.
-            const uint32_t readParity = (g_harvestStep.load(std::memory_order_relaxed) ^ 1u) & 1u;
-            const JPH::Vec3 chassisAngVel = (chassis != nullptr) ? chassis->GetAngularVelocity() : JPH::Vec3::sZero();
+        // docs §124 step 2: defined out-of-line, after WheelContactConstraint - the body now
+        // pushes each wheel's freshly-computed contact geometry into that wheel's constraint
+        // (CacheContact/ClearContact), which requires WheelContactConstraint to be a complete
+        // type at the call site. See the forward declaration above for why the split is needed.
+        void OnStep(const JPH::PhysicsStepListenerContext& inContext) override;
+    };
 
-            uint32_t withContact = 0, points = 0, overflow = 0, survived = 0;
-            float    maxNormalF = 0.0f;
-            for (uint32_t w = 0; w < wheelCount && w < kMaxHarvestWheels; ++w) {
-                const WheelTick& wt = wheels[w];
-                if (wt.body == nullptr)
+    // docs §124 step 1: settings shim for WheelContactConstraint below. Empty on purpose - this
+    // project never round-trips physics state through Jolt's own object-stream serialization
+    // (the shadow is rebuilt from the game's own state every time, not saved/loaded), so none of
+    // ConstraintSettings' serialization machinery is exercised. It exists only because
+    // JPH::Constraint's constructor requires a ConstraintSettings reference.
+    class WheelContactConstraintSettings final : public JPH::ConstraintSettings {
+    };
+
+    // docs §124 step 2: wheel ground-contact as a real Jolt Constraint. Registered alongside the
+    // strut in BuildWheelBodies. Setup/Solve are STILL no-ops behaviourally (steps 3-4 give them
+    // real work) - what step 2 adds is the cache: VehicleStepListener::OnStep, every step, pushes
+    // the SAME cts/gm/slots/centre/axleWorld/omega it has always computed for the old AddForce
+    // path into whichever wheel's constraint is live (CacheContact below), so a later step's
+    // Setup/Solve has real per-wheel contact geometry on hand instead of needing to recompute or
+    // re-detect anything. The old AddForce path (VehicleStepListener::applyTo) remains the sole
+    // source of contact force until step 4.
+    //
+    // Why OnStep produces and this constraint merely consumes, rather than the reverse the plan
+    // doc originally sketched: read literally, Jolt's PhysicsSystem.cpp job graph makes "compute
+    // in SetupVelocityConstraint, read from OnStep" produce a EXTRA full step of staleness, not
+    // zero - step.mStepListeners has NO dependency on step.mSetupVelocityConstraints, but
+    // step.mDetermineActiveConstraints (and through it step.mSetupVelocityConstraints) DOES
+    // depend on step.mStepListeners finishing first (see the CreateJob calls for both, same
+    // file). So within one step, OnStep always completes before this constraint's
+    // SetupVelocityConstraint even begins - there is no way for OnStep to read a same-step
+    // product of Setup. Producing here and consuming in Setup (this file's actual shape) keeps
+    // the cache exactly as fresh as the old AddForce path already is (still one step behind the
+    // contact listener's own narrow-phase, per docs §124.1's framing note - untouched), while
+    // still landing the geometry in the constraint in time for Setup/Solve (steps 3-4) to use it
+    // later in the SAME step, which is the property that actually matters for those steps.
+    //
+    // Plain JPH::Constraint, not JPH::TwoBodyConstraint: which body the wheel is touching
+    // changes frame to frame (different props, terrain vs. a bridge deck, nothing at all while
+    // airborne...) and TwoBodyConstraint binds both bodies permanently at construction. Steps 3-4
+    // resolve body2 fresh by BodyID each step instead of storing it - the same shape Jolt's own
+    // JPH::VehicleConstraint uses for its per-wheel contacts (docs §124.1), even though detection
+    // itself stays on this codebase's existing ContactListener/harvest-buffer pipeline rather
+    // than gaining a second PhysicsStepListener role.
+    class WheelContactConstraint final : public JPH::Constraint {
+    public:
+        JPH_OVERRIDE_NEW_DELETE
+
+        WheelContactConstraint(JPH::Body& inWheelBody, const WheelContactConstraintSettings& inSettings)
+            : JPH::Constraint(inSettings), mWheelBody(&inWheelBody) { }
+
+        // docs §124 step 2: static per-wheel identity, set once right after construction from
+        // BuildWheelBodies' second pass - same source (state.wheelSetup[w] / the body itself),
+        // same cadence as VehicleStepListener::wheels[w]. Deliberately duplicated here rather
+        // than read through the listener by index at solve time: that would let a leaked/
+        // abandoned constraint from a prior vehicle rebuild silently start reading whatever the
+        // NEXT vehicle's build overwrites that slot with, instead of continuing to (harmlessly)
+        // describe its own, now-orphaned wheel. Owning its own copy keeps a leaked constraint's
+        // worst case "frozen, self-consistent, eventually inert" - the same failure shape this
+        // file already accepts for the leaked strut/body themselves (docs §124.1).
+        void SetStatic(JPH::PhysicsSystem* inPhysics, JPH::Body* inChassis, uint32_t inSlot,
+                uint32_t inWheelIndex, float inRadius, float inTau, float inMass, float inInertia,
+                JPH::Vec3Arg inAxleLocal, const kraken::fix::wheelmodel::WMParams& inParams) {
+            mPhysics    = inPhysics;
+            mChassis    = inChassis;
+            mSlot       = inSlot;
+            mWheelIndex = inWheelIndex;
+            mRadius     = inRadius;
+            mTau        = inTau;
+            mMass       = inMass;
+            mInertia    = inInertia;
+            mAxleLocal  = inAxleLocal;
+            mParams     = inParams;
+        }
+
+        // docs §124: which slot each of the 3 parallel per-contact solves below belongs to -
+        // ground/obstacle get the RADIAL weight (wr), side gets the LATERAL one (wl) (docs
+        // §124's OnStep comment on why that split cannot be collapsed into one shared call).
+        enum ESlotKind { kGround = 0, kObstacle = 1, kSide = 2, kNumSlotKinds = 3 };
+
+        // docs §124 step 2: pushed by VehicleStepListener::OnStep once per step, right after it
+        // computes this SAME data for the old AddForce path (see the class comment above for why
+        // production has to stay in OnStep). nRec/cts/gm/others mirror OnStep's own locals
+        // exactly; slots/centre/axleWorld/omega likewise.
+        void CacheContact(const kraken::fix::wheelmodel::WMContact* inCts,
+                const kraken::fix::wheelmodel::WMGeom* inGm, const JPH::BodyID* inOthers,
+                uint32_t inNumRecs, const kraken::fix::wheelmodel::WMSlots& inSlots,
+                const kraken::fix::wheelmodel::vec3& inCentre,
+                const kraken::fix::wheelmodel::vec3& inAxleWorld, float inOmega) {
+            mNumRecs = std::min(inNumRecs, kMaxHarvestRecs);
+            for (uint32_t i = 0; i < mNumRecs; ++i) {
+                mCts[i]    = inCts[i];
+                mGm[i]     = inGm[i];
+                mOtherIds[i] = inOthers[i];
+            }
+            mSlots      = inSlots;
+            mCentre     = inCentre;
+            mAxleWorld  = inAxleWorld;
+            mOmega      = inOmega;
+            mHasContact = true;
+        }
+        // Pushed instead of CacheContact whenever OnStep's own loop would have `continue`d for
+        // this wheel (asleep, or nRec==0) - clearing FIRST is what keeps a skipped step from
+        // reading last step's geometry as if it were still current (same principle as
+        // WheelDiag's own asleep-clears-first rule, docs §66).
+        void ClearContact() {
+            mNumRecs    = 0;
+            mSlots      = kraken::fix::wheelmodel::WMSlots();
+            mHasContact = false;
+        }
+
+        // docs §124 step 3: the new path's own normal force for slot `inSlot`, in Newtons - a
+        // read-only diagnostic tap so OnStep can log it alongside the old path's fnGround/fnObst/
+        // fnSide (docs §66) for the step-3 verification gate ("matched within ~1%"). Impulse/dt,
+        // not the spring's target force: this is what the solver actually applied, warm-start
+        // carry-over and clamping included, which is the honest quantity to compare against a
+        // force that was itself just applied via AddForce.
+        float GetSlotNormalForce(ESlotKind inSlot, float inDt) const {
+            if (inSlot < 0 || inSlot >= kNumSlotKinds || !mSlotActive[inSlot] || inDt <= 0.0f)
+                return 0.0f;
+            return mNormalPart[inSlot].GetTotalLambda() / inDt;
+        }
+
+        virtual JPH::EConstraintSubType GetSubType() const override { return JPH::EConstraintSubType::User1; }
+
+        virtual bool IsActive() const override {
+            return JPH::Constraint::IsActive() && mWheelBody->IsActive();
+        }
+
+        virtual void NotifyShapeChanged(const JPH::BodyID&, JPH::Vec3Arg) override { }
+        // A real reset, not a no-op: stale cached contact or accumulated impulse from before a
+        // Jolt-level ResetWarmStart (shape change, teleport) must not bias next step's solve or
+        // be read as still current.
+        virtual void ResetWarmStart() override {
+            mHasContact = false;
+            for (int s = 0; s < kNumSlotKinds; ++s) {
+                mNormalPart[s].Deactivate();
+                mSlotActive[s] = false;
+            }
+        }
+
+        // docs §124 step 3: real normal axis, one JPH::AxisConstraintPart per slot (ground/
+        // obstacle/side - docs §124's OnStep comment on why a lone shared call would double-count
+        // side contacts). Not an approximation: the harvest-site clamp (cts[].depth =
+        // min(penRaw, tau), still applied in OnStep before CacheContact) already makes
+        // wm::GeneralizedContactForce's live F_n = k_t*pen - c_t*v_n in production (delta_hard is
+        // identically zero, docs §124.1) - exactly the spring CalculateConstraintPropertiesWithStiffnessAndDamping
+        // computes. Friction stays on the old AddForce path (VehicleStepListener::applyTo) until
+        // step 4.
+        //
+        // C = -pen, not +pen: AxisConstraintPart's axis points body1->body2 (here:
+        // other->wheel, matching the harvest normal's own "out of the surface toward the wheel"
+        // convention, docs §59/§63), and its C is the standard "separation along axis" a spring
+        // constraint expects everywhere else in Jolt (SixDOFConstraint's own translation motor,
+        // DistanceConstraint, ...) - positive when pulling apart, negative when overlapping. A
+        // wheel penetrating BY pen is overlapping by pen, i.e. C=-pen; feeding +pen would aim the
+        // spring's restoring force the wrong way (pull the wheel INTO the ground, harder the more
+        // it penetrates - unstable in the wrong direction, not merely wrong-magnitude, so a sign
+        // slip here does not hide quietly). Derived twice independently (constraint-equation
+        // geometry AND the sphere/manifold relation penRaw = R - (c-p)·n) before trusting it -
+        // see the docs §124.7 write-up for both derivations.
+        virtual void SetupVelocityConstraint(float inDeltaTime) override {
+            for (int s = 0; s < kNumSlotKinds; ++s)
+                mSlotActive[s] = false;
+            // docs §124.7 debug (temporary, step-3 bring-up): records WHY the ground slot did or
+            // didn't activate this call - removed once the F_n comparison gate is clean.
+            mDbgGroundReason = 1;   // 1 = no mHasContact / no mPhysics
+            if (!mHasContact || mPhysics == nullptr)
+                return;
+            const int idxBySlot[kNumSlotKinds] = { mSlots.ground, mSlots.obstacle, mSlots.side };
+            const float cSpring = 2.0f * mParams.zeta_t * sqrtf(std::max(mParams.k_t * mMass, 0.0f));
+            const float damping = (mTau > 0.0f) ? cSpring : 0.0f;
+            for (int s = 0; s < kNumSlotKinds; ++s) {
+                const int idx = idxBySlot[s];
+                if (s == kGround) mDbgGroundReason = 2;   // 2 = idx out of range
+                if (idx < 0 || (uint32_t) idx >= mNumRecs)
                     continue;
-                // AddForce on a sleeping body is a no-op, so an ungated loop either wakes every
-                // vehicle every step or silently stops driving one that fell asleep. Neither
-                // failure announces itself.
-                if (!wt.body->IsActive()) {
-                    // Clear FIRST, then mark. Leaving the previous step's numbers in place is what
-                    // made a sleeping vehicle look like a working band (see WheelDiag::asleep).
-                    if (w < kMaxHarvestWheels) {
-                        diag[w] = WheelDiag();
-                        diag[w].asleep = true;
-                    }
+                const JPH::Vec3 n(mCts[idx].n.x, mCts[idx].n.y, mCts[idx].n.z);
+                if (s == kGround) mDbgGroundReason = 3;   // 3 = degenerate normal
+                if (n.LengthSq() < 1.0e-8f)
                     continue;
-                }
-                WheelHarvest& buf = g_wheelHarvest[readParity][slot][w];
-                const uint32_t n    = buf.count.load(std::memory_order_relaxed);
-                const uint32_t used = std::min(n, kMaxHarvestRecs);
-                if (n > kMaxHarvestRecs)
-                    overflow += n - kMaxHarvestRecs;
-                if (n > 0)
-                    ++withContact;
-                points += n;
-
-                const JPH::RVec3 centre = wt.body->GetCenterOfMassPosition();
-                // The RELATIVE spin about the axle. Relative, not absolute: a chassis yawing under
-                // the wheel would otherwise read as wheel rotation and invent slip out of the
-                // vehicle's own turn. The same omega must be used both here and in the v_p
-                // subtraction below, or the two halves describe different wheels.
-                const JPH::Vec3 axleWorld = (wt.body->GetRotation() * wt.axleLocal).Normalized();
-                const float omega = (wt.body->GetAngularVelocity() - chassisAngVel).Dot(axleWorld);
-
-                WheelDiag& dg = diag[w];
-                dg = WheelDiag();
-                dg.pen = 0.0f;
-
-                wm::WMContact cts[kMaxHarvestRecs];
-                wm::WMGeom    gm[kMaxHarvestRecs];
-                uint32_t      nRec = 0;   // NOT `n` - that is the raw harvested count above
-                for (uint32_t r = 0; r < used && nRec < kMaxHarvestRecs; ++r) {
-                    const WheelHarvestRec& rec = buf.rec[r];
-                    // Only the TYRE sub-shape feeds the band. A RIM record is harvested and
-                    // counted, but must never produce band force: the solver already resolves the
-                    // rim contact, so using it here would apply the normal load twice.
-                    // Counted BEFORE the survival test, and split by sub-shape, because "no
-                    // tyre records arrived" and "tyre records arrived and were all rejected" are
-                    // different faults with the same outward symptom.
-                    const float dist  = JPH::Vec3(centre - JPH::RVec3(rec.point)).Length();
-                    const float distR = dist / std::max(wt.radius, 1e-6f);
-                    dg.distMax = std::max(dg.distMax, distR);
-                    if (rec.sub == 0) {
-                        ++dg.recsTyre;
-                        dg.distTyre = (dg.distTyre == 0.0f) ? distR : std::min(dg.distTyre, distR);
-                    } else {
-                        ++dg.recsRim;
-                        dg.distRim  = (dg.distRim  == 0.0f) ? distR : std::min(dg.distRim,  distR);
-                    }
-                    if (rec.sub != 0)
-                        continue;
-                    // Reproject rather than trusting the manifold's own penetration depth: for a
-                    // sphere against a locally planar triangle this is exact, and it makes
-                    // lift-off self-handling - penRaw goes negative and the record simply drops,
-                    // with no OnContactRemoved bookkeeping to get wrong.
-                    const float penRaw = wt.radius - JPH::Vec3(centre - JPH::RVec3(rec.point)).Dot(rec.normal);
-                    // Captured BEFORE the test that discards it, and kept as the LEAST negative
-                    // (i.e. the closest this wheel came to engaging) rather than an average, which
-                    // a single far-away manifold point would drag away from the answer.
-                    if (!dg.penRawAnySet || penRaw > dg.penRawAny) {
-                        dg.penRawAny    = penRaw;
-                        dg.penRawAnySet = true;
-                    }
-                    if (penRaw <= 0.0f)
-                        continue;
-                    ++survived;
-                    ++dg.survived;
-                    dg.penRaw = std::max(dg.penRaw, penRaw);
-                    dg.pen    = std::max(dg.pen, std::min(penRaw, wt.tau));
-                    cts[nRec].p = wm::vec3{ rec.point.GetX(), rec.point.GetY(), rec.point.GetZ() };
-                    cts[nRec].n = wm::vec3{ rec.normal.GetX(), rec.normal.GetY(), rec.normal.GetZ() };
-                    // The tau clamp lives HERE, at the seam, not inside the core - which is what
-                    // makes the core's own delta_hard = max(0, pen - tau) identically zero and
-                    // hard_core_lambda dead, exactly as plan §5 predicted.
-                    cts[nRec].depth = std::min(penRaw, wt.tau);
-                    ++nRec;
-                }
-                if (nRec == 0)
+                // Resolved fresh by BodyID, not cached across steps - see WheelHarvestRec::other
+                // and the class comment above for why. A vanished body (removed since harvest)
+                // is treated as no contact this step, same as an empty slot.
+                if (s == kGround) mDbgGroundReason = 4;   // 4 = other body not resolved
+                JPH::Body* other = mPhysics->GetBodyLockInterfaceNoLock().TryGetBody(mOtherIds[idx]);
+                if (other == nullptr)
                     continue;
-
-                const wm::vec3 c{ (float) centre.GetX(), (float) centre.GetY(), (float) centre.GetZ() };
-                const wm::vec3 a{ axleWorld.GetX(), axleWorld.GetY(), axleWorld.GetZ() };
-                const wm::vec3 up{ 0.0f, 1.0f, 0.0f };
-                for (uint32_t h = 0; h < nRec; ++h)
-                    gm[h] = wm::ComputeGeom(cts[h], c, up, a, wt.radius, wt.radius);
-                const wm::WMSlots slots = wm::Classify(gm, (int) nRec);
-
-                // docs §63 / plan §3.5: v_p is the wheel body's point velocity MINUS the spin term
-                // the core is about to add back (v_c = v_p + Cross(a*omega, r)). Feeding
-                // GetPointVelocity raw counts the spin twice - SelfTest[5] exists precisely to
-                // catch that, and measures the error at 3069 N on a freely rolling wheel.
-                auto vpAt = [&](const wm::vec3& pt) {
-                    const JPH::RVec3 pw(pt.x, pt.y, pt.z);
-                    const JPH::Vec3  v = wt.body->GetPointVelocity(pw);
-                    const JPH::Vec3  rr(pt.x - c.x, pt.y - c.y, pt.z - c.z);
-                    const JPH::Vec3  spin = (axleWorld * omega).Cross(rr);
-                    const JPH::Vec3  vp = v - spin;
-                    return wm::vec3{ vp.GetX(), vp.GetY(), vp.GetZ() };
-                };
-
-                wm::WMParams P = params;
-                P.inertia = wt.inertia;   // the real disc inertia, not mode 2's flat constant
-
-                // The WEIGHT differs by slot: radial (wr) for ground and obstacle, LATERAL (wl) for
-                // side. Factoring the three calls into one lambda quietly collapsed that, and the
-                // single shared `wr` is not a small error - Classify picks the side slot from ALL
-                // records, not just non-ground ones, so a lone ground contact with any wl > 0 lands
-                // in BOTH slots and, evaluated with the same weight, yields the SAME force twice.
+                const JPH::RVec3 p(mCts[idx].p.x, mCts[idx].p.y, mCts[idx].p.z);
+                // r1: the actual harvest point relative to the OTHER body - correct as-is, no
+                // radius concept applies to whatever the wheel is touching.
+                const JPH::Vec3 r1 = JPH::Vec3(p - other->GetCenterOfMassPosition());
+                // r2: NOT the harvest point relative to the wheel's centre (measured live,
+                // discovered wrong - see below) - reconstructed as exactly -R*n instead.
                 //
-                // It measured exactly that: fnTotal = 1638 N against a 1638 N vehicle looked like a
-                // perfect result, but fnGround was 819 N - a ratio of exactly 2.00, in every pass.
-                // Statics hides this completely (a doubled spring just settles at half the
-                // penetration and still sums to the weight), so only the ratio gave it away.
-                // The mode-2 reference does it correctly; this is a porting error, not a design
-                // difference, which is why the three calls are spelled out here as they are there.
-                auto forceFor = [&](int idx, float w) -> wm::WMForce {
-                    if (idx < 0)
-                        return wm::WMForce();
-                    return wm::GeneralizedContactForce(cts[idx].p, cts[idx].n, gm[idx].pen, w,
-                        c, a, vpAt(cts[idx].p), omega, wt.radius, wt.tau, wt.mass, dt, P);
-                };
-                const wm::WMForce fG = forceFor(slots.ground,   slots.ground   >= 0 ? gm[slots.ground].wr   : 0.0f);
-                const wm::WMForce fO = forceFor(slots.obstacle, slots.obstacle >= 0 ? gm[slots.obstacle].wr : 0.0f);
-                const wm::WMForce fS = forceFor(slots.side,     slots.side     >= 0 ? gm[slots.side].wl     : 0.0f);
+                // AxisConstraintPart's own jv includes the wheel's FULL point velocity, spin
+                // included (r2 x axis, dotted with angular velocity) - unlike the old model's
+                // v_p, which explicitly subtracts the spin term back out (docs §63's vpAt
+                // lambda). For a mathematically exact radial r2 (r2 parallel to n) that is
+                // harmless: (axle x r2) is perpendicular to r2 by the cross product's own
+                // definition, hence perpendicular to n too, so spin cannot project onto the
+                // normal axis regardless of spin rate - the algebra this constraint's whole
+                // "just use AxisConstraintPart's own jv" approach leans on.
+                //
+                // Measured live (docs §124.7 debug build, Bug01 idle settle): using the RAW
+                // harvest point instead (p - wheelCentre, which is only ~radial - a mesh contact
+                // point is the closest point on a TRIANGLE, not exactly R from centre along n)
+                // broke that guarantee. pen stayed pinned at tau (0.01024, unmoving - no real
+                // separation) while the constraint's own read of vn climbed to +0.6 up to
+                // +6.5 m/s over 20s and kept climbing with wheel spin - a wheel actually
+                // separating at 6.5 m/s would have LOST contact in milliseconds, not held pen
+                // constant, so that reading was spin leaking through a non-exact r2, not real
+                // velocity. Every SolveVelocityConstraint call (thousands measured) then saw a
+                // huge false "opening" signal, drove lambda negative, and the [0,+inf) unilateral
+                // clamp floored it at exactly 0 every single time - a real bug, not a rare edge
+                // case, since any driven/rolling wheel has non-trivial spin. Forcing r2 = -R*n
+                // removes the possibility by construction instead of trusting mesh precision.
+                const JPH::Vec3 r2 = -mRadius * n;
+                const float pen = mGm[idx].pen;   // already tau-clamped at the OnStep harvest seam
+                mNormalPart[s].CalculateConstraintPropertiesWithStiffnessAndDamping(
+                    inDeltaTime, *other, r1, *mWheelBody, r2, n, /*inBias=*/0.0f, /*inC=*/-pen,
+                    mParams.k_t, damping);
+                mOtherBody[s]  = other;
+                mSlotNormal[s] = n;
+                mSlotActive[s] = mNormalPart[s].IsActive();
+                if (s == kGround) {
+                    mDbgGroundReason = mSlotActive[s] ? 0 : 5;   // 0=ok, 5=Calculate deactivated it
+                    // docs §124.7 debug (temporary): velocity at the SAME reconstructed point r2
+                    // feeds the solver's own jv, so this must use it too - reading the raw
+                    // harvest point here (as the first cut of this diagnostic did) is what showed
+                    // the spin-leakage bug in the first place (see the r2 comment above).
+                    mDbgPen = pen;
+                    mDbgVn  = mWheelBody->GetPointVelocity(JPH::RVec3(mWheelBody->GetCenterOfMassPosition() + r2)).Dot(n);
+                }
+            }
+        }
+        int DbgGroundReason() const { return mDbgGroundReason; }
+        uint32_t DbgWarmStartCalls() const { return mDbgWarmStartCalls; }
+        uint32_t DbgSolveCalls() const { return mDbgSolveCalls; }
+        float DbgPen() const { return mDbgPen; }
+        float DbgVn() const { return mDbgVn; }
+        // docs §124.11 debug (temporary, Ural01 cold-pin hang bring-up): BuildIslands runs on a
+        // DIFFERENT path than SetupVelocityConstraint - reason stuck at -9 could mean either
+        // "BuildIslands never ran" (constraint never reached by the physics system this step) or
+        // "BuildIslands ran but the solver still skipped Setup" (island built, something after
+        // rejects it). This counter distinguishes the two without guessing.
+        uint32_t DbgBuildIslandsCalls() const { return mDbgBuildIslandsCalls; }
+        // docs §124.12 debug (temporary): mConstraintIndex on the JPH::Constraint base is
+        // private (only ConstraintManager is a friend) - use this object's OWN address instead
+        // to cross-check identity against the vendored-Jolt scan trace (kraken §124.12: scanned
+        // User1 constraint ptr=...) directly, not by index guesswork.
+        const void* DbgThis() const { return this; }
 
-                // Deliberately NO maxForce cap here. Mode 2 clamps at jolt_wm_max_g * m * g with
-                // m the per-corner SPRUNG mass (~33-42 kg), giving ~2000-2500 N. With m now the
-                // UNSPRUNG mass (~9-11 kg) the same expression collapses to ~530-650 N, which is
-                // below the band's own peak D = mu*k_t*tau = 2400 N - it would clamp ordinary
-                // driving rather than outliers. Plan step 7 scheduled this removal as its own
-                // measured step; in new code "not porting it" and "removing it" are one act, so
-                // step 7 loses that independent variable and the plan needs to say so.
-                auto applyTo = [&](const wm::WMForce& f, int idx) {
-                    if (idx < 0)
-                        return;
-                    const JPH::Vec3 F(f.F.x, f.F.y, f.F.z);
-                    if (!std::isfinite(F.GetX()) || !std::isfinite(F.GetY()) || !std::isfinite(F.GetZ()))
-                        return;
-                    // The NORMAL component, not |F|. The bound this is compared against, k_t*tau,
-                    // is a ceiling on the band's normal force only - friction adds a tangential
-                    // component on top, so |F| = sqrt(Fn^2 + Ft^2) routinely exceeds it with
-                    // nothing wrong. Tracking |F| here made the very first step-4 run report
-                    // "EXCEEDS GEOMETRIC BOUND" at ratio 1.28 on a vehicle that was standing
-                    // perfectly still: an instrument comparing two different quantities, not a
-                    // physics problem. Comparing like with like is what makes the flag mean
-                    // something.
-                    const JPH::Vec3 nrm(cts[idx].n.x, cts[idx].n.y, cts[idx].n.z);
-                    const float fn = F.Dot(nrm);
-                    maxNormalF = std::max(maxNormalF, fn);
-                    dg.fnTotal += fn;
-                    // Assigned by which SLOT is being applied, not by index: the same index can
-                    // legitimately occupy two slots, and attributing by index would hide exactly
-                    // the overlap these fields exist to show.
-                    if (&f == &fG)      dg.fnGround = fn;
-                    else if (&f == &fO) dg.fnObst   = fn;
-                    else                dg.fnSide   = fn;
+        virtual void WarmStartVelocityConstraint(float inWarmStartImpulseRatio) override {
+            ++mDbgWarmStartCalls;   // docs §124.7 debug (temporary)
+            for (int s = 0; s < kNumSlotKinds; ++s) {
+                if (mSlotActive[s] && mOtherBody[s] != nullptr)
+                    mNormalPart[s].WarmStart(*mOtherBody[s], *mWheelBody, mSlotNormal[s], inWarmStartImpulseRatio);
+            }
+        }
+
+        virtual bool SolveVelocityConstraint(float inDeltaTime) override {
+            ++mDbgSolveCalls;   // docs §124.7 debug (temporary)
+            bool any = false;
+            for (int s = 0; s < kNumSlotKinds; ++s) {
+                if (!mSlotActive[s] || mOtherBody[s] == nullptr)
+                    continue;
+                // Unilateral contact: the band can only PUSH (min=0), never pull - the same
+                // fmaxf(0, ...) the old path's F_n applies, just enforced as an impulse bound
+                // instead of a post-hoc clamp.
+                if (mNormalPart[s].SolveVelocityConstraint(
+                        *mOtherBody[s], *mWheelBody, mSlotNormal[s], 0.0f, FLT_MAX))
+                    any = true;
+                // docs §124 step 4: friction, evaluated AFTER the normal axis for THIS SAME
+                // iteration - reacts to whatever this iteration's normal impulse just did to the
+                // velocity, not a stale pre-step guess (the whole point of moving it off AddForce).
+                //
+                // docs §138 (task #60): gating this to fire ONCE per step (first iteration only)
+                // was TRIED and REFUTED - live-measured on Molokovoz01 standstill, it did not
+                // shrink the creep, it turned a brief self-correcting spike into an UNBOUNDED
+                // runaway (omega climbed past 18 rad/s over the scenario instead of the ~0.01
+                // baseline). So the repeated per-iteration reapplication is not over-application -
+                // it is the mechanism actually holding the wheel still, converging jointly with
+                // mNormalPart across the ~20 iterations the same way a real PGS solve is supposed
+                // to. Left as ORIGINAL (every iteration). The real cause of the creep, and its
+                // fix, ended up living in a completely different place - see docs §137/§137.3 in
+                // UpdateOneVehiclePostStep (a visual writeback-ordering bug, not a solver one).
+                ApplyFrictionForSlot(s, inDeltaTime);
+            }
+            return any;
+        }
+        virtual bool SolvePositionConstraint(float /*inDeltaTime*/, float /*inBaumgarte*/) override { return false; }
+
+        // docs §124 step 4: the SAME wm::GeneralizedContactForce as the old path (engine-agnostic
+        // core untouched, per the plan), called per solver iteration against LIVE velocity instead
+        // of once per step against a pre-step snapshot. Only the tangential share is applied here -
+        // the normal share is redundant with (and would double-count) mNormalPart's own impulse,
+        // computed above in the SAME call.
+        //
+        // Applied to the WHEEL body only, matching the old AddForce path's own scope exactly
+        // ("The WHEEL body, not the chassis", docs §59/63) - a deliberate, documented asymmetry
+        // from the normal axis (which DOES react on a dynamic body1 through AxisConstraintPart):
+        // fidelity to what the friction model has always done, not a new limitation step 4
+        // introduces. A dynamic body1 (a loose prop, say) still gets no frictional reaction force
+        // here, same as it always has.
+        void ApplyFrictionForSlot(int inSlot, float inDt) {
+            if (!mWheelBody->IsDynamic())
+                return;
+            const int idxBySlot[kNumSlotKinds] = { mSlots.ground, mSlots.obstacle, mSlots.side };
+            const int idx = idxBySlot[inSlot];
+            if (idx < 0 || (uint32_t) idx >= mNumRecs)
+                return;
+            namespace wm = kraken::fix::wheelmodel;
+            const wm::vec3& n = mCts[idx].n;
+            const JPH::Vec3 nJ(n.x, n.y, n.z);
+            // Same exactly-radial reconstruction as the normal axis (docs §124.7's r2 fix) - not
+            // just for consistency, but for the same reason: GeneralizedContactForce internally
+            // re-derives r = p - c from p/c to subtract the spin term back in a controlled way
+            // (docs §63's v_c = v_p + Cross(a*omega, r)), and that derivation wants the same
+            // exact-radial r this axis already established is required for a clean result.
+            const JPH::Vec3 r2 = -mRadius * nJ;
+            const JPH::RVec3 p = mWheelBody->GetCenterOfMassPosition() + r2;
+            const JPH::Vec3 axleWorldJ(mAxleWorld.x, mAxleWorld.y, mAxleWorld.z);
+            const JPH::Vec3 chassisAngVel = (mChassis != nullptr) ? mChassis->GetAngularVelocity() : JPH::Vec3::sZero();
+            // Live omega, re-read every iteration - NOT the mOmega CacheContact captured before
+            // this step even began (docs §124.6's producer/consumer note: that value is already
+            // one OnStep-to-Setup hop old by the time Setup runs, let alone by later Solve calls).
+            const float omega = (mWheelBody->GetAngularVelocity() - chassisAngVel).Dot(axleWorldJ);
+            const JPH::Vec3 vFull = mWheelBody->GetPointVelocity(p);
+            const JPH::Vec3 vp = vFull - (axleWorldJ * omega).Cross(r2);   // docs §63 vpAt, live
+
+            const wm::vec3 pW{ (float) p.GetX(), (float) p.GetY(), (float) p.GetZ() };
+            const wm::vec3 vpW{ vp.GetX(), vp.GetY(), vp.GetZ() };
+            const wm::vec3 aW{ axleWorldJ.GetX(), axleWorldJ.GetY(), axleWorldJ.GetZ() };
+            const float weight = (inSlot == kSide) ? mGm[idx].wl : mGm[idx].wr;   // docs §124's OnStep comment on why
+            wm::WMParams P = mParams;
+            P.inertia = mInertia;
+
+            const wm::WMForce f = wm::GeneralizedContactForce(pW, n, mGm[idx].pen, weight,
+                mCentre, aW, vpW, omega, mRadius, mTau, mMass, inDt, P);
+            const JPH::Vec3 F(f.F.x, f.F.y, f.F.z);
+            if (!std::isfinite(F.GetX()) || !std::isfinite(F.GetY()) || !std::isfinite(F.GetZ()))
+                return;
+            const JPH::Vec3 Ftang = F - nJ * F.Dot(nJ);
+            const JPH::Vec3 impulse = Ftang * inDt;
+            JPH::MotionProperties* mp = mWheelBody->GetMotionPropertiesUnchecked();
+            mp->AddLinearVelocityStep(impulse * mp->GetInverseMass());
+            mp->AddAngularVelocityStep(
+                mp->MultiplyWorldSpaceInverseInertiaByVector(mWheelBody->GetRotation(), r2.Cross(impulse)));
+        }
+
+        // Mirrors JPH::TwoBodyConstraint::BuildIslands (TwoBodyConstraint.cpp) for the
+        // single-body case: only the wheel exists as a stable body reference at step 1, so it is
+        // the only one linked. A dynamic wheel body still needs activating/linking into the
+        // island so this constraint is genuinely part of the solve, not a no-op by omission -
+        // that distinction is exactly what step 1's perf gate (docs §124.2) is measuring.
+        virtual void BuildIslands(uint32_t inConstraintIndex, JPH::IslandBuilder& ioBuilder,
+                JPH::BodyManager& inBodyManager) override {
+            ++mDbgBuildIslandsCalls;   // docs §124.11 debug (temporary): does this even run?
+            if (mWheelBody->IsDynamic()) {
+                if (!mWheelBody->IsActive()) {
+                    JPH::BodyID id = mWheelBody->GetID();
+                    inBodyManager.ActivateBodies(&id, 1);
+                }
+                ioBuilder.LinkConstraint(inConstraintIndex, mWheelBody->GetIndexInActiveBodiesInternal());
+            }
+        }
+
+        virtual JPH::uint BuildIslandSplits(JPH::LargeIslandSplitter& ioSplitter) const override {
+            return ioSplitter.AssignToNonParallelSplit(mWheelBody);
+        }
+
+#ifdef JPH_DEBUG_RENDERER
+        virtual void DrawConstraint(JPH::DebugRenderer*) const override { }
+#endif
+
+        virtual JPH::Ref<JPH::ConstraintSettings> GetConstraintSettings() const override {
+            return new WheelContactConstraintSettings();
+        }
+
+    private:
+        JPH::Body* mWheelBody;
+
+        // docs §124 step 2 statics - see SetStatic.
+        JPH::PhysicsSystem* mPhysics    = nullptr;
+        JPH::Body*           mChassis    = nullptr;
+        uint32_t             mSlot       = 0;
+        uint32_t             mWheelIndex = 0;
+        float                mRadius     = 0.3f;
+        float                mTau        = 0.01f;
+        float                mMass       = 10.0f;
+        float                mInertia    = 1.0f;
+        JPH::Vec3             mAxleLocal{ 1.0f, 0.0f, 0.0f };
+        kraken::fix::wheelmodel::WMParams mParams;
+
+        // docs §124 step 2 cache - see CacheContact/ClearContact. Written by OnStep, read by
+        // SetupVelocityConstraint, later in the SAME step.
+        bool                                mHasContact = false;
+        uint32_t                            mNumRecs    = 0;
+        kraken::fix::wheelmodel::WMContact  mCts[kMaxHarvestRecs];
+        kraken::fix::wheelmodel::WMGeom     mGm[kMaxHarvestRecs];
+        JPH::BodyID                         mOtherIds[kMaxHarvestRecs];   // docs §124 step 3
+        kraken::fix::wheelmodel::WMSlots    mSlots;
+        kraken::fix::wheelmodel::vec3       mCentre;
+        kraken::fix::wheelmodel::vec3       mAxleWorld;
+        float                               mOmega = 0.0f;
+
+        // docs §124 step 3: per-slot (ground/obstacle/side) solver state, valid for the duration
+        // of one step once SetupVelocityConstraint has run (WarmStart/Solve are called multiple
+        // times per step - these must survive across those calls, unlike the locals above).
+        JPH::AxisConstraintPart mNormalPart[kNumSlotKinds];
+        JPH::Body*              mOtherBody[kNumSlotKinds] = {};
+        bool                    mSlotActive[kNumSlotKinds] = {};
+        JPH::Vec3               mSlotNormal[kNumSlotKinds];
+        // docs §124.7 debug (temporary): -9 means SetupVelocityConstraint has never run at all
+        // for this constraint - distinguishing "never called" from "called but bailed" is the
+        // whole point of this field. See DbgGroundReason().
+        int                     mDbgGroundReason = -9;
+        uint32_t                mDbgWarmStartCalls = 0;
+        uint32_t                mDbgSolveCalls      = 0;
+        float                   mDbgPen = 0.0f, mDbgVn = 0.0f;
+        uint32_t                mDbgBuildIslandsCalls = 0;   // docs §124.11 debug (temporary)
+    };
+
+    // docs §124 step 2: VehicleStepListener::OnStep, defined out-of-line (declared above,
+    // immediately after WheelContactConstraint's WheelDiag-shaped diagnostics) now that
+    // WheelContactConstraint is a complete type. Identical to the step-1 body except for the
+    // CacheContact/ClearContact calls marked below - the old AddForce path is untouched, still
+    // the sole source of contact force.
+    void VehicleStepListener::OnStep(const JPH::PhysicsStepListenerContext& inContext) {
+        namespace wm = kraken::fix::wheelmodel;
+        const float dt = std::max(inContext.mDeltaTime, 1.0e-6f);
+        // Read the buffer the PREVIOUS step's narrow phase filled - see StepPhysicsProfiled
+        // for why the parity is advanced on the main thread and why this is the other one.
+        const uint32_t readParity = (g_harvestStep.load(std::memory_order_relaxed) ^ 1u) & 1u;
+        const JPH::Vec3 chassisAngVel = (chassis != nullptr) ? chassis->GetAngularVelocity() : JPH::Vec3::sZero();
+
+        uint32_t withContact = 0, points = 0, overflow = 0, survived = 0;
+        float    maxNormalF = 0.0f;
+        for (uint32_t w = 0; w < wheelCount && w < kMaxHarvestWheels; ++w) {
+            const WheelTick& wt = wheels[w];
+            WheelContactConstraint* cc = contactConstraints[w];   // docs §124 step 2, may be nullptr
+            if (wt.body == nullptr)
+                continue;
+            // AddForce on a sleeping body is a no-op, so an ungated loop either wakes every
+            // vehicle every step or silently stops driving one that fell asleep. Neither
+            // failure announces itself.
+            if (!wt.body->IsActive()) {
+                // Clear FIRST, then mark. Leaving the previous step's numbers in place is what
+                // made a sleeping vehicle look like a working band (see WheelDiag::asleep).
+                if (w < kMaxHarvestWheels) {
+                    diag[w] = WheelDiag();
+                    diag[w].asleep = true;
+                }
+                if (cc != nullptr)
+                    cc->ClearContact();
+                continue;
+            }
+            WheelHarvest& buf = g_wheelHarvest[readParity][slot][w];
+            const uint32_t n    = buf.count.load(std::memory_order_relaxed);
+            const uint32_t used = std::min(n, kMaxHarvestRecs);
+            if (n > kMaxHarvestRecs)
+                overflow += n - kMaxHarvestRecs;
+            if (n > 0)
+                ++withContact;
+            points += n;
+
+            const JPH::RVec3 centre = wt.body->GetCenterOfMassPosition();
+            // The RELATIVE spin about the axle. Relative, not absolute: a chassis yawing under
+            // the wheel would otherwise read as wheel rotation and invent slip out of the
+            // vehicle's own turn. The same omega must be used both here and in the v_p
+            // subtraction below, or the two halves describe different wheels.
+            const JPH::Vec3 axleWorld = (wt.body->GetRotation() * wt.axleLocal).Normalized();
+            const float omega = (wt.body->GetAngularVelocity() - chassisAngVel).Dot(axleWorld);
+
+            WheelDiag& dg = diag[w];
+            dg = WheelDiag();
+            dg.pen = 0.0f;
+            // docs §124.12 debug (temporary, Ural01 hang): set UNCONDITIONALLY, before the
+            // nRec==0 early continue below - the user's live observation was wheels visibly
+            // under the ground, and every other new-path diagnostic field gets skipped by that
+            // continue, so this is the one number in this whole investigation guaranteed to
+            // still be captured on every "no contact detected" step.
+            dg.posY = (float) centre.GetY();
+            dg.posX = (float) centre.GetX();
+            dg.posZ = (float) centre.GetZ();
+            dg.chassisPosY = (chassis != nullptr) ? (float) chassis->GetCenterOfMassPosition().GetY() : 0.0f;
+            dg.chassisActive = (chassis != nullptr) && chassis->IsActive();
+            dg.chassisUpY = (chassis != nullptr)
+                ? (chassis->GetRotation() * JPH::Vec3(0.0f, 1.0f, 0.0f)).GetY() : 1.0f;
+            dg.wheelAngVel = wt.body->GetAngularVelocity().Length();
+            dg.wheelLinVel = wt.body->GetLinearVelocity().Length();
+            // docs §124.12 debug (temporary, Ural01 hang): HarvestWheelContact bails out
+            // silently (before it ever sets mIsSensor on the tyre or zeroes rim friction) if
+            // IsWheelUserData() reads false on this body at CONTACT time - checking that same
+            // read from here, not guessing whether construction-time SetUserData "should" have
+            // stuck.
+            dg.userDataTagOk = IsWheelUserData(wt.body->GetUserData());
+            dg.userDataRaw   = wt.body->GetUserData();
+
+            wm::WMContact cts[kMaxHarvestRecs];
+            wm::WMGeom    gm[kMaxHarvestRecs];
+            JPH::BodyID   others[kMaxHarvestRecs];   // docs §124 step 3, parallel to cts/gm
+            uint32_t      nRec = 0;   // NOT `n` - that is the raw harvested count above
+            for (uint32_t r = 0; r < used && nRec < kMaxHarvestRecs; ++r) {
+                const WheelHarvestRec& rec = buf.rec[r];
+                // Only the TYRE sub-shape feeds the band. A RIM record is harvested and
+                // counted, but must never produce band force: the solver already resolves the
+                // rim contact, so using it here would apply the normal load twice.
+                // Counted BEFORE the survival test, and split by sub-shape, because "no
+                // tyre records arrived" and "tyre records arrived and were all rejected" are
+                // different faults with the same outward symptom.
+                const float dist  = JPH::Vec3(centre - JPH::RVec3(rec.point)).Length();
+                const float distR = dist / std::max(wt.radius, 1e-6f);
+                dg.distMax = std::max(dg.distMax, distR);
+                if (rec.sub == 0) {
+                    ++dg.recsTyre;
+                    dg.distTyre = (dg.distTyre == 0.0f) ? distR : std::min(dg.distTyre, distR);
+                } else {
+                    ++dg.recsRim;
+                    dg.distRim  = (dg.distRim  == 0.0f) ? distR : std::min(dg.distRim,  distR);
+                }
+                if (rec.sub != 0)
+                    continue;
+                // Reproject rather than trusting the manifold's own penetration depth: for a
+                // sphere against a locally planar triangle this is exact, and it makes
+                // lift-off self-handling - penRaw goes negative and the record simply drops,
+                // with no OnContactRemoved bookkeeping to get wrong.
+                const float penRaw = wt.radius - JPH::Vec3(centre - JPH::RVec3(rec.point)).Dot(rec.normal);
+                // Captured BEFORE the test that discards it, and kept as the LEAST negative
+                // (i.e. the closest this wheel came to engaging) rather than an average, which
+                // a single far-away manifold point would drag away from the answer.
+                if (!dg.penRawAnySet || penRaw > dg.penRawAny) {
+                    dg.penRawAny    = penRaw;
+                    dg.penRawAnySet = true;
+                }
+                if (penRaw <= 0.0f)
+                    continue;
+                ++survived;
+                ++dg.survived;
+                dg.penRaw = std::max(dg.penRaw, penRaw);
+                dg.pen    = std::max(dg.pen, std::min(penRaw, wt.tau));
+                cts[nRec].p = wm::vec3{ rec.point.GetX(), rec.point.GetY(), rec.point.GetZ() };
+                cts[nRec].n = wm::vec3{ rec.normal.GetX(), rec.normal.GetY(), rec.normal.GetZ() };
+                // The tau clamp lives HERE, at the seam, not inside the core - which is what
+                // makes the core's own delta_hard = max(0, pen - tau) identically zero and
+                // hard_core_lambda dead, exactly as plan §5 predicted.
+                cts[nRec].depth = std::min(penRaw, wt.tau);
+                others[nRec]    = rec.other;
+                ++nRec;
+            }
+            if (nRec == 0) {
+                if (cc != nullptr)
+                    cc->ClearContact();
+                continue;
+            }
+
+            const wm::vec3 c{ (float) centre.GetX(), (float) centre.GetY(), (float) centre.GetZ() };
+            const wm::vec3 a{ axleWorld.GetX(), axleWorld.GetY(), axleWorld.GetZ() };
+            const wm::vec3 up{ 0.0f, 1.0f, 0.0f };
+            for (uint32_t h = 0; h < nRec; ++h)
+                gm[h] = wm::ComputeGeom(cts[h], c, up, a, wt.radius, wt.radius);
+            const wm::WMSlots slots = wm::Classify(gm, (int) nRec);
+
+            // docs §124 step 2: pushed here, right after Classify and before any force is
+            // computed - this is the exact preprocessing/force boundary the plan draws between
+            // step 2 and step 3 (the first real reader of what gets cached here).
+            if (cc != nullptr)
+                cc->CacheContact(cts, gm, others, nRec, slots, c, a, omega);
+
+            // docs §63 / plan §3.5: v_p is the wheel body's point velocity MINUS the spin term
+            // the core is about to add back (v_c = v_p + Cross(a*omega, r)). Feeding
+            // GetPointVelocity raw counts the spin twice - SelfTest[5] exists precisely to
+            // catch that, and measures the error at 3069 N on a freely rolling wheel.
+            auto vpAt = [&](const wm::vec3& pt) {
+                const JPH::RVec3 pw(pt.x, pt.y, pt.z);
+                const JPH::Vec3  v = wt.body->GetPointVelocity(pw);
+                const JPH::Vec3  rr(pt.x - c.x, pt.y - c.y, pt.z - c.z);
+                const JPH::Vec3  spin = (axleWorld * omega).Cross(rr);
+                const JPH::Vec3  vp = v - spin;
+                return wm::vec3{ vp.GetX(), vp.GetY(), vp.GetZ() };
+            };
+
+            wm::WMParams P = params;
+            P.inertia = wt.inertia;   // the real disc inertia, not mode 2's flat constant
+
+            // The WEIGHT differs by slot: radial (wr) for ground and obstacle, LATERAL (wl) for
+            // side. Factoring the three calls into one lambda quietly collapsed that, and the
+            // single shared `wr` is not a small error - Classify picks the side slot from ALL
+            // records, not just non-ground ones, so a lone ground contact with any wl > 0 lands
+            // in BOTH slots and, evaluated with the same weight, yields the SAME force twice.
+            //
+            // It measured exactly that: fnTotal = 1638 N against a 1638 N vehicle looked like a
+            // perfect result, but fnGround was 819 N - a ratio of exactly 2.00, in every pass.
+            // Statics hides this completely (a doubled spring just settles at half the
+            // penetration and still sums to the weight), so only the ratio gave it away.
+            // The mode-2 reference does it correctly; this is a porting error, not a design
+            // difference, which is why the three calls are spelled out here as they are there.
+            auto forceFor = [&](int idx, float w) -> wm::WMForce {
+                if (idx < 0)
+                    return wm::WMForce();
+                return wm::GeneralizedContactForce(cts[idx].p, cts[idx].n, gm[idx].pen, w,
+                    c, a, vpAt(cts[idx].p), omega, wt.radius, wt.tau, wt.mass, dt, P);
+            };
+            const wm::WMForce fG = forceFor(slots.ground,   slots.ground   >= 0 ? gm[slots.ground].wr   : 0.0f);
+            const wm::WMForce fO = forceFor(slots.obstacle, slots.obstacle >= 0 ? gm[slots.obstacle].wr : 0.0f);
+            const wm::WMForce fS = forceFor(slots.side,     slots.side     >= 0 ? gm[slots.side].wl     : 0.0f);
+            dg.dbg_v_par = fG.dbg_v_par; dg.dbg_v_lat = fG.dbg_v_lat; dg.dbg_stick = fG.dbg_stick;
+            dg.dbg_capPar = fG.dbg_capPar; dg.dbg_damperPar = fG.dbg_damperPar; dg.dbg_D = fG.dbg_D;
+
+            // Deliberately NO maxForce cap here. Mode 2 clamps at jolt_wm_max_g * m * g with
+            // m the per-corner SPRUNG mass (~33-42 kg), giving ~2000-2500 N. With m now the
+            // UNSPRUNG mass (~9-11 kg) the same expression collapses to ~530-650 N, which is
+            // below the band's own peak D = mu*k_t*tau = 2400 N - it would clamp ordinary
+            // driving rather than outliers. Plan step 7 scheduled this removal as its own
+            // measured step; in new code "not porting it" and "removing it" are one act, so
+            // step 7 loses that independent variable and the plan needs to say so.
+            auto applyTo = [&](const wm::WMForce& f, int idx) {
+                if (idx < 0)
+                    return;
+                const JPH::Vec3 F(f.F.x, f.F.y, f.F.z);
+                if (!std::isfinite(F.GetX()) || !std::isfinite(F.GetY()) || !std::isfinite(F.GetZ()))
+                    return;
+                // The NORMAL component, not |F|. The bound this is compared against, k_t*tau,
+                // is a ceiling on the band's normal force only - friction adds a tangential
+                // component on top, so |F| = sqrt(Fn^2 + Ft^2) routinely exceeds it with
+                // nothing wrong. Tracking |F| here made the very first step-4 run report
+                // "EXCEEDS GEOMETRIC BOUND" at ratio 1.28 on a vehicle that was standing
+                // perfectly still: an instrument comparing two different quantities, not a
+                // physics problem. Comparing like with like is what makes the flag mean
+                // something.
+                const JPH::Vec3 nrm(cts[idx].n.x, cts[idx].n.y, cts[idx].n.z);
+                const float fn = F.Dot(nrm);
+                maxNormalF = std::max(maxNormalF, fn);
+                dg.fnTotal += fn;
+                // Assigned by which SLOT is being applied, not by index: the same index can
+                // legitimately occupy two slots, and attributing by index would hide exactly
+                // the overlap these fields exist to show.
+                if (&f == &fG)      dg.fnGround = fn;
+                else if (&f == &fO) dg.fnObst   = fn;
+                else                dg.fnSide   = fn;
+                // docs §124 step 4: AddForce retired for any wheel on the new constraint path
+                // (cc != nullptr) - normal comes from WheelContactConstraint's own
+                // AxisConstraintPart, friction from its ApplyFrictionForSlot (both solved into
+                // the SAME body's velocity, per solver iteration, later in this same step).
+                // fn/fnGround/fnTotal/dg.* above stay computed from the full old-model force
+                // regardless of cc - they are the diagnostic the step-3/4 gates compare against,
+                // not what got applied. Old behaviour (flag off) is untouched: full F, still via
+                // AddForce, exactly as every step before this one.
+                if (cc == nullptr) {
                     // The WHEEL body, not the chassis. The chassis feels the load through the
                     // SixDOF, and the r x F torque about the wheel's own COM arises on its own
                     // and two-sidedly - which is the whole point of giving the wheel a body.
                     wt.body->AddForce(F, JPH::RVec3(cts[idx].p.x, cts[idx].p.y, cts[idx].p.z));
-                };
-                applyTo(fG, slots.ground);
-                applyTo(fO, slots.obstacle);
-                applyTo(fS, slots.side);
+                }
+            };
+            applyTo(fG, slots.ground);
+            applyTo(fO, slots.obstacle);
+            applyTo(fS, slots.side);
+
+            // docs §124 step 3: read-only diagnostic tap for the step-3 verification gate. This
+            // reads WHATEVER the constraint's Setup/Solve last computed - one step behind this
+            // step's own fnGround/fnObst/fnSide above, for the same reason CacheContact's
+            // producer/consumer are inverted from the plan doc (see the class comment on
+            // WheelContactConstraint). Fine for a multi-second settle comparison, the gate this
+            // exists for; not a same-tick identity.
+            if (cc != nullptr) {
+                dg.fnGroundNew = cc->GetSlotNormalForce(WheelContactConstraint::kGround,   dt);
+                dg.fnObstNew   = cc->GetSlotNormalForce(WheelContactConstraint::kObstacle, dt);
+                dg.fnSideNew   = cc->GetSlotNormalForce(WheelContactConstraint::kSide,     dt);
+                dg.dbgGroundReason = cc->DbgGroundReason();
+                dg.dbgWarmStartCalls = cc->DbgWarmStartCalls();
+                dg.dbgSolveCalls     = cc->DbgSolveCalls();
+                dg.dbgBuildIslandsCalls = cc->DbgBuildIslandsCalls();
+                dg.dbgThis = cc->DbgThis();
+                dg.dbgPen = cc->DbgPen();
+                dg.dbgVn  = cc->DbgVn();
+            } else {
+                // docs §124.11 debug (temporary, Ural01 hang): WheelDiag's own struct-literal
+                // default for dbgGroundReason is ALSO -9 (see its declaration) - meaning "no cc
+                // object this rebuild" and "cc exists but Jolt never solved it" were previously
+                // indistinguishable in the log. -99 can only mean the former.
+                dg.dbgGroundReason = -99;
             }
-            lastMaxNormalF = maxNormalF;
-            lastWheelsWithContact = withContact;
-            lastContactPoints     = points;
-            lastOverflow          = overflow;
-            lastSurvived          = survived;
         }
-    };
+        lastMaxNormalF = maxNormalF;
+        lastWheelsWithContact = withContact;
+        lastContactPoints     = points;
+        lastOverflow          = overflow;
+        lastSurvived          = survived;
+    }
 
     // docs §58 (Этап 1, шаг 2): one real dynamic body per wheel, hung off the chassis by one
     // JPH::SixDOFConstraint. Called only under [jolt_harness] wheelmodel==4, and only after the
@@ -1649,13 +2317,34 @@ namespace kraken::fix::joltshadow {
         }
         state.wheelBodies.clear();
         state.wheelConstraints.clear();
+        state.wheelContactConstraints.clear();
         state.wmDiscInertiaX.clear();
         state.wmDiscInertiaR.clear();
+        state.wmSpinAngle.clear();
+        state.wheelLockedRot.clear();
+        state.dbgPrevVisualRot.clear();
+        state.restHeld = false;   // docs §137.3 - a rebuilt vehicle has fresh bodies, nothing to hold yet
 
         float totalWheelMass = 0.0f;
 
         for (size_t i = 0; i < nWheels; ++i) {
             WheelSetup& ws = state.wheelSetup[i];
+
+            // docs §136: real fix for the wheel-spin visual bug (task #58), replacing the
+            // rejected §65.8 per-vehicle-name list. Confirmed live (both vehicles, angle-only
+            // logged then, full quaternion captured now): Fighter01 reads identity on all 4
+            // wheels, Molokovoz01 reads exactly 180 deg about Y on its 2 right wheels only -
+            // this genuinely is a per-instance geometric fact, not something derivable from
+            // attachPos or any vehicle name. See the field's own comment for the derivation
+            // (visualRot = jointBodyRot * visualMirrorDelta reconstructs the native quaternion
+            // because both engines apply the identical world-space spin on top of a different
+            // starting pose).
+            if (i < state.wheelOrder.size() && state.wheelOrder[i] != nullptr) {
+                const hta::ai::Wheel* hw = state.wheelOrder[i];
+                const hta::Quaternion nativeRot = hw->GetRotation();
+                const JPH::Quat nativeRotJ(nativeRot.x, nativeRot.y, nativeRot.z, nativeRot.w);
+                ws.visualMirrorDelta = (chassisRot.Inversed() * nativeRotJ).Normalized();
+            }
 
             const JPH::RVec3 worldAttach  = chassisXform * ws.attachPos;
             const JPH::Vec3  worldSuspDir = (chassisRot * ws.suspDir).Normalized();
@@ -1706,8 +2395,13 @@ namespace kraken::fix::joltshadow {
             // Jolt's default cap is 0.25*pi*60 ~= 47 rad/s, which silently clips wheel spin at
             // roughly 85 km/h with R=0.5 in Release with no assert.
             bcs.mMaxAngularVelocity = 300.0f;
-            // The defaults of 0.05 would add parasitic braking on top of the tyre model, and
-            // body friction/restitution would double-count what the tyre model already provides.
+            // Zeroed here on the reasoning that Jolt's 0.05 defaults would be "parasitic braking on
+            // top of the tyre model". docs §122 found that reasoning backwards: the reference damps
+            // every ODE body HARDER than that - 0.1 linear and 0.3 angular, set once for the whole
+            // world in ai::DynamicScene::InitOnce and copied into each body by dBodyCreate - so a
+            // wheel at zero damping is further from ODE than Jolt's default was, not closer. Left
+            // at zero as the as-built state; jolt_harness/body_damping is the lever that restores
+            // the reference's values, and its OFF arm is exactly this line.
             bcs.mLinearDamping  = 0.0f;
             bcs.mAngularDamping = 0.0f;
             bcs.mFriction       = 0.0f;
@@ -1757,6 +2451,12 @@ namespace kraken::fix::joltshadow {
                     label, i, kMaxWheelsPerVehicleGroupFilter);
             }
             bi.AddBody(wheelBody->GetID(), JPH::EActivation::Activate);
+            // docs §46d (task #59): match the chassis's just-assigned velocity (itself copied
+            // from ODE, see BuildShadow) so the strut isn't immediately fighting a full-speed
+            // relative-velocity mismatch on the very first solver step after a moving vehicle's
+            // shadow is (re)built.
+            wheelBody->SetLinearVelocity(chassisBody->GetLinearVelocity());
+            wheelBody->SetAngularVelocity(chassisBody->GetAngularVelocity());
 
             // --- the strut ---
             JPH::SixDOFConstraintSettings six;
@@ -1896,6 +2596,22 @@ namespace kraken::fix::joltshadow {
                     sc->SetMotorState(EAx::TranslationZ, JPH::EMotorState::Position);
                     sc->SetTargetPositionCS(JPH::Vec3::sZero());  // return to the spawn offset
                 }
+                // docs §124.12: TRIED, DID NOT FIX (kept - extra solver budget is never harmful,
+                // and this project documents refuted levers rather than deleting the evidence).
+                // Hypothesis was: a cold switch_vehicle.txt pin hands this strut a large initial
+                // position error at the same moment the new WheelContactConstraint adds more
+                // competing constraint work to the island, and the default iteration budget isn't
+                // enough to converge. Live re-test (docs §124.12) with this override in place
+                // reproduced the SAME hang, byte-for-byte the same symptom (wheel settles into a
+                // stable, static, zero-contact position) - so the failure is not an iteration-
+                // count/convergence-speed problem. Real cause traced further in §124.12: the
+                // wheel body reaches a genuine zero-velocity equilibrium with the harvest system
+                // reporting recs=0 on every wheel throughout, which points at contact NEVER being
+                // found at all (not "found too slowly"), not at the solver failing to converge.
+                if (cfg.jolt_wm4_contact_constraint.value != 0) {
+                    sc->SetNumVelocityStepsOverride(20);
+                    sc->SetNumPositionStepsOverride(10);
+                }
                 // Velocity mode only for DRIVEN wheels here; a free-roller gets no motor until
                 // something (the handbrake) needs one, and the per-frame code switches it then.
                 // The axis is free either way, so an undriven wheel spins on the tyre force alone.
@@ -1907,8 +2623,23 @@ namespace kraken::fix::joltshadow {
 
             state.wheelBodies.push_back(wheelBody->GetID());
             state.wheelConstraints.push_back(c);
+
+            // docs §124 step 1: the new contact constraint, gated and additive - the old
+            // AddForce path (VehicleStepListener::applyTo) stays authoritative regardless of
+            // this flag. Kept fully empty (not padded with null) when off, same invariant as
+            // every other var-gated vector in this file: either fully parallel to wheelOrder or
+            // not populated at all, never partial.
+            if (cfg.jolt_wm4_contact_constraint.value != 0) {
+                WheelContactConstraintSettings ccSettings;
+                JPH::Constraint* cc = new WheelContactConstraint(*wheelBody, ccSettings);
+                physics->AddConstraint(cc);
+                state.wheelContactConstraints.push_back(cc);
+            }
+
             state.wmDiscInertiaX.push_back(halfMR2);
             state.wmDiscInertiaR.push_back(0.5f * halfMR2);
+            // Freshly built body, no accumulated spin yet - matches its actual as-built pose.
+            state.wmSpinAngle.push_back(0.0f);
 
             LOG_INFO("docs §75: constraint frame (%s) w=%zu axle.fwd=%+.4f (%.2f deg off perpendicular) | "
                      "anchorOffsetFromWheelCentre=%.4f m (restLen)",
@@ -1916,6 +2647,12 @@ namespace kraken::fix::joltshadow {
                 (double) (std::asin(std::min(std::fabs(axleWorld.Dot(fwdWorld)), 1.0f)) * 57.29578f),
                 (double) JPH::Vec3(wheelCentreWorld - worldAttach).Length());
         }
+
+        // docs §124.11 debug (temporary, Ural01 hang bring-up): confirms construction/AddConstraint
+        // actually ran for every wheel on THIS rebuild, not just that the flag was on at file scope.
+        LOG_INFO("docs §124.11: rebuild (%s) wheels=%zu contactConstraintsBuilt=%zu flag=%d",
+            label, state.wheelBodies.size(), state.wheelContactConstraints.size(),
+            cfg.jolt_wm4_contact_constraint.value);
 
         // docs §95.4/§96: take the wheel bodies' mass back OUT of the chassis, so the shadow's
         // total matches ODE's instead of exceeding it by the whole unsprung mass. Mass and
@@ -1971,6 +2708,20 @@ namespace kraken::fix::joltshadow {
             state.stepListener->wheels[w].mass = (wb != nullptr)
                 ? 1.0f / std::max(wb->GetMotionProperties()->GetInverseMass(), 1.0e-8f)
                 : 10.0f;
+            // docs §124 step 2: route this wheel's contact cache to its own constraint (nullptr
+            // when the flag is off, or the vector is short for some other reason) - OnStep's own
+            // cc!=nullptr guard already treats a nullptr entry as "old path only", so leaving
+            // this default-nullptr is a safe, silent no-op rather than a state to special-case.
+            WheelContactConstraint* cc = (w < state.wheelContactConstraints.size())
+                ? static_cast<WheelContactConstraint*>(state.wheelContactConstraints[w])
+                : nullptr;
+            state.stepListener->contactConstraints[w] = cc;
+            if (cc != nullptr) {
+                cc->SetStatic(physics, chassisBody, state.harvestSlot, w,
+                    state.wheelSetup[w].radius, state.wheelSetup[w].tau,
+                    state.stepListener->wheels[w].mass, state.stepListener->wheels[w].inertia,
+                    state.wheelSetup[w].axleLocal, state.stepListener->params);
+            }
         }
 
         // The engagement check is inside the line: chassisMassFinal + wheelMass must equal
@@ -2014,11 +2765,33 @@ namespace kraken::fix::joltshadow {
         // PhysicObj::m_massCenter (local-space) is exactly the offset PhysicObj::GetPosition()
         // itself subtracts from the raw ODE body origin (confirmed via disassembly of
         // PhysicObj::GetPosition, VA 0x5FC410) - i.e. rawOdeOrigin = GetPosition() +
-        // rot*massCenter. Placing our Jolt body's origin at GetPosition() and its center-of-
-        // mass offset at the same local massCenter vector puts Jolt's world COM at exactly
-        // the same point as ODE's actual world COM (dBodyGetPosition).
+        // rot*massCenter. The GOAL is putting Jolt's world COM at exactly that same point.
         hta::CVector localCom = vehicle->GetMassCenter();
-        JPH::Vec3 comOffset(localCom.x, localCom.y, localCom.z);
+        JPH::Vec3 desiredComOffset(localCom.x, localCom.y, localCom.z);
+
+        // docs §46h (task #59, real root cause of "Ural01 chassis rides too high" - found after
+        // §46f/§46g both patched symptoms and neither closed the gap): OffsetCenterOfMassShape::
+        // GetCenterOfMass() (extern/joltphysics/.../OffsetCenterOfMassShape.h) returns
+        // "mInnerShape->GetCenterOfMass() + mOffset" - ADDITIVE to the wrapped shape's OWN
+        // natural geometric centroid, not an absolute replacement. This code was passing
+        // desiredComOffset (vehicle->GetMassCenter(), meant as the ABSOLUTE final local COM)
+        // straight in as mOffset, so the actual result was
+        // chassisBaseShape's-own-centroid + desiredComOffset - silently wrong by exactly
+        // however far the compound shape's own natural centroid sits from local (0,0,0).
+        // Confirmed live on Ural01: intended offset Y=-2.300, but the live shape's actual
+        // GetCenterOfMass() read Y=-1.492 (X and Z off too, -0.000/-0.504) - and Ural's long,
+        // asymmetric compound chassis (cab/cargo spread far from the vehicle's GetPosition()
+        // pivot) gives it an unusually large natural centroid, which is exactly why this vehicle
+        // showed the bug so much more visibly than smaller/more symmetric ones. Fix: subtract
+        // the shape's own natural centroid first, so mOffset ends up being the DELTA needed to
+        // land the final COM at the real target, not the target itself.
+        const JPH::Vec3 shapeNaturalCom = chassisBaseShape->GetCenterOfMass();
+        JPH::Vec3 comOffset = desiredComOffset - shapeNaturalCom;
+        LOG_INFO("docs §46h: chassis COM offset fix (%s) shapeNaturalCom=(%.3f,%.3f,%.3f) "
+            "desired=(%.3f,%.3f,%.3f) mOffset(corrected)=(%.3f,%.3f,%.3f)",
+            label, (double) shapeNaturalCom.GetX(), (double) shapeNaturalCom.GetY(), (double) shapeNaturalCom.GetZ(),
+            (double) desiredComOffset.GetX(), (double) desiredComOffset.GetY(), (double) desiredComOffset.GetZ(),
+            (double) comOffset.GetX(), (double) comOffset.GetY(), (double) comOffset.GetZ());
 
         JPH::ShapeSettings::ShapeResult chassisResult =
             JPH::OffsetCenterOfMassShapeSettings(comOffset, chassisBaseShape.GetPtr()).Create();
@@ -2027,13 +2800,92 @@ namespace kraken::fix::joltshadow {
             return false;
         }
 
+        // docs §132 (task #56, Ural01 cold-pin hang - root cause and fix): live diagnostics
+        // (§130 chassis-contact log, §124.12's existing wheelBelowChassis field, and the new
+        // chassisUpY field - all confirmed via a clean 90s repro) established that the vehicle
+        // never actually gets stuck "in the wheel-contact pipeline" at all - the CHASSIS itself
+        // (perfectly upright, chassisUpY=1.000, not a rollover) sits in stable, continuous
+        // contact with a static, untagged body (almost certainly raw terrain) for the entire
+        // stuck duration, while every wheel dangles just above the real ground and genuinely
+        // never touches it - recs=0 is 100% correct in this scenario, not a bug. Immediately
+        // above, `pos = vehicle->GetPosition()` (ODE's own state) is used completely as-is for
+        // the chassis spawn pose, with NO ground-clearance check at all - unlike wheels, which
+        // already get exactly this kind of correction via InitWheelModelSuspension's raycast
+        // (docs §127). If the ODE-side position places the chassis's own geometry below the
+        // REAL Jolt-exported terrain height at that exact spot (a stale saved position from
+        // different terrain/slope, or the same kind of export-mesh discrepancy §124.13 already
+        // flagged as a live possibility), the chassis embeds directly into terrain and Jolt's
+        // ordinary rigid-body contact response holds it there forever - no different in kind
+        // from any other body resting in the ground, just never visibly resolved because
+        // nothing here ever re-checks or corrects chassis clearance after spawn.
+        //
+        // Fix: use the ALREADY-BUILT chassis shape's own exact world-space bounds (not an
+        // approximation from massSize/2 - this shape may be the real multi-part compound, docs
+        // §23.10, whose true lowest point is not simply half the bounding box height) to find
+        // its lowest point at the intended pose, raycast straight down from above it on the
+        // SAME safe, terrain-only query layer §127's wheel raycast already established
+        // (kWheelQueryLayer - restricted to NON_MOVING, cannot hit another vehicle's kinematic
+        // mirror), and nudge pos.y UP by exactly the overlap (plus a small margin) only when the
+        // chassis is genuinely embedded below the detected ground. Deliberately one-directional
+        // (never moves the chassis DOWN) and a no-op whenever the raycast finds no ground at all
+        // (a legitimately airborne spawn, or the exact terrain-gap case this cannot and should
+        // not try to paper over) - this only touches the one degenerate case that was actually
+        // observed, matching this project's own established minimal-fix discipline.
+        {
+            const JPH::Quat chassisRotQ(rot.x, rot.y, rot.z, rot.w);
+            const JPH::Mat44 chassisXform = JPH::Mat44::sRotationTranslation(
+                chassisRotQ, JPH::Vec3(pos.x, pos.y, pos.z));
+            const JPH::AABox worldBounds = chassisResult.Get()->GetWorldSpaceBounds(
+                chassisXform, JPH::Vec3::sReplicate(1.0f));
+            const float lowestWorldY = worldBounds.mMin.GetY();
+
+            JPH::PhysicsSystem* clearancePhysics = physics; // already resolved above, same pointer
+            if (clearancePhysics != nullptr) {
+                const JPH::BroadPhaseLayerFilter& bpF = clearancePhysics->GetDefaultBroadPhaseLayerFilter(kWheelQueryLayer);
+                const JPH::DefaultObjectLayerFilter olF = clearancePhysics->GetDefaultLayerFilter(kWheelQueryLayer);
+                const float rayStartMargin = 5.0f;  // clear of the chassis's own highest point
+                const float rayLen = (worldBounds.mMax.GetY() - lowestWorldY) + rayStartMargin + 20.0f;
+                const JPH::RVec3 rayStart(pos.x, worldBounds.mMax.GetY() + rayStartMargin, pos.z);
+                JPH::RRayCast ray{ rayStart, JPH::Vec3(0.0f, -rayLen, 0.0f) };
+                JPH::RayCastResult hit;
+                if (clearancePhysics->GetNarrowPhaseQuery().CastRay(ray, hit, bpF, olF)) {
+                    const float groundY = (float) rayStart.GetY() - rayLen * hit.mFraction;
+                    const float overlap = groundY - lowestWorldY;
+                    if (overlap > 0.0f) {
+                        const float correction = overlap + 0.02f; // small margin, same spirit as §127's tau-scale slack
+                        LOG_WARNING("docs §132: chassis spawn clearance fix (%s) - chassis embedded "
+                            "%.3fm below detected ground at (%.1f,%.1f,%.1f), nudging pos.y up by %.3fm",
+                            label, (double) overlap, (double) pos.x, (double) pos.y, (double) pos.z, (double) correction);
+                        pos.y += correction;
+                    }
+                }
+            }
+        }
+
         JPH::BodyCreationSettings bodySettings(
             chassisResult.Get(),
             JPH::RVec3(pos.x, pos.y, pos.z),
             JPH::Quat(rot.x, rot.y, rot.z, rot.w),
             JPH::EMotionType::Dynamic, kMovingLayer);
+        const float chassisMass = std::max(vehicle->GetMass(), 100.0f);
         bodySettings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
-        bodySettings.mMassPropertiesOverride.mMass = std::max(vehicle->GetMass(), 100.0f);
+        bodySettings.mMassPropertiesOverride.mMass = chassisMass;
+
+        // docs §122.17: same collision shape either way (chassisResult, above - the real compound
+        // geometry) - this only swaps which MASS PROPERTIES get baked into the body. Default path
+        // (CalculateInertia, above) derives the tensor from that compound shape's own geometry,
+        // same as the game's actual chassis silhouette. This branch instead reproduces exactly
+        // what ai::ComplexPhysicObj::RefreshMass (RVA 0x2bcac0) does for the reference - a single
+        // uniform box sized from m_massSize, mass-scaled, no dMassAdd - via Jolt's own equivalent
+        // helper rather than hand-built diagonal math, so it matches Jolt's own axis convention.
+        const bool useOdeBoxInertia = kraken::Config::Instance().jolt_chassis_inertia_ode_box.value != 0;
+        if (useOdeBoxInertia) {
+            JPH::MassProperties odeBoxMass;
+            odeBoxMass.SetMassAndInertiaOfSolidBox(JPH::Vec3(massSize.x, massSize.y, massSize.z), 1.0f);
+            odeBoxMass.ScaleToMass(chassisMass);
+            bodySettings.mOverrideMassProperties = JPH::EOverrideMassProperties::MassAndInertiaProvided;
+            bodySettings.mMassPropertiesOverride = odeBoxMass;
+        }
 
         JPH::Body* body = bodyInterface.CreateBody(bodySettings);
         if (body == nullptr) {
@@ -2098,6 +2950,38 @@ namespace kraken::fix::joltshadow {
         const JPH::MotionProperties* motionProps = body->GetMotionProperties();
         const float          chassisInvMass    = motionProps->GetInverseMass();
         const JPH::Mat44      chassisInvInertia = motionProps->GetLocalSpaceInverseInertia();
+
+        // docs §122.16: does the SHADOW's chassis inertia tensor even resemble the REFERENCE's?
+        // Never checked before now. ai::ComplexPhysicObj::RefreshMass (RVA 0x2bcac0, 224 bytes,
+        // read via lora) computes ODE's real chassis dMass with ONE call to dMassSetBoxTotal (or,
+        // only when a part-count field reads 1, dMassSetSphereTotal) - there is no dMassAdd
+        // anywhere in the function, so the reference NEVER sums a multi-part body. Its box uses
+        // the exact same `m_massSize` this file already reads into `massSize`/`halfExtents` two
+        // screens up - the SAME numbers this file's own FALLBACK box (chassisBaseShape when
+        // BuildChassisCompoundShape fails) would use. But the code above does not take that
+        // fallback when compound geometry exists - §23.10's Chassis/Cabin/Basket boxes+spheres+
+        // capsules is the PREFERRED path, and Molokovoz01 has one (4 boxes, per the build log).
+        // So the shadow's inertia comes from Jolt's CalculateInertia over that multi-part shape,
+        // the reference's from a single uniform box over the bounding massSize - two different
+        // computations of the same physical quantity, compared here for the first time.
+        {
+            const JPH::Vec3 invDiag = chassisInvInertia.GetDiagonal3();
+            const float jIxx = invDiag.GetX() > 1.0e-9f ? 1.0f / invDiag.GetX() : -1.0f;
+            const float jIyy = invDiag.GetY() > 1.0e-9f ? 1.0f / invDiag.GetY() : -1.0f;
+            const float jIzz = invDiag.GetZ() > 1.0e-9f ? 1.0f / invDiag.GetZ() : -1.0f;
+            const float m = bodySettings.mMassPropertiesOverride.mMass;
+            const float oIxx = m / 12.0f * (massSize.y * massSize.y + massSize.z * massSize.z);
+            const float oIyy = m / 12.0f * (massSize.x * massSize.x + massSize.z * massSize.z);
+            const float oIzz = m / 12.0f * (massSize.x * massSize.x + massSize.y * massSize.y);
+            LOG_INFO("docs §122.16: chassis inertia (%s) Jolt(%s) Ixx=%.0f Iyy=%.0f Izz=%.0f | "
+                     "ODE(box, same massSize=%.2fx%.2fx%.2f m=%.1f) Ixx=%.0f Iyy=%.0f Izz=%.0f | "
+                     "ratio pitch(Ixx) %.2fx",
+                label, useOdeBoxInertia ? "ode_box" : "compound",
+                (double) jIxx, (double) jIyy, (double) jIzz,
+                (double) massSize.x, (double) massSize.y, (double) massSize.z, (double) m,
+                (double) oIxx, (double) oIyy, (double) oIzz,
+                (double) (oIxx > 1.0e-6f ? jIxx / oIxx : -1.0f));
+        }
 
         JPH::VehicleConstraintSettings vehicleSettings;
         std::vector<hta::ai::Wheel*>& wheelOrder = state.wheelOrder; // parallel to vehicleSettings.mWheels; also reused by ApplyJoltToVehicle
@@ -2170,7 +3054,33 @@ namespace kraken::fix::joltshadow {
             // constant is a convention to be settled by measurement, never an argument to be won
             // from the reference, and any code that treats it as real data is mistaken.
             ws->mSuspensionMinLength = 0.05f;
-            ws->mSuspensionMaxLength = 0.05f + suspensionRange;
+            // docs §46g/§46i (task #59): measured live against a genuinely independent jolt=0
+            // baseline (not the circular apply=1 writeback echo - see §46i's own comment) on
+            // Ural01/save 00000014:
+            //   scale=1.00 (ceiling 1.05m) -> real gap 0.98m
+            //   scale=0.60 (ceiling 0.65m) -> real gap 0.65m
+            //   scale=0.15 (ceiling 0.20m) -> real gap 0.20m
+            //   scale=0.05 (ceiling 0.10m) -> real gap 0.11m
+            // Roughly linear, no hard floor this time (unlike the earlier probe against the
+            // contaminated echo value, which falsely plateaued ~0.7m) - closing the gap further
+            // needs suspension travel small enough to feel like a rigid axle, not a suspension,
+            // so the right number is a judgment call rather than a fact - [jolt_harness]
+            // wm4_susp_max_scale (default 0.15, see config.hpp's own comment), not hardcoded, so
+            // it can be tuned without a rebuild.
+            const float suspMaxLengthScale = std::clamp(kraken::Config::Instance().jolt_wm4_susp_max_scale.value, 0.02f, 1.0f);
+            ws->mSuspensionMaxLength = 0.05f + suspMaxLengthScale * suspensionRange;
+            // docs §46f/§46g/§46h (task #59, "Ural01 chassis rides too high"): three fixes were
+            // tried and abandoned at this exact line before the real cause was found elsewhere -
+            // a wheel-travel-fraction heuristic nudging the chassis (§46f), then a direct
+            // height-anchor position corrector (§46g), then shrinking this very ceiling (also
+            // under §46g) - none fully closed the gap because none of them were the actual bug.
+            // The real cause: BuildShadow's chassis COM offset (search "docs §46h" there) was
+            // being computed as an absolute target instead of a delta from the compound shape's
+            // own natural centroid, a real misuse of Jolt's OffsetCenterOfMassShapeSettings API
+            // (its GetCenterOfMass() is documented as ADDITIVE to the inner shape's own centroid,
+            // not a replacement). Fixed there; this line is back to its original, unscaled form -
+            // confirmed live afterward: Shadow divergence pos=0.000m, Jolt COM landed exactly on
+            // ODE's real COM.
 
             // docs §31: suspension stiffness/damping now read directly from REAL ODE data
             // (WheelPrototypeInfo::m_suspensionCFM/m_suspensionERP, vehicleparts.xml),
@@ -2272,6 +3182,16 @@ namespace kraken::fix::joltshadow {
             setup.unsprungMass  = wheel->GetMass();
             setup.driven        = wheel->m_driven;
             setup.steering      = wheel->m_steering != hta::ai::Wheel::STEERING_NO;
+            // docs §133: see the WheelSetup field's own comment - read-only, safe (an existing
+            // native const method, already declared/used the same NATIVE() way as every other
+            // hta accessor in this file), called once per wheel per rebuild, not per frame.
+            {
+                const hta::ai::SphericBody* sb = static_cast<const hta::ai::Wheel*>(wheel)->_SphericBody();
+                if (sb != nullptr) {
+                    const hta::Quaternion rel = sb->GetNodeRelativeRotation();
+                    setup.nodeRelativeRotation = JPH::Quat(rel.x, rel.y, rel.z, rel.w).Normalized();
+                }
+            }
             state.wheelSetup.push_back(setup);
 
             vehicleSettings.mWheels.push_back(ws);
@@ -2449,12 +3369,40 @@ namespace kraken::fix::joltshadow {
             // (=maxLen) put the wheels ~2.7m below the COM, BELOW the one-sided heightfield surface
             // where CollideShape can't see them - the vehicle then fell through with zero wheel
             // support. See InitWheelModelSuspension (shared with the post-teleport re-init path).
-            InitWheelModelSuspension(physics, state, pos, rot);
+            InitWheelModelSuspension(physics, state, pos, rot, label);
             LOG_INFO("Shadow (%s): wheelmodel APPLY mode - VehicleConstraint built but NOT simulated; chassis driven by wheelmodel_core (%zu wheels)",
                 label, nw);
         }
 
         bodyInterface.AddBody(state.bodyId, JPH::EActivation::Activate);
+
+        // docs §46d (task #59): user-reported live and confirmed via direct A/B (pure ODE vs
+        // Jolt on the same save) - on a save load with the vehicle already moving, ODE coasts
+        // forward from that residual velocity but the Jolt shadow just sits there. Root cause:
+        // BuildShadow/BodyCreationSettings never reads vehicle->GetLinearVelocity()/
+        // GetAngularVelocity() anywhere - a freshly created JPH body defaults to zero velocity
+        // regardless of what the ODE vehicle it shadows was doing the instant before. Every
+        // rebuild (save load, car(N) switch, tuning change) hits this, not just save load - it's
+        // just most visible right after a load, when the vehicle is most likely to have real
+        // carried-over speed. Finite-checked defensively: this is the first place in the file
+        // that reads GetAngularVelocity() at all, and an untested native accessor is not a
+        // reason to skip validating its output before feeding it to Jolt (a NaN/inf velocity
+        // would otherwise poison the whole body).
+        {
+            const hta::CVector odeLinVel = vehicle->GetLinearVelocity();
+            const hta::CVector odeAngVel = vehicle->GetAngularVelocity();
+            const JPH::Vec3 linVel(odeLinVel.x, odeLinVel.y, odeLinVel.z);
+            const JPH::Vec3 angVel(odeAngVel.x, odeAngVel.y, odeAngVel.z);
+            if (linVel.IsNaN() || angVel.IsNaN()) {
+                LOG_WARNING("Shadow (%s): docs §46d - ODE velocity read as NaN/inf (lin=(%.2f,%.2f,%.2f) "
+                    "ang=(%.2f,%.2f,%.2f)), leaving shadow at zero velocity instead",
+                    label, (double) odeLinVel.x, (double) odeLinVel.y, (double) odeLinVel.z,
+                    (double) odeAngVel.x, (double) odeAngVel.y, (double) odeAngVel.z);
+            } else {
+                bodyInterface.SetLinearVelocity(state.bodyId, linVel);
+                bodyInterface.SetAngularVelocity(state.bodyId, angVel);
+            }
+        }
 
         // docs §58 (Этап 1, шаг 2): after the chassis is in the world (the SixDOF needs both
         // bodies live) and after InitWheelModelSuspension has filled wmRestLen, which is what
@@ -2614,6 +3562,21 @@ namespace kraken::fix::joltshadow {
         hta::CVector    odeCom = vehicle->GetMassCenterPosition();
         hta::Quaternion odeRot = vehicle->GetRotation();
         hta::CVector    odeVel = vehicle->GetLinearVelocity();
+        // docs §46c (task #59): temporary - BuildShadow spawns/places the Jolt chassis at
+        // vehicle->GetPosition(), but this divergence log compares against
+        // vehicle->GetMassCenterPosition() instead. Checking live whether those two ODE-side
+        // readings actually agree (they should, if "position" means the body's own COM by ODE's
+        // usual convention) or whether they're two genuinely different reference points on this
+        // vehicle - which would mean the ~1m gap the user is seeing is a mismatched-reference
+        // comparison, not a real Jolt/ODE simulation difference.
+        {
+            const hta::CVector odePivot = vehicle->GetPosition();
+            LOG_INFO("docs §46c: ode GetPosition=(%.2f,%.2f,%.2f) vs GetMassCenterPosition=(%.2f,%.2f,%.2f) "
+                "diff.y=%.3f",
+                (double) odePivot.x, (double) odePivot.y, (double) odePivot.z,
+                (double) odeCom.x, (double) odeCom.y, (double) odeCom.z,
+                (double) (odeCom.y - odePivot.y));
+        }
 
         DivergenceSample result;
         result.joltCom = JPH::Vec3(joltCom.GetX(), joltCom.GetY(), joltCom.GetZ());
@@ -2823,7 +3786,8 @@ namespace kraken::fix::joltshadow {
     // leave wmSuspLen at the OLD pose's ground height, so the wheels graze/miss the new ground and
     // the chassis sinks (seen live: a spawn-reset run sank the shadow 49m while ODE stayed put).
     static void InitWheelModelSuspension(JPH::PhysicsSystem* physics, ShadowState& state,
-                                         const hta::CVector& pos, const hta::Quaternion& rot) {
+                                         const hta::CVector& pos, const hta::Quaternion& rot,
+                                         const char* label) {
         if (physics == nullptr || state.constraint == nullptr)
             return;
         state.wmGear = 0; // docs §41: start in 1st gear, matching a vehicle about to move off from rest
@@ -2833,27 +3797,121 @@ namespace kraken::fix::joltshadow {
             JPH::Quat(rot.x, rot.y, rot.z, rot.w), JPH::RVec3(pos.x, pos.y, pos.z));
         const JPH::BroadPhaseLayerFilter& bpF = physics->GetDefaultBroadPhaseLayerFilter(kWheelQueryLayer);
         const JPH::DefaultObjectLayerFilter olF = physics->GetDefaultLayerFilter(kWheelQueryLayer);
+        // docs stage2-plan.md §Step 2: found live via ram_test - this function re-seats the
+        // SCALAR suspension bookkeeping (wmSuspLen/wmRestLen, mode 2's whole model and mode 4's
+        // rest-length target) at the new pose, but wheelBodyMode (mode 4) ALSO has real Jolt
+        // wheel bodies jointed to the chassis by a SixDOFConstraint - and this function never
+        // moved them. TeleportPlayerShadow moves the chassis body directly
+        // (bodyInterface.SetPositionAndRotation) and calls this right after; left as it was, the
+        // wheel bodies stayed exactly where they were (potentially thousands of metres away, at
+        // the OLD chassis pose) while now jointed to a chassis that just jumped somewhere else -
+        // the constraint solver saw an enormous violation and fought it every step, which is
+        // exactly the ~450-460 m/s "smooth near-ballistic launch, independent of ram_test_offset"
+        // observed live (offset changes where the CHASSIS lands; it does nothing about the wheels
+        // being left behind, which is why 15m and 35m failed identically). Reusing suspLen/
+        // attachW/suspDirW already computed above for the raycast - same position formula
+        // BuildShadow itself uses at construction time (wheelCentreWorld = attach + dir*len).
+        JPH::BodyInterface* bi = state.wheelBodyMode ? &physics->GetBodyInterface() : nullptr;
+        // docs §46f (task #59): user-confirmed live via screenshot + §46b telemetry on Ural01 -
+        // a plain save load (no car(N)) can ALSO put the chassis implausibly high above ground,
+        // not just embedded below it. §132 already fixes "embedded below" for the chassis's own
+        // bounding box, but nothing corrects the opposite case, and §132's box-level check can't
+        // catch it anyway - the WHEEL ATTACH points sit below the chassis's own lowest bound, so
+        // the chassis box itself can be perfectly clear of the ground while every wheel still
+        // needs 90%+ of its travel to reach it (measured live: 92-95% on all 6 of Ural01's
+        // wheels simultaneously, attachW.y a full ~1m above real ground - a stale saved position
+        // for this specific vehicle/terrain, same root cause class as §132, opposite direction).
         for (size_t i = 0; i < nw; ++i) {
             const JPH::WheelSettings* s = state.constraint->GetWheel((JPH::uint) i)->GetSettings();
             const float maxLen = s ? s->mSuspensionMaxLength : 0.5f;
             const float R = s ? s->mRadius : 0.3f;
             float suspLen = maxLen; // airborne fallback
+            JPH::RVec3 attachW  = bxform.GetTranslation();
+            JPH::Vec3  suspDirW = JPH::Vec3::sAxisY();
             if (s != nullptr) {
-                const JPH::RVec3 attachW  = bxform * s->mPosition;
-                const JPH::Vec3  suspDirW = bxform.Multiply3x3(s->mSuspensionDirection).Normalized();
-                const float rayLen = maxLen + R + 1.0f;
-                JPH::RRayCast ray{ attachW, suspDirW * rayLen };
+                attachW  = bxform * s->mPosition;
+                suspDirW = bxform.Multiply3x3(s->mSuspensionDirection).Normalized();
+                // docs §127: user-reported live, "chassis jacked up above wheels" right after a
+                // vehicle switch (car(N)/ChangeVehicleByNew). The old +1.0f margin only reaches
+                // ~1-2m below the attach point - a NEW vehicle's wheels are commonly further than
+                // that from the OLD vehicle's ground height (different chassis/wheel geometry),
+                // so this raycast routinely missed and fell through to the "airborne fallback"
+                // (suspLen=maxLen, full droop) below - which then gets baked into BOTH the
+                // wheel's spawn position AND the strut's own "return to spawn offset" target
+                // (BuildWheelBodies, SetTargetPositionCS(sZero())) - once the wheel finds REAL
+                // ground and the strut still thinks maxLen (full extension) is neutral, it keeps
+                // pulling the chassis up toward that wrong target. +15.0f covers the realistic
+                // range of a vehicle-switch height mismatch without the cost of a much longer
+                // cast (one ray per wheel, once per rebuild - not a hot-path cost either way).
+                //
+                // docs §46 (task #59): §127's fix above covers a wheel that spawns TOO FAR
+                // ABOVE the ground. Live repro (switching a short/low vehicle - e.g. Scout01 -
+                // into a tall/long-travel one - Ural01 - repeatedly at the same spot) found the
+                // opposite case: pos.y is inherited close to the OLD vehicle's low resting height,
+                // and the NEW vehicle's own attachPos offset (its own, unrelated-to-any-other-
+                // vehicle local geometry) then places attachW slightly BELOW the real ground
+                // surface - a case §132 already named for the chassis shape ("chassis embeds
+                // below terrain") but never covered for individual wheel attach points, which can
+                // sit lower than the chassis's own lowest bound. Casting straight down FROM
+                // attachW in that state never finds the ground: the terrain collision mesh is
+                // one-sided (docs §40 - CollideShape/raycasts only see it from above), so a ray
+                // that starts already on/below the surface and points further down cannot hit it,
+                // no matter how long the ray is - confirmed live: a 500m version of this exact ray
+                // still missed. Same fix shape as §132: start the cast safely ABOVE the attach
+                // point instead of AT it, so the ray always approaches the one-sided surface from
+                // the correct side regardless of which side of it attachW happens to land on.
+                const float upMargin = 5.0f;
+                const float rayLen = upMargin + maxLen + R + 15.0f;
+                const JPH::RVec3 rayStart = attachW - suspDirW * upMargin; // upMargin above attachW
+                JPH::RRayCast ray{ rayStart, suspDirW * rayLen };
                 JPH::RayCastResult hitR;
                 if (physics->GetNarrowPhaseQuery().CastRay(ray, hitR, bpF, olF)) {
-                    const float d = rayLen * hitR.mFraction; // attachment -> ground distance
-                    suspLen = std::clamp(d - R, s->mSuspensionMinLength, maxLen); // wheel bottom at ground
+                    const float dFromStart  = rayLen * hitR.mFraction; // rayStart -> ground distance
+                    const float dFromAttach = dFromStart - upMargin;   // attachment -> ground distance
+                    const float rawBottomDist = dFromAttach - R;       // uncapped wheel-bottom -> ground distance
+                    suspLen = std::clamp(rawBottomDist, s->mSuspensionMinLength, maxLen); // wheel bottom at ground
+                } else {
+                    // docs §46 (task #59): permanent, cheap warning (not a temporary diagnostic) -
+                    // if this still fires live, the wheel is genuinely landing in the "airborne
+                    // fallback" (suspLen=maxLen, full droop) that reads as "stretched suspension",
+                    // and it's neither the §127 case (ray too short) nor the §46 case (ray started
+                    // on the wrong side of a one-sided terrain surface) - both are now covered, so a
+                    // live hit here means a third, still-unidentified cause and is worth a report.
+                    LOG_WARNING("docs §46: wheel %zu InitWheelModelSuspension raycast missed even "
+                        "with the upMargin=%.1f/%.1fm range fix (%s) - falling back to suspLen=maxLen=%.3f "
+                        "(this wheel will look fully extended)",
+                        i, (double) upMargin, (double) rayLen, label, (double) maxLen);
                 }
             }
+            // docs §46b (task #59): permanent, cheap - one line per wheel per build, not per
+            // frame. Reports the ACTUAL computed rest length so a live "looks stretched" report
+            // can be checked against real numbers instead of guessed at: a suspLen near maxLen
+            // here is a legitimate raycast result (real ground is genuinely that far away),
+            // distinct from the §46 fallback warning above (raycast found nothing at all).
+            LOG_INFO("docs §46b: wheel %zu (%s) suspLen=%.3f maxLen=%.3f (%.0f%% of travel) "
+                "attachW.y=%.3f",
+                i, label, (double) suspLen, (double) maxLen,
+                (double) (maxLen > 0.0f ? 100.0f * suspLen / maxLen : 0.0f), (double) attachW.GetY());
             state.wmSuspLen[i] = suspLen;
             state.wmRestLen[i] = suspLen; // spring zero-force point = where the wheel starts on the ground
             if (i < state.wmSuspVel.size()) state.wmSuspVel[i] = 0.0f;
             if (i < state.wmOmega.size())   state.wmOmega[i]   = 0.0f;
+
+            if (bi != nullptr && i < state.wheelBodies.size() && !state.wheelBodies[i].IsInvalid()) {
+                const JPH::RVec3 wheelCentreW = attachW + suspDirW * suspLen;
+                bi->SetPositionAndRotation(state.wheelBodies[i], wheelCentreW,
+                    JPH::Quat(rot.x, rot.y, rot.z, rot.w), JPH::EActivation::Activate);
+                bi->SetLinearVelocity(state.wheelBodies[i], JPH::Vec3::sZero());
+                bi->SetAngularVelocity(state.wheelBodies[i], JPH::Vec3::sZero());
+            }
         }
+
+        // docs §46g (task #59): §46f (a wheel-travel-fraction heuristic, retired) and a
+        // continuous position-correction corrector (also retired - user feedback: wheels are
+        // real physics bodies, fix the constraint's own limit instead of fighting the symptom
+        // every frame) were both tried and abandoned here. The actual fix lives at the source:
+        // WheelSettingsWV::mSuspensionMaxLength, where the wheel settings are built (search
+        // "docs §46g: real suspension travel"). See that comment for the reasoning.
     }
 
     // docs §41: real, self-contained multi-gear drivetrain - replaces docs §40's flat
@@ -3182,6 +4240,75 @@ namespace kraken::fix::joltshadow {
         (void) label;
     }
 
+    // docs §122: ODE's GLOBAL body damping, which the port has never matched.
+    //
+    // ai::DynamicScene::InitOnce switches it on for the whole world - dWorldSetDampingFlag(1),
+    // dWorldSetDampingParameters(linear 0.1, angular 0.3) - and dBodyCreate (RVA 0x3c5ac0) copies
+    // those into EVERY body at construction, chassis and wheels alike, with no per-body override
+    // anywhere in the game. dxStepBody (RVA 0x4fc8f0) then does, once per body per step:
+    //
+    //     lvel *= (1 - linear_scale * h)        avel *= (1 - angular_scale * h)
+    //
+    // with NO velocity threshold - dxDamping in this build is a bare {float,float}, the threshold
+    // fields belong to a later ODE revision - and with the stepsize multiplied in explicitly, so
+    // the two numbers are rates in 1/s rather than a per-tick haircut.
+    //
+    // Jolt writes the same law: MotionProperties.inl:143 is `v *= max(0, 1 - c*dt)`. So this is an
+    // assignment of two constants, not a reimplementation, and the only difference is a clamp that
+    // cannot engage at c*dt in the 0.003-0.01 range.
+    //
+    // As-built state, which is what the OFF arm preserves: wheel bodies are explicitly 0/0 (see
+    // BuildWheelBodies) and the chassis is on Jolt's 0.05/0.05 default, never having been set. So
+    // "the port has no damping" is not quite right - it has half the linear on the chassis and none
+    // on the wheels.
+    //
+    // Written every frame rather than once at build, so a variant or config value takes effect
+    // without a rebuild and a rebuilt body cannot silently come back on the wrong value. Two setter
+    // calls per body is nothing beside the step.
+    //
+    // The wheels get it only in mode 4, because only there do they exist. That is the faithful
+    // mapping and not an omission: mode 2 has no wheel body for the angular term to act on, and
+    // folding it into the chassis instead would invent a force the reference does not apply.
+    static void ApplyBodyDamping(ShadowState& state, const char* label) {
+        JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+        if (physics == nullptr)
+            return;
+        const JPH::BodyLockInterfaceNoLock& bodies = physics->GetBodyLockInterfaceNoLock();
+        const bool on = state.VarBodyDamping() != 0;
+
+        float seenLin = 0.0f, seenAng = 0.0f;
+        uint32_t touched = 0;
+        const auto visit = [&](JPH::BodyID id) {
+            JPH::Body* b = bodies.TryGetBody(id);
+            if (b == nullptr || !b->IsDynamic())
+                return;
+            JPH::MotionProperties* mp = b->GetMotionProperties();
+            if (mp == nullptr)
+                return;
+            if (on) {
+                mp->SetLinearDamping(std::max(state.VarDampingLinear(), 0.0f));
+                mp->SetAngularDamping(std::max(state.VarDampingAngular(), 0.0f));
+            }
+            // Read back either way - on the off arm this is the whole point of the line.
+            seenLin = mp->GetLinearDamping();
+            seenAng = mp->GetAngularDamping();
+            ++touched;
+        };
+
+        if (state.wheelBodyMode) {
+            for (JPH::BodyID id : state.wheelBodies)
+                visit(id);
+        }
+        // Chassis LAST so the reported pair is the chassis's, which is the one that exists in every
+        // mode and so the one a log line can be compared across modes.
+        visit(state.bodyId);
+
+        state.wmDampLinear  = seenLin;
+        state.wmDampAngular = seenAng;
+        state.wmDampBodies  = touched;
+        (void) label;
+    }
+
     // docs §67 (Этап 1, шаг 5): the per-frame spin command. MAIN THREAD, before
     // PhysicsSystem::Update, from live game fields - nothing here may run inside the step listener
     // or a contact callback.
@@ -3252,8 +4379,23 @@ namespace kraken::fix::joltshadow {
             if (wb == nullptr)
                 continue;
             const JPH::Vec3 axleWorld = (wb->GetRotation() * state.wheelSetup[i].axleLocal).Normalized();
-            omegaNow[i] = state.wheelSetup[i].spinSign *
-                          (wb->GetAngularVelocity() - chassisAngVel).Dot(axleWorld);
+            const float rawOmega = (wb->GetAngularVelocity() - chassisAngVel).Dot(axleWorld);
+            omegaNow[i] = state.wheelSetup[i].spinSign * rawOmega;
+
+            // Steer-drift fix: integrate spin as its OWN state, never read back off the body -
+            // see wmSpinAngle's own comment. Raw (no spinSign) because this feeds
+            // Quat::sRotation(axleLocal, ...) directly, the same physics-space convention
+            // axleLocal itself is in.
+            if (i < state.wmSpinAngle.size()) {
+                state.wmSpinAngle[i] += rawOmega * dt;
+                // Keep the accumulator numerically well-conditioned over a long play session -
+                // Quat::sRotation only cares about the angle mod 2*pi, so wrapping changes
+                // nothing about the resulting rotation.
+                if (state.wmSpinAngle[i] > 3.14159265f)
+                    state.wmSpinAngle[i] -= 6.28318531f;
+                else if (state.wmSpinAngle[i] < -3.14159265f)
+                    state.wmSpinAngle[i] += 6.28318531f;
+            }
         }
 
         GearboxOut gb;
@@ -3431,11 +4573,51 @@ namespace kraken::fix::joltshadow {
                     // step 5 owns and must not be disturbed. Rebuilding from the commanded steer
                     // and the CURRENT twist is what makes this a steer assignment rather than a
                     // full pose override.
+                    //
+                    // "Current twist" used to mean re-decomposing wb->GetRotation() via
+                    // GetSwingTwist() every frame - which sounds inert (spin is only ever read
+                    // back, never written here) but is not: swing-twist decomposition cannot
+                    // distinguish "the wheel actually spun" from "something disturbed it since
+                    // the last assignment" (gyroscopic coupling at high spin rate, the tyre
+                    // model's own lateral AddForce on this exact body - wheelmodel_core.hpp).
+                    // Whatever disturbance crept into the body's orientation between one
+                    // assignment and the next got re-extracted as "twist" and preserved instead
+                    // of corrected, so it never washed out - it accumulated. Confirmed live
+                    // (kraken.log, real play session): full lock held ~10s while accelerating
+                    // 10->20 m/s, measured decayed steadily from commanded and crossed zero to
+                    // the opposite sign. wmSpinAngle (see its own comment) is integrated
+                    // independently of the body's orientation, so it cannot inherit that
+                    // disturbance - only real angular velocity about the axle feeds it.
+                    // docs §65/§65.4: a global +X-vs-native's-X sign was tried here (both signs,
+                    // live-tested) and REFUTED - the user's precise per-corner report (right-front
+                    // and left-rear correct, the other two backwards - a diagonal, not a front/rear
+                    // split) rules out any single global or front/rear-keyed correction. The real
+                    // cause is a LEFT/RIGHT one (docs §65.4) and is fixed once, uniformly for all
+                    // four wheels, at the writeback (ApplyJoltToVehicleWheelModel) - not here. This
+                    // twist stays exactly what §106/§68 already built it as: the plain, unflipped
+                    // accumulated spin.
                     const JPH::Quat chassisRot = physics->GetBodyInterface().GetRotation(state.bodyId);
-                    const JPH::Quat wheelLocal = chassisRot.Conjugated() * wb->GetRotation();
-                    JPH::Quat swing, twist;
-                    wheelLocal.GetSwingTwist(swing, twist);
-                    const JPH::Quat steerRot = JPH::Quat::sRotation(ws.steerAxis.Normalized(), steerCmd);
+                    const JPH::Quat twist = (i < state.wmSpinAngle.size())
+                        ? JPH::Quat::sRotation(ws.axleLocal.Normalized(), state.wmSpinAngle[i])
+                        : JPH::Quat::sIdentity();
+                    // docs §68's own comment (~line 1864, its derivation) already predicted this
+                    // exact failure mode for a DIFFERENT reason: "a hard-coded +1 [instead of
+                    // ws.steerSign] gives a vehicle that steers the wrong way at every speed and
+                    // still passes any test that only checks |angle|" - the motor path (else
+                    // branch below, `steerCS = ws.steerSign * steerCmd`) already applies that
+                    // correction; this assignment path never did, silently assuming steerAxis
+                    // ({0,1,0}, chassis "up") and Jolt's own rotation convention agree with the
+                    // reference's sign for m_steerRadians, which they do not. Confirmed live
+                    // (user report + verification): wheel angle, chassis rotation and lateral
+                    // velocity were ALL internally self-consistent with the unsigned steerCmd
+                    // (every automated cross-check this project ran only compares those against
+                    // EACH OTHER, all downstream of the same steerCmd - so a whole-system mirror
+                    // was invisible to all of them), just mirrored from what the player actually
+                    // pressed. ws.steerSign (measured -1, docs/recovered/SPEC.md) is the same
+                    // per-wheel-geometry-derived correction the motor path already trusts, not a
+                    // new constant - reusing it here instead of a bare literal keeps this correct
+                    // for any future prototype whose kingpin geometry measures the other way.
+                    const JPH::Quat steerRot = JPH::Quat::sRotation(ws.steerAxis.Normalized(), ws.steerSign * steerCmd);
                     // docs §114 (шаг 6, проверка 2): "упор руля в бордюр не продавливает препятствие
                     // бесконечной силой". An ASSIGNMENT is exactly the mechanism that could shove
                     // geometry through a wall, so the check is more pointed here than for a motor.
@@ -4104,6 +5286,16 @@ namespace kraken::fix::joltshadow {
                 LOG_INFO("docs §32: Jolt SHADOW chassis pitch (%s) forward=(%.3f, %.3f, %.3f)",
                     label, (double) joltForward.GetX(), (double) joltForward.GetY(), (double) joltForward.GetZ());
 
+                // docs §46i (task #59 continued): Jolt's OWN raw origin, read directly off the
+                // body - NOT via vehicle->GetPosition()/GetMassCenterPosition(), which under
+                // apply=1 are themselves written FROM this same value every frame
+                // (ApplyJoltToVehicleWheelModel's SetPositionSelf) - comparing Jolt against ODE
+                // through that path is circular by construction once the values agree. This is
+                // the one number that must be checked against a genuinely independent jolt=0
+                // baseline instead.
+                LOG_INFO("docs §46i: Jolt raw origin (%s) = (%.3f,%.3f,%.3f)",
+                    label, (double) joltPos.GetX(), (double) joltPos.GetY(), (double) joltPos.GetZ());
+
                 // docs §32.4: does the compound CHASSIS shape itself ever come close to the
                 // ground, or is it floating well clear while only the wheels' raycasts probe
                 // downward? Sample all 8 corners of the shape's world-space bounding box, find
@@ -4287,6 +5479,13 @@ namespace kraken::fix::joltshadow {
             dxGeom* geom = dBodyGetFirstGeom(reinterpret_cast<dxBody*>(chassisBody));
             while (geom != nullptr) {
                 ++realGeomCount;
+                // docs §56.6: is THIS geom (the one actually sitting in ai::gGlobalSpace, body-
+                // attached or not) enabled from ai::NearCallback's point of view - its very first
+                // gate on both sides of a pair, before dCollide even runs (docs §56.2). Checked
+                // on the outer geom specifically (not the transform's inner one), since the outer
+                // is what's actually linked into the body/space - a disabled inner geom
+                // wouldn't be what NearCallback tests anyway.
+                const bool enabled = dGeomIsEnabled(geom);
                 const int32_t geomClass = dGeomGetClass(geom);
                 if (geomClass == dGeomTransformClass) {
                     ++realTransformCount;
@@ -4294,16 +5493,16 @@ namespace kraken::fix::joltshadow {
                     const int32_t innerClass = inner != nullptr ? dGeomGetClass(inner) : -1;
                     const float* innerPos = inner != nullptr ? dGeomGetPosition(inner) : nullptr;
                     if (innerPos != nullptr)
-                        LOG_INFO("docs §33: real ODE chassis geom (%s) #%d = transform, inner class=%d pos=(%.3f,%.3f,%.3f)",
-                            label, realGeomCount, innerClass, (double) innerPos[0], (double) innerPos[1], (double) innerPos[2]);
+                        LOG_INFO("docs §33/§56.6: real ODE chassis geom (%s) #%d = transform, inner class=%d pos=(%.3f,%.3f,%.3f) enabled=%d",
+                            label, realGeomCount, innerClass, (double) innerPos[0], (double) innerPos[1], (double) innerPos[2], (int) enabled);
                     else
-                        LOG_INFO("docs §33: real ODE chassis geom (%s) #%d = transform, inner class=%d",
-                            label, realGeomCount, innerClass);
+                        LOG_INFO("docs §33/§56.6: real ODE chassis geom (%s) #%d = transform, inner class=%d enabled=%d",
+                            label, realGeomCount, innerClass, (int) enabled);
                 } else {
                     const float* pos = dGeomGetPosition(geom);
                     const double radius = geomClass == dSphereClass ? dGeomSphereGetRadius(geom) : -1.0;
-                    LOG_INFO("docs §33: real ODE chassis geom (%s) #%d = class %d (not a transform) pos=(%.3f,%.3f,%.3f) radius=%.3f",
-                        label, realGeomCount, geomClass, (double) pos[0], (double) pos[1], (double) pos[2], radius);
+                    LOG_INFO("docs §33/§56.6: real ODE chassis geom (%s) #%d = class %d (not a transform) pos=(%.3f,%.3f,%.3f) radius=%.3f enabled=%d",
+                        label, realGeomCount, geomClass, (double) pos[0], (double) pos[1], (double) pos[2], radius, (int) enabled);
                 }
                 geom = dGeomGetBodyNext(geom);
             }
@@ -4446,9 +5645,10 @@ namespace kraken::fix::joltshadow {
             LOG_ERROR("Shadow apply (%s): non-finite Jolt state, skipping this frame (leaving ODE in control)", label);
             return;
         }
-        if (joltVel.Length() > kMaxAppliedSpeedMps) {
+        const float maxAppliedSpeedMps = MaxAppliedSpeedMps();
+        if (joltVel.Length() > maxAppliedSpeedMps) {
             LOG_WARNING("Shadow apply (%s): Jolt speed %.1f m/s exceeds %.1f m/s cap, skipping this frame (leaving ODE in control)",
-                label, (double) joltVel.Length(), (double) kMaxAppliedSpeedMps);
+                label, (double) joltVel.Length(), (double) maxAppliedSpeedMps);
             return;
         }
 
@@ -4479,6 +5679,21 @@ namespace kraken::fix::joltshadow {
         }
 
         vehicle->DisablePhysics();
+        // docs §67.4: confirmed live (verify_cellreg.py, §67.3's own diagnostic) - m_physicState's
+        // bit1 read 0 for EVERY Jolt-shadowed vehicle (player and all 7 AI), every sample, for a
+        // full ~24s drive. PhysicObj::SetCorrectEnabledCellsCounter (called from SetPositionSelf,
+        // next line - disassembled by hand, offsets confirmed against the recovered PhysicObj.hpp
+        // field names) only re-walks the landscape's collision-cell grid and re-registers this
+        // object when bit0==0 (true here - DisablePhysics clears it) AND bit1==1 (never true here,
+        // and DisablePhysics never touches it either) - otherwise it's a no-op. So a Jolt-driven
+        // vehicle's cell registration freezes wherever it was before physics was disabled and
+        // never follows the Jolt-driven position - and the weapon hit-trace (ShellTraceLineCallback)
+        // queries THIS cell grid, not raw ODE space, so a vehicle stuck in its old cells goes
+        // invisible to it (live report: machine-gun hits stopped registering on enemies, "no
+        // reaction at all" - works under [jolt] enabled=0). Setting bit1 here, every frame, is the
+        // minimal fix - SetCorrectEnabledCellsCounter's own native logic does the real cell walk
+        // once its gate is open; nothing about that function is touched or duplicated.
+        vehicle->m_physicState |= 2;
         vehicle->SetPositionSelf(hta::CVector(joltPos.GetX(), joltPos.GetY(), joltPos.GetZ()));
         vehicle->SetRotationSelf(hta::Quaternion(joltRot.GetX(), joltRot.GetY(), joltRot.GetZ(), joltRot.GetW()));
         vehicle->SetLinearVelocity(hta::CVector(joltVel.GetX(), joltVel.GetY(), joltVel.GetZ()));
@@ -4574,6 +5789,158 @@ namespace kraken::fix::joltshadow {
             }
         }
     }
+
+    // Stage 2 for wheelmodel=4 (docs/stage2-plan.md correction, written after a live acceptance
+    // run exposed this gap). ApplyJoltToVehicle above assumes JPH::VehicleConstraint's own wheel
+    // array (state.constraint->GetWheels()/GetWheelWorldTransform) - but BuildShadow's
+    // wheelModelMode branch (:2503-2506) never calls physics->AddConstraint for wheelmodel 2 or
+    // 4, so that array is never populated there. UpdateOneVehiclePostStep's own
+    // `allowApply && !state.wheelModelMode` guard already excluded both those modes from calling
+    // ApplyJoltToVehicle at all - meaning [jolt_harness] apply=1 was a complete no-op under
+    // wheelmodel=4, the one mode all of sec94-123's validation work (assists/governor/soildrag/
+    // damping/contact-model/chassis-inertia) actually targets. Found live: an unscripted-driving
+    // Stage 2 acceptance run (apply=1, wheelmodel=4) showed unbounded, growing divergence -
+    // 250-300m position, up to 180deg orientation, over ~70s - because ODE was never being
+    // overwritten at all and the two sims were simply free-running independently, exactly like
+    // shadow-only mode. No NaN/speed-cap gate trip, because ApplyJoltToVehicle's own gate never
+    // ran either.
+    //
+    // The chassis half is copied verbatim from ApplyJoltToVehicle - BuildShadow's own comment at
+    // :2494 confirms the chassis body/mass is constructed identically regardless of mode, so
+    // state.bodyId means the same thing here. Only the wheel half differs: wheels come from
+    // state.wheelBodies (real per-wheel Jolt bodies, populated only in wheelBodyMode/mode 4), not
+    // a VehicleConstraint's wheel array. Skid-trace visuals (WheelTraceMgr) are NOT ported here -
+    // they read JPH::WheelWV::mLongitudinalSlip, a field that belongs to the native vehicle
+    // wheel type and has no equivalent on a plain wheelmodel wheel body; left as a named gap
+    // rather than guessed at. Mode 2 (wheelModelMode but not wheelBodyMode - forces applied
+    // straight to the chassis, no wheel bodies to sync) still has no writeback at all, unchanged.
+    static void ApplyJoltToVehicleWheelModel(hta::ai::Vehicle* vehicle, ShadowState& state, const char* label) {
+        if (state.bodyId.IsInvalid())
+            return;
+
+        JPH::PhysicsSystem* physics = kraken::fix::jolt::GetPhysicsSystem();
+        if (physics == nullptr)
+            return;
+        JPH::BodyInterface& bodyInterface = physics->GetBodyInterface();
+
+        JPH::RVec3 joltPos    = bodyInterface.GetPosition(state.bodyId);
+        JPH::Quat  joltRot    = bodyInterface.GetRotation(state.bodyId);
+        JPH::Vec3  joltVel    = bodyInterface.GetLinearVelocity(state.bodyId);
+        JPH::Vec3  joltAngVel = bodyInterface.GetAngularVelocity(state.bodyId);
+
+        // Same "body is flying" policy as ApplyJoltToVehicle (:4569-4588) - duplicated rather
+        // than shared because the two functions read wheels in incompatible ways below and a
+        // shared helper would just take these four values as parameters anyway.
+        const bool finite = AllFinite({
+            joltPos.GetX(), joltPos.GetY(), joltPos.GetZ(),
+            joltRot.GetX(), joltRot.GetY(), joltRot.GetZ(), joltRot.GetW(),
+            joltVel.GetX(), joltVel.GetY(), joltVel.GetZ(),
+            joltAngVel.GetX(), joltAngVel.GetY(), joltAngVel.GetZ(),
+        });
+        if (!finite) {
+            LOG_ERROR("Shadow apply wheelmodel (%s): non-finite Jolt state, skipping this frame (leaving ODE in control)", label);
+            return;
+        }
+        const float maxAppliedSpeedMps = MaxAppliedSpeedMps();
+        if (joltVel.Length() > maxAppliedSpeedMps) {
+            LOG_WARNING("Shadow apply wheelmodel (%s): Jolt speed %.1f m/s exceeds %.1f m/s cap, skipping this frame (leaving ODE in control)",
+                label, (double) joltVel.Length(), (double) maxAppliedSpeedMps);
+            return;
+        }
+
+        vehicle->DisablePhysics();
+        // docs §67.4: confirmed live (verify_cellreg.py, §67.3's own diagnostic) - m_physicState's
+        // bit1 read 0 for EVERY Jolt-shadowed vehicle (player and all 7 AI), every sample, for a
+        // full ~24s drive. PhysicObj::SetCorrectEnabledCellsCounter (called from SetPositionSelf,
+        // next line - disassembled by hand, offsets confirmed against the recovered PhysicObj.hpp
+        // field names) only re-walks the landscape's collision-cell grid and re-registers this
+        // object when bit0==0 (true here - DisablePhysics clears it) AND bit1==1 (never true here,
+        // and DisablePhysics never touches it either) - otherwise it's a no-op. So a Jolt-driven
+        // vehicle's cell registration freezes wherever it was before physics was disabled and
+        // never follows the Jolt-driven position - and the weapon hit-trace (ShellTraceLineCallback)
+        // queries THIS cell grid, not raw ODE space, so a vehicle stuck in its old cells goes
+        // invisible to it (live report: machine-gun hits stopped registering on enemies, "no
+        // reaction at all" - works under [jolt] enabled=0). Setting bit1 here, every frame, is the
+        // minimal fix - SetCorrectEnabledCellsCounter's own native logic does the real cell walk
+        // once its gate is open; nothing about that function is touched or duplicated.
+        vehicle->m_physicState |= 2;
+        vehicle->SetPositionSelf(hta::CVector(joltPos.GetX(), joltPos.GetY(), joltPos.GetZ()));
+        vehicle->SetRotationSelf(hta::Quaternion(joltRot.GetX(), joltRot.GetY(), joltRot.GetZ(), joltRot.GetW()));
+        vehicle->SetLinearVelocity(hta::CVector(joltVel.GetX(), joltVel.GetY(), joltVel.GetZ()));
+        vehicle->SetAngularVelocity(hta::CVector(joltAngVel.GetX(), joltAngVel.GetY(), joltAngVel.GetZ()));
+
+        const size_t nw = std::min(state.wheelBodies.size(), state.wheelOrder.size());
+        for (size_t i = 0; i < nw; ++i) {
+            hta::ai::Wheel* wheel = state.wheelOrder[i];
+            if (wheel == nullptr || state.wheelBodies[i].IsInvalid())
+                continue;
+            JPH::Body* wb = physics->GetBodyLockInterfaceNoLock().TryGetBody(state.wheelBodies[i]);
+            if (wb == nullptr)
+                continue;
+
+            const JPH::RVec3 wheelPos = wb->GetPosition();
+            const JPH::Quat  wheelRot = wb->GetRotation();
+            if (!AllFinite({(float) wheelPos.GetX(), (float) wheelPos.GetY(), (float) wheelPos.GetZ(),
+                            wheelRot.GetX(), wheelRot.GetY(), wheelRot.GetZ(), wheelRot.GetW()}))
+                continue; // leave this one wheel wherever it last was rather than write garbage
+
+            // docs §65.4-§65.8, §127-§135 (task #58, wheel-spin visual bug - superseded, kept in
+            // jolt-integration-techanalysis.md §65.8/§136 for the record): five things were tried
+            // here in turn - a global/front-rear sign, an attachPos.x>0 swing-twist mirror
+            // (worked for one vehicle, backwards on Ural01/Fighter01), and a per-vehicle-name
+            // exception list (rejected: "ODE works without one, so Jolt has a real answer too" -
+            // correct call; find it below).
+            //
+            // docs §136: the real fix. BuildWheelBodies spawns every wheel body at chassisRot
+            // (see its own comment, :2321-2ish) for constraint-frame convenience, discarding the
+            // wheel's own NATIVE rotation - exactly the artist-authored placement (including any
+            // mesh mirroring) that native ODE's geom starts from and simply integrates a
+            // side-agnostic world-space spin on top of (confirmed this session by full
+            // disassembly: dJointSetHinge2Axis1/2 in ai::Wheel::AttachToPhysicObj and dParamVel2
+            // in ai::Vehicle::_KeepGearBox are BOTH computed purely from chassis rotation and a
+            // single global constant, zero per-wheel branching - ODE needs no runtime correction
+            // anywhere because its STARTING POSE already carries whatever mirror the mesh needs;
+            // nothing about its motion does). ws.visualMirrorDelta (WheelSetup's own comment has
+            // the full derivation) is exactly `Inverse(chassisRot) * wheel->GetRotation()`,
+            // captured once at body-build time - measured live: identity on all 4 of Fighter01's
+            // wheels, exactly 180 deg about Y on Molokovoz01's 2 right wheels only. Composing it
+            // back here reconstructs the native quaternion because both engines apply the
+            // identical world-space spin on top of a (possibly) different starting pose - no
+            // vehicle name, wheel count, or axle layout enters the formula, so it self-adapts to
+            // any prototype without curation. Touches ONLY this cosmetic writeback; wheelRot
+            // itself (used everywhere else - constraint frames, axleLocal projection, the tyre
+            // model) is completely unchanged.
+            const JPH::Quat visualRot = (wheelRot * (i < state.wheelSetup.size()
+                ? state.wheelSetup[i].visualMirrorDelta : JPH::Quat::sIdentity())).Normalized();
+
+            // docs §137.4 (task #60, temporary): ground-truth check for the §137.3 ordering fix -
+            // this is the EXACT quaternion that just got written to the mesh (wheel->SetRotationSelf
+            // below), so a delta-angle computed here, frame to frame, is what the player actually
+            // sees rotate - not a proxy like §67's omega. Gated on restHeld so it stays silent
+            // during normal driving and only speaks while the vehicle is supposed to be parked.
+            if (state.restHeld) {
+                if (state.dbgPrevVisualRot.size() != state.wheelBodies.size())
+                    state.dbgPrevVisualRot.assign(state.wheelBodies.size(), visualRot);
+                if (i < state.dbgPrevVisualRot.size()) {
+                    const float dot = std::clamp(std::fabs(visualRot.Dot(state.dbgPrevVisualRot[i])), 0.0f, 1.0f);
+                    const float deltaDeg = 2.0f * std::acos(dot) * (180.0f / 3.14159265f);
+                    LOG_INFO("docs §137.4: visual wheel delta (%s) w=%zu deltaDeg=%.4f", label, i, (double) deltaDeg);
+                    state.dbgPrevVisualRot[i] = visualRot;
+                }
+            } else if (i < state.dbgPrevVisualRot.size()) {
+                state.dbgPrevVisualRot[i] = visualRot;   // keep it current so re-entering restHeld starts from 0
+            }
+
+            wheel->DisablePhysics();
+            wheel->SetPositionSelf(hta::CVector((float) wheelPos.GetX(), (float) wheelPos.GetY(), (float) wheelPos.GetZ()));
+            wheel->SetRotationSelf(hta::Quaternion(visualRot.GetX(), visualRot.GetY(), visualRot.GetZ(), visualRot.GetW()));
+        }
+    }
+
+    // No Profiled wrapper: unlike ApplyJoltToVehicleProfiled below, this would need to reference
+    // g_joltProfile/JoltProfileState, both declared further down this file - called directly from
+    // UpdateOneVehiclePostStep instead, at the (small) cost of this one path missing perfmon's
+    // per-call timing breakdown until someone cares enough to reshuffle the declarations.
 
     // ------------------------------------------------------------------------------------------
     // Perf split instrumentation (docs/jolt-integration-techanalysis.md §17 follow-up). §17
@@ -4781,6 +6148,12 @@ namespace kraken::fix::joltshadow {
         // and running both would support the chassis twice. The wheel bodies also stopped being
         // sensors at step 3, so the rim is a real contact - a second, parallel support path would
         // not merely double the load, it would fight the SixDOF.
+        // docs §122: outside the mode-4 block on purpose. Damping is a BODY PROPERTY, not a force,
+        // and the reference applies it to every body in the world regardless of which model drives
+        // it - so gating it on wheelBodyMode would make the two modes differ by more than the wheel
+        // representation, which is the one thing mode 2 exists to isolate.
+        ApplyBodyDamping(state, label);
+
         if (state.wheelBodyMode) {
             // Wake FIRST, command second: UpdateWheelSpinCommands gates every write on IsActive,
             // so the other order would skip the whole vehicle on the frame it woke.
@@ -4822,15 +6195,153 @@ namespace kraken::fix::joltshadow {
     // UpdateShadow's single shared StepPhysicsProfiled call for this frame. Only called for
     // vehicles whose pre-step returned true.
     static void UpdateOneVehiclePostStep(hta::ai::Vehicle* vehicle, ShadowState& state, bool allowApply, const char* label) {
-        // docs §39.2: wheelmodel mode has no VehicleConstraint, so the constraint-driven
-        // Jolt->ODE writeback (ApplyJoltToVehicle) can't run - it's a pure shadow for now
-        // (evaluate the model's own behaviour vs ODE; writeback is a later step).
-        if (allowApply && !state.wheelModelMode)
-            ApplyJoltToVehicleProfiled(vehicle, state, label);
+        // docs §125.2: a force-based stick damper, however strong, can only ever APPROACH v=0
+        // under a persistent bias (gravity on a slope) - the instant v hits exactly zero, the
+        // damper force ALSO hits zero (it's proportional to v), so the bias re-accelerates it a
+        // tiny bit the very next frame. No coefficient closes that gap; it is a structural
+        // property of a velocity-proportional force, not a tuning miss (see the abandoned
+        // gain-bisection in GeneralizedContactForce, docs §125/stage2-plan.md §2.9). Confirmed
+        // live: even the 2x stick damper left a residual around 0.004-0.007 m/s that never fully
+        // died out - small, but the player correctly read continued motion as "still sliding"
+        // regardless of magnitude. Closing that gap needs something whose value does NOT collapse
+        // to zero together with v - here, a direct velocity floor.
+        //
+        // docs §137 (task #60, Molokovoz01 standstill wheel-spin creep): gate widened from
+        // "handbrake engaged" to "handbrake engaged OR no real drive intent" - a parked vehicle
+        // with the handbrake OFF (just released the wheel, no throttle) hit the exact same
+        // §125.2 structural gap and had nothing here to catch it, which is what the user saw as
+        // small forward jerks in the wheel mesh while the chassis itself never moved.
+        //
+        // docs §137.2 (same task, real-terrain follow-up): a one-shot snap - fire once, the
+        // instant speed first reads below kStandstillSnapSpeed - measured clean on the flat
+        // menu-placeholder ground but did NOT fix the user's real report; re-tested on an actual
+        // save (real terrain, not flat) it showed the exact same bursty spin, now with ALL FOUR
+        // wheels agreeing in SIGN at each burst (not the alternating per-side pattern a pure
+        // numerical artifact would give) - i.e. genuine short bursts of real rolling, the
+        // textbook signature of §125.2's structural bias: a velocity-proportional damper can only
+        // ever APPROACH v=0 under a persistent slope bias, so real terrain keeps re-feeding it
+        // just enough speed to climb back OUT of the "already below threshold" gate before the
+        // next check, and a one-shot snap that requires catching it already-still can lose that
+        // race indefinitely. Fixed by LATCHING: once the entry gate below has caught the vehicle
+        // genuinely stopped a single time, `restHeld` keeps the snap applying every frame
+        // regardless of small re-excursions above the entry threshold - matching what a real
+        // handbrake/parked vehicle actually does (holds firmly against a slope, not just "helps
+        // until it happens to coast below some speed").
+        //
+        // docs §137.3 (same task, STILL not fixed after §137.2 - the real bug): the whole block
+        // used to live AFTER the ApplyJoltToVehicleWheelModel call below, which reads each wheel
+        // body's CURRENT rotation and writes it straight to the visible mesh
+        // (wheel->SetRotationSelf, joltshadow.cpp's own §136 comment on that function). Zeroing
+        // velocity there fixed the NEXT physics step's starting point but did nothing about THIS
+        // step's rotation - by the time the snap ran, whatever the disturbance already did to the
+        // body's orientation this step was already on screen. That is why §137.2 measured
+        // perfectly clean (it was reading state AFTER its own correction) while the user kept
+        // seeing the exact same jerk live. Moved the whole block to run BEFORE the writeback, and
+        // added an explicit rotation freeze: the instant restHeld first latches, each wheel's
+        // CURRENT orientation is captured into wheelLockedRot; every frame afterward, while held,
+        // that captured orientation is force-written back onto the body - not derived from
+        // wmSpinAngle or any per-axis reconstruction, just "this wheel is not going anywhere,
+        // hold the pose it already had" - so the writeback below reads the ALREADY-corrected pose
+        // instead of whatever the physics step's disturbance left it at. Velocity is still zeroed
+        // too (keeps the body from fighting the rotation override every step).
+        //
+        // Snaps the WHOLE rigid group (chassis + all wheel bodies), not just the chassis: the
+        // wheels are separate bodies, each still carrying their own small residual velocity,
+        // rigidly coupled to the chassis by the SixDOF's fixed in-plane axes - zeroing the
+        // chassis alone creates a one-frame constraint violation (chassis=0 vs wheels != 0) that
+        // the solver promptly "corrects" by dragging the chassis back off zero to match its own
+        // wheels (confirmed live: chassis-only snap held for a few seconds, then resumed creeping
+        // at the original rate). Horizontal (X/Z) only for the chassis linear snap - Y is left
+        // alone so suspension settling and legitimate falling are untouched.
+        //
+        // NOTE on testing this specific gate: a SCRIPTED testharness handbrake=True does not
+        // reliably hold vehicle->m_bHandBrake true frame-to-frame here (read false almost
+        // immediately in isolated testing, despite testharness's own telemetry showing it
+        // correctly written true throughout) - the same class of native-input-polling race this
+        // codebase already fights for throttle/brake (KeepThrottleHook) and steering
+        // (testharness.cpp's direct m_curAngle write), just not yet given an equivalent bypass
+        // for handbrake specifically. This does NOT affect real play: live logs from an actual
+        // held handbrake button (docs/stage2-plan.md §2.9's original live capture) show
+        // handBrake=1 continuously and consistently, because native polling then agrees with the
+        // held key instead of fighting a scripted value it disagrees with. Re-verify via a live
+        // handbrake hold, not the harness, if this needs re-checking later.
+        constexpr float kStandstillNoThrottle = 0.02f;   // docs §137 - matches m_realThrottle's own units
+        if (state.wheelBodyMode
+                && (vehicle->m_bHandBrake || std::fabs(state.wmSpinThrottle) < kStandstillNoThrottle)) {
+            JPH::PhysicsSystem* physicsRest = kraken::fix::jolt::GetPhysicsSystem();
+            JPH::BodyInterface& biRest = physicsRest->GetBodyInterface();
+            if (biRest.IsAdded(state.bodyId)) {
+                constexpr float kStandstillSnapSpeed = 0.05f; // m/s; entry gate only - see §137.2
+                const JPH::Vec3 vRest = biRest.GetLinearVelocity(state.bodyId);
+                const JPH::Vec3 vHorizRest(vRest.GetX(), 0.0f, vRest.GetZ());
+                const bool justLatched =
+                    !state.restHeld && vHorizRest.LengthSq() < kStandstillSnapSpeed * kStandstillSnapSpeed;
+                if (justLatched) {
+                    state.restHeld = true;   // docs §137.2 - latches, see block comment above
+                    // docs §137.3: capture NOW, before anything below moves it further.
+                    state.wheelLockedRot.assign(state.wheelBodies.size(), JPH::Quat::sIdentity());
+                    for (size_t i = 0; i < state.wheelBodies.size(); ++i) {
+                        if (!state.wheelBodies[i].IsInvalid() && biRest.IsAdded(state.wheelBodies[i]))
+                            state.wheelLockedRot[i] = biRest.GetRotation(state.wheelBodies[i]);
+                    }
+                }
+                if (state.restHeld) {
+                    biRest.SetLinearVelocity(state.bodyId, JPH::Vec3(0.0f, vRest.GetY(), 0.0f));
+                    for (size_t i = 0; i < state.wheelBodies.size(); ++i) {
+                        const JPH::BodyID& wheelIdRest = state.wheelBodies[i];
+                        if (wheelIdRest.IsInvalid() || !biRest.IsAdded(wheelIdRest))
+                            continue;
+                        const JPH::Vec3 vw = biRest.GetLinearVelocity(wheelIdRest);
+                        biRest.SetLinearVelocity(wheelIdRest, JPH::Vec3(0.0f, vw.GetY(), 0.0f));
+                        biRest.SetAngularVelocity(wheelIdRest, JPH::Vec3::sZero());
+                        // docs §137.5 (task #60, review follow-up): a STEERABLE wheel's rotation
+                        // is already reassigned every PRE-step from live steering input
+                        // (chassisRot*steerRot*twist, the steerMode>=2 path above) - full-freezing
+                        // it here too would fight that assignment and visually stick the steer
+                        // angle while parked (turn the wheel with the handbrake on, front wheels
+                        // would not move). Velocity is still zeroed above either way (keeps the
+                        // body from accumulating momentum against its own assignment); only the
+                        // rotation override below is skipped, and only for steering wheels - the
+                        // ones actually reported broken are the rear (non-steering) axle.
+                        if (i < state.wheelSetup.size() && state.wheelSetup[i].steering)
+                            continue;
+                        // docs §137.3: the actual visible fix - force the body back to the pose
+                        // it had when the latch first engaged, EVERY frame, before the writeback
+                        // below ever reads it. See this block's own comment above for why a
+                        // velocity-only correction (the §137/§137.2 shape) could not work.
+                        if (i < state.wheelLockedRot.size())
+                            biRest.SetRotation(wheelIdRest, state.wheelLockedRot[i], JPH::EActivation::DontActivate);
+                    }
+                }
+            }
+        } else {
+            state.restHeld = false;   // docs §137.2 - real drive intent returned, release the latch
+        }
+
+        // docs §39.2, corrected by the Stage 2 writeback added above: wheelmodel mode has no
+        // JPH::VehicleConstraint, so ApplyJoltToVehicle (which reads one) can't run for it - but
+        // wheelBodyMode (wheelmodel=4) DOES have real per-wheel bodies, and now has its own
+        // writeback (ApplyJoltToVehicleWheelModel) that reads those instead. Mode 2
+        // (wheelModelMode but not wheelBodyMode) still has no writeback - forces land straight on
+        // the chassis with no wheel bodies to sync, unchanged from before.
+        //
+        // docs §137.3: runs AFTER the standstill snap above now (used to run before it) - see
+        // that block's own comment for why the ordering itself was the bug.
+        if (allowApply) {
+            if (state.wheelBodyMode)
+                ApplyJoltToVehicleWheelModel(vehicle, state, label);
+            else if (!state.wheelModelMode)
+                ApplyJoltToVehicleProfiled(vehicle, state, label);
+        }
         AccumulateForAutotune(vehicle, state);
 
         ++state.frameCounter;
-        constexpr uint64_t kLogIntervalFrames = 60; // ~once/second at 60fps, ~twice/second at 30 - avoids flooding kraken.log
+        // docs §122.10: was a hardcoded 60 (~once/second at 60fps). Config-driven so a short
+        // investigation run can sample the §66/§101-§103/§122 block fast enough to resolve
+        // suspension-frequency events instead of aliasing them - see jolt_wm4_diag_interval.
+        const uint64_t kLogIntervalFrames =
+            std::max<uint64_t>(kraken::Config::Instance().jolt_wm4_diag_interval.value, 1);
+
         if (state.frameCounter % kLogIntervalFrames == 0) {
             LogDivergence(vehicle, state, label);
             LogWheelState(vehicle, state, label);
@@ -4870,6 +6381,16 @@ namespace kraken::fix::joltshadow {
                         label, w, (double) d.fnGround, (double) d.fnTotal, (double) d.pen, (double) d.penRaw,
                         (double) tw, (double) (tw > 0.0f ? d.pen / tw : 0.0f),
                         d.recsTyre, d.recsRim, d.survived, (double) d.distMax);
+                    // docs §124.12 debug (temporary, Ural01 hang): direct world-space position -
+                    // the user's live visual observation was wheels visibly under the ground, so
+                    // this checks it as a number instead of an eyeball impression.
+                    LOG_INFO("docs §124.12: position (%s) w=%u wheelXYZ=(%.2f,%.3f,%.2f) chassisY=%.3f "
+                             "wheelBelowChassis=%.3f chassisActive=%d chassisUpY=%.3f wheelAngVel=%.3f wheelLinVel=%.3f "
+                             "userDataTagOk=%d userDataRaw=%llx",
+                        label, w, (double) d.posX, (double) d.posY, (double) d.posZ, (double) d.chassisPosY,
+                        (double) (d.chassisPosY - d.posY), (int) d.chassisActive, (double) d.chassisUpY,
+                        (double) d.wheelAngVel, (double) d.wheelLinVel,
+                        (int) d.userDataTagOk, (unsigned long long) d.userDataRaw);
                     // A SECOND line rather than more fields on the first one. The §66 format above
                     // was recovered character-for-character from the lost build, and it is one of
                     // the few places where the restored code can still be checked against that
@@ -4884,6 +6405,29 @@ namespace kraken::fix::joltshadow {
                           : (d.penRawAny > 0.0f) ? ""
                           : (d.distRim > 0.0f && d.distRim < 0.999f) ? "  [rim loaded, tyre clear]"
                           : "  [both clear of ground]");
+                    // docs §125: standstill-creep investigation. v_par/v_lat are the GROUND slot's
+                    // slip velocities (post spin, pre force); stick is the near-zero blend weight
+                    // (1 at rest, 0 above wm_stick_speed); capPar is the old (pre-fix) longitudinal
+                    // clamp, kept here to show how small it still is; damperPar is the new
+                    // longitudinal stick force BEFORE the stick-blend; D is the friction-circle
+                    // ceiling both draw from.
+                    LOG_INFO("docs §125: standstill (%s) w=%u v_par=%+.4f v_lat=%+.4f stick=%.3f "
+                             "capPar=%.1fN damperPar=%+.1fN D=%.1fN",
+                        label, w, (double) d.dbg_v_par, (double) d.dbg_v_lat, (double) d.dbg_stick,
+                        (double) d.dbg_capPar, (double) d.dbg_damperPar, (double) d.dbg_D);
+                    // docs §124 step 3: new-path (WheelContactConstraint/AxisConstraintPart)
+                    // normal force next to the old path's, for the step-3 verification gate -
+                    // "matched within ~1%" on a static settle. Reads 0/0/0 whenever the flag is
+                    // off (fnGroundNew etc. never written), which is self-explanatory rather than
+                    // a state worth guarding against, same precedent as maxNormalF at step 1.
+                    LOG_INFO("docs §124.7: new-path normal force (%s) w=%u ground=%.0fN(old %.0fN) "
+                             "obst=%.0fN(old %.0fN) side=%.0fN(old %.0fN) reason=%d warmStartCalls=%u solveCalls=%u "
+                             "pen=%.5f vn=%+.4f buildIslandsCalls=%u ptr=%p",
+                        label, w, (double) d.fnGroundNew, (double) d.fnGround,
+                        (double) d.fnObstNew, (double) d.fnObst,
+                        (double) d.fnSideNew, (double) d.fnSide, d.dbgGroundReason,
+                        d.dbgWarmStartCalls, d.dbgSolveCalls, (double) d.dbgPen, (double) d.dbgVn,
+                        d.dbgBuildIslandsCalls, d.dbgThis);
                 }
                 // docs §67 (Этап 1, шаг 5): the spin DOF, per wheel and then per vehicle. These
                 // two lines ARE the step's acceptance instrumentation - the plan's checks
@@ -4909,10 +6453,60 @@ namespace kraken::fix::joltshadow {
                             static_cast<const JPH::SixDOFConstraint*>(state.wheelConstraints[w]);
                         const float motorTq = (sc != nullptr)
                             ? sc->GetTotalLambdaMotorRotation().GetX() / dtLog : 0.0f;
+                        const ShadowState::SpinCmd& cmdLog = state.wmSpinCmd[w];
+                        const float spinAngleLog = (w < state.wmSpinAngle.size()) ? state.wmSpinAngle[w] : 0.0f;
                         LOG_INFO("docs §67: spin (%s) w=%zu driven=%d omega=%.2f rad/s surfaceSpeed=%.2f m/s "
                                  "spinSign=%+.0f motorTq=%.0fNm cmdTq=%.0fNm",
                             label, w, ws.driven ? 1 : 0, (double) omega, (double) (omega * ws.radius),
                             (double) ws.spinSign, (double) motorTq, (double) state.wmSpinCmd[w].limit);
+                        // docs §65.2: does the READ-BACK omega (used to accumulate wmSpinAngle, the
+                        // manual twist's own input) agree in sign with the COMMANDED target (the
+                        // value that ALSO drives non-steerable wheels, where the visual result is
+                        // confirmed correct) for a STEERABLE wheel specifically? If they disagree,
+                        // the twist's input is corrupted for kinematically-overridden bodies and no
+                        // choice of sign on the twist itself can fix it - the accumulator needs a
+                        // different source. steerable=1 marks the wheels actually running the
+                        // manual chassisRot*steerRot*twist path this frame (docs §65.3).
+                        LOG_INFO("docs §65.2: spin-src (%s) w=%zu steerable=%d target=%+.3f omega_readback=%+.3f "
+                                 "wmSpinAngle=%+.4f agree=%d",
+                            label, w, cmdLog.steerable ? 1 : 0, (double) cmdLog.target, (double) omega,
+                            (double) spinAngleLog,
+                            (cmdLog.target == 0.0f || omega == 0.0f) ? -1
+                                : (((cmdLog.target > 0.0f) == (omega > 0.0f)) ? 1 : 0));
+
+                        // docs §122.15: does the wheel body hit its droop limit (or its motor's
+                        // force limit) right where §122.12 measured it losing contact, or does it
+                        // stay well inside both budgets and simply lag the ground? BuildWheelBodies
+                        // gave the SixDOF TranslationZ axis a HARD stop at
+                        // [-compressHeadroom, +droopHeadroom] and a motor force cap of
+                        // 4*kSusp*range - both invented conventions (docs §94.2: the reference's
+                        // own ODE suspension is a pure CFM/ERP soft constraint with NO stop
+                        // whatsoever, so this pair of limits exists only on the port's side).
+                        // Recomputed fresh each frame from live positions rather than cached at
+                        // build time, and read back the same way §109's yaw term is - even the off
+                        // arm reports what it actually measured, not a value it declined to act on.
+                        if (wb != nullptr) {
+                            const JPH::RMat44 chassisXformNow =
+                                kraken::fix::jolt::GetPhysicsSystem()->GetBodyInterface().GetWorldTransform(state.bodyId);
+                            const JPH::RVec3 worldAttachNow  = chassisXformNow * ws.attachPos;
+                            const JPH::Vec3  worldSuspDirNow = (chassisXformNow.GetRotation() * ws.suspDir).Normalized();
+                            const float suspNow   = (float) JPH::Vec3(wb->GetPosition() - worldAttachNow).Dot(worldSuspDirNow);
+                            const float restLenW  = (w < state.wmRestLen.size()) ? state.wmRestLen[w] : 0.0f;
+                            const float rangeW    = std::max(ws.maxLen - ws.minLen, 0.05f);
+                            const float fracW     = std::clamp(kraken::Config::Instance().jolt_wm4_compress_fraction.value, 0.05f, 0.95f);
+                            const float compressHeadroomW = fracW * rangeW;
+                            const float droopHeadroomW    = rangeW - compressHeadroomW;
+                            const float zNow       = suspNow - restLenW;   // + = drooped, - = compressed
+                            const float forceLimitW = 4.0f * ws.kSusp * rangeW;
+                            const JPH::Vec3 motorForce = (sc != nullptr)
+                                ? sc->GetTotalLambdaMotorTranslation() / dtLog : JPH::Vec3::sZero();
+                            LOG_INFO("docs §122.15: droop (%s) w=%zu z=%+.3fm [droop<=%+.3f compress>=%-.3f] "
+                                     "atDroopLimit=%d | motorFz=%.0fN limit=%.0fN atForceLimit=%d",
+                                label, w, (double) zNow, (double) droopHeadroomW, (double) -compressHeadroomW,
+                                (zNow > droopHeadroomW - 0.005f) ? 1 : 0,
+                                (double) motorForce.GetZ(), (double) forceLimitW,
+                                (std::fabs(motorForce.GetZ()) > 0.95f * forceLimitW) ? 1 : 0);
+                        }
                     }
                     // gear is POST-shift while rpm is PRE-shift - that ordering is what the
                     // gearbox already does and what the recovered log shows; printing a matched
@@ -4937,6 +6531,27 @@ namespace kraken::fix::joltshadow {
                         (double) vehicle->m_realThrottle, (double) vehicle->m_engineRpm,
                         (double) vehicle->m_averageWheelAVel,
                         vehicle->m_bHandBrake ? 1 : 0, vehicle->m_bAutoBrake ? 1 : 0);
+                    // docs §67: bullet-hit investigation - PhysicObj::SetCorrectEnabledCellsCounter
+                    // (called from both DisablePhysics and SetPositionSelf, disassembled by hand -
+                    // no PDB match needed, both are named/offset-confirmed in the recovered
+                    // PhysicObj.hpp) only re-registers this object into the landscape's collision-
+                    // cell grid (m3d::Landscape::GetCollisionCellItem, walking its bounding box)
+                    // when m_physicState has bit0 CLEAR and bit1 SET - otherwise it returns
+                    // immediately, doing nothing. DisablePhysics clears bit0 every frame (that part
+                    // is satisfied) but never touches bit1 - if bit1 is normally maintained by the
+                    // native per-step ODE update this DisablePhysics'd vehicle no longer runs, its
+                    // cell registration could go stale as the Jolt-driven position moves it away
+                    // from the cells it was last registered in - and if the weapon hit-trace
+                    // (ShellTraceLineCallback, queries this same cell grid, not raw ODE space)
+                    // walks cells to find candidates, a vehicle stuck registered in its OLD cells
+                    // would be invisible to a trace aimed at its CURRENT position. Logged, not
+                    // assumed - the live value of bit1 is unknown until this line has run.
+                    LOG_INFO("docs §67.3: cell reg (%s) m_physicState=0x%x (bit0=%d bit1=%d) "
+                             "m_enabledCellsCount=%d m_bIsUpdatingByODE=%d m_bBodyEnabledLastFrame=%d",
+                        label, (unsigned) vehicle->m_physicState,
+                        vehicle->m_physicState & 1, (vehicle->m_physicState >> 1) & 1,
+                        vehicle->m_enabledCellsCount, vehicle->m_bIsUpdatingByODE ? 1 : 0,
+                        vehicle->m_bBodyEnabledLastFrame ? 1 : 0);
                     // docs §101: the ported §94 assists. downForce is printed both absolutely and
                     // as a fraction of the vehicle's own weight, because "60% of its weight at
                     // 15 m/s" is the claim that made this layer worth porting and it should be
@@ -4983,6 +6598,15 @@ namespace kraken::fix::joltshadow {
                         label, (int) state.VarSoilDrag(),
                         (double) state.wmSoilDragN, (double) (100.0f * state.wmSoilDragN / wN),
                         (double) state.wmSoilResistance);
+                    // docs §122: the ported ODE body damping. linear/angular are read BACK off the
+                    // chassis, so the off arm prints the as-built 0.05/0.00 rather than the values
+                    // it would have written - "the lever is off" and "the lever wrote zeros" are
+                    // different states and have to look different in the log. Reference values are
+                    // printed alongside so a wrong ini value is visible without opening it.
+                    LOG_INFO("docs §122: body damping (%s) on=%d bodies=%u linear=%.3f angular=%.3f "
+                             "(ODE world: 0.100/0.300)",
+                        label, (int) state.VarBodyDamping(), state.wmDampBodies,
+                        (double) state.wmDampLinear, (double) state.wmDampAngular);
                 }
                 // docs §68 (Этап 1, шаг 6): steering, per wheel. Emitted for UNSTEERED wheels too,
                 // and that is the point: their cap prints as FLT_MAX, which is how the log proves
@@ -5082,6 +6706,9 @@ namespace kraken::fix::joltshadow {
                 else if (k == "engine_brake_scale") out.engineBrakeScale = asF();
                 else if (k == "governor")      out.governor     = asU();
                 else if (k == "soildrag")      out.soildrag     = asU();
+                else if (k == "body_damping")  out.bodyDamping  = asU();
+                else if (k == "damping_linear")  out.dampingLinear  = asF();
+                else if (k == "damping_angular") out.dampingAngular = asF();
                 else if (k == "steer_hz")      out.steerHz      = asF();
                 else if (k == "steer_damping") out.steerDamping = asF();
                 else if (k == "isolate")       out.isolate      = asU();
@@ -5207,6 +6834,32 @@ namespace kraken::fix::joltshadow {
         }
 
         LOG_INFO("Stage 3: selected %u AI vehicle(s) for Jolt shadow (requested %u)", found, aiCount);
+    }
+
+    // Stage 3 crash fix (docs/stage3-plan.md §2 Шаг 5): g_aiTargets is "fixed at selection time"
+    // (see its own comment) and dereferenced every frame via UpdateOneVehiclePreStep/BuildShadow -
+    // unlike g_vehicleMirrors, which re-scans fresh every frame specifically so a vehicle
+    // destroyed since last frame is dropped instead of dereferenced (see VehicleMirrorEntry's own
+    // comment: "never dereferences a stale Vehicle* without a fresh scan confirming it's still
+    // live"). That protection was never applied here. Confirmed live via a crash: an AI vehicle
+    // destroyed mid-session (combat - the immediately-preceding log is a schwarz/economy
+    // recalculation, and two AI shadows in a row logged "a wheel present at build time is now
+    // gone/replaced" right before the fault) left a dangling g_aiTargets entry; BuildShadow then
+    // read through it and hit an access violation at address 0. One fresh scan per frame, same
+    // enumeration MirrorOtherVehicles already uses - O(liveObjects) + O(aiCount) std::find checks,
+    // cheap next to the per-frame cost MirrorOtherVehicles already pays scanning the same list.
+    static std::vector<hta::ai::Vehicle*> GetCurrentlyLiveVehicles() {
+        std::vector<hta::ai::Vehicle*> live;
+        hta::ai::CServer* server = hta::ai::CServer::Instance();
+        if (server == nullptr || server->m_pObjects == nullptr)
+            return live;
+        hta::ai::ObjContainer* objects = server->m_pObjects;
+        for (hta::ai::ObjContainer::iterator it = objects->updatingBegin(); it != objects->updatingEnd(); ++it) {
+            hta::ai::Vehicle* vehicle = (*it)->cast<hta::ai::Vehicle>();
+            if (vehicle != nullptr)
+                live.push_back(vehicle);
+        }
+        return live;
     }
 
     // "Other vehicles" mirroring (docs §22.6/§22.11) - see g_vehicleMirrors' own comment above
@@ -5957,6 +7610,10 @@ namespace kraken::fix::joltshadow {
     // after UpdateShadow in this file, but needs calling from UpdateShadow's Pass 2 below,
     // right after the one place PhysicsSystem::Update() actually runs for this frame.
     static void DrainPendingPushbacks();
+    // docs §57: same forward-declaration reason as DrainPendingPushbacks above.
+    static void DrainPendingBreaks();
+    // docs §61: same forward-declaration reason as DrainPendingPushbacks above.
+    static void DrainPendingEnables();
 
     // Three-pass per-frame update (docs/jolt-integration-techanalysis.md §18.1/§18.4): the
     // single JPH::PhysicsSystem is shared by every shadow vehicle, so it must be stepped exactly
@@ -5988,10 +7645,15 @@ namespace kraken::fix::joltshadow {
         hta::ai::Vehicle* playerVehicle = GetPlayerVehicle();
 
         // Stage 3 requires player_only=0 - player_only=1 (the default) means "only the
-        // player, full stop", so ai_count is deliberately inert unless that's turned off too.
+        // player, full stop", so `ai` is deliberately inert unless that's turned off too.
         // Applying (vs. shadow-only logging) additionally still requires apply=1, same as the
-        // player path.
-        const uint32_t aiCount = config.jolt_player_only.value == 0 ? config.jolt_ai_count.value : 0;
+        // player path. `ai` is a plain on/off switch (docs/stage3-plan.md: "все боты на Jolt
+        // либо все на ODE", no partial counts) - on means every AI vehicle up to the engine's
+        // own hard cap (kMaxAiShadowsPerFrame), off means none; InitAiShadowsIfNeeded's own
+        // first-N scan then decides which ones actually get a slot if a level ever exceeds that
+        // cap (never observed - busiest measured save had 74 of 128 slots).
+        const uint32_t aiCount = (config.jolt_player_only.value == 0 && config.jolt_ai.value != 0)
+            ? static_cast<uint32_t>(kMaxAiShadowsPerFrame) : 0;
         if (aiCount > 0)
             InitAiShadowsIfNeeded(playerVehicle, aiCount);
 
@@ -6030,8 +7692,20 @@ namespace kraken::fix::joltshadow {
                                                      g_variantLabels[i].c_str(), slot, elapsedTime);
         }
 
+        // See GetCurrentlyLiveVehicles' own comment: g_aiTargets can hold a pointer to a vehicle
+        // destroyed since the last rescan (InitAiShadowsIfNeeded only rescans on a player vehicle
+        // change, not on AI death) - confirmed to crash BuildShadow when dereferenced. Checked
+        // once per frame here, not inside InitAiShadowsIfNeeded, because the whole point is
+        // catching a death that happens BETWEEN rescans.
+        const std::vector<hta::ai::Vehicle*> aiTargetsLiveNow =
+            aiShadowCount > 0 ? GetCurrentlyLiveVehicles() : std::vector<hta::ai::Vehicle*>();
+
         for (size_t i = 0; i < aiShadowCount; ++i) {
             std::snprintf(aiLabels[i], sizeof(aiLabels[i]), "ai%zu", i);
+            if (std::find(aiTargetsLiveNow.begin(), aiTargetsLiveNow.end(), g_aiTargets[i]) == aiTargetsLiveNow.end()) {
+                aiLive[i] = false; // destroyed since selection - do not touch g_aiTargets[i] this frame
+                continue;
+            }
             // docs §37 item 3: player is always GroupID 0 (above); AI shadow slot i gets i+1 -
             // a stable, distinct GroupID per vehicle so GetWheelGroupFilter's shared table
             // only ever suppresses a vehicle's own chassis-vs-own-proxy pairs, never cross-
@@ -6060,6 +7734,10 @@ namespace kraken::fix::joltshadow {
             // finished; back to single-threaded, safe to call into ODE (PhysicObj::AddImpulse
             // etc.) again.
             DrainPendingPushbacks();
+            // docs §57: same safe window as DrainPendingPushbacks immediately above.
+            DrainPendingBreaks();
+            // docs §61: same safe window as DrainPendingPushbacks immediately above.
+            DrainPendingEnables();
             // docs §54.4 (шаг -1F): same safe window - the step has fully returned, no worker job
             // can still hold a constraint, and we are single-threaded again.
             DrainPendingJoltDestroys();
@@ -6161,6 +7839,26 @@ namespace kraken::fix::joltshadow {
         } else {
             scene->StepScene(elapsedTime);
         }
+
+        // docs §46e (task #59): same ODE chassis coordinate line fix::odediag logs when Jolt is
+        // OFF (see source/fix/odediag.cpp - that module owns this call site and can't run at
+        // the same time this hook does, since only one of them is ever installed here). Logged
+        // here too, gated on [ode_diag]enabled, so the SAME line format is available for a
+        // jolt=1 launch - the two can be diffed directly across two separate launches instead of
+        // comparing "Shadow divergence"'s ode com (a different reference point, see its own
+        // comment) against a jolt=0 run's numbers.
+        if (kraken::Config::Instance().ode_diag.value != 0) {
+            hta::ai::Vehicle* playerVehicle = GetPlayerVehicle();
+            if (playerVehicle != nullptr) {
+                const hta::CVector odePivot = playerVehicle->GetPosition();
+                const hta::CVector odeCom   = playerVehicle->GetMassCenterPosition();
+                LOG_INFO("docs §46e: ODE chassis (player, jolt=1) GetPosition=(%.2f,%.2f,%.2f) "
+                    "GetMassCenterPosition=(%.2f,%.2f,%.2f)",
+                    (double) odePivot.x, (double) odePivot.y, (double) odePivot.z,
+                    (double) odeCom.x, (double) odeCom.y, (double) odeCom.z);
+            }
+        }
+
         UpdateShadow(elapsedTime);
     }
 
@@ -6196,7 +7894,7 @@ namespace kraken::fix::joltshadow {
         // onto the ground at the destination pose (also zeroes the per-wheel rates, matching the
         // body velocity we just zeroed).
         if (g_playerShadow.wheelModelMode)
-            InitWheelModelSuspension(physics, g_playerShadow, pos, rot);
+            InitWheelModelSuspension(physics, g_playerShadow, pos, rot, "player");
         return true;
     }
 
@@ -6215,6 +7913,34 @@ namespace kraken::fix::joltshadow {
     using CalcDamageToVehiclesFn = void(__fastcall*)(hta::ai::Vehicle*, hta::ai::Vehicle*, void*, float*, void*, void*);
     static uint8_t s_calcDamageTrampoline[16];
     static CalcDamageToVehiclesFn Real_CalcDamageToVehicles = nullptr;
+
+    // docs §126: the "O" hotkey recovery ("выбраться из сложного места" - user-reported live,
+    // wheels visibly sunk under the terrain, save-load-triggered Ural01 hang under
+    // wm4_contact_constraint=1).
+    //
+    // FIRST ATTEMPT (reverted after a live crash) hooked the PUBLIC Vehicle::GetOutOfDifficultPlace
+    // (VA 0x005CBB00) - wrong on two counts, both found only after the crash by actually
+    // disassembling it (tools/lora-style capstone check against the deployed hta.exe, the same
+    // discipline CalcDamageToVehiclesHook's own comment already documents and this first attempt
+    // skipped): (1) that function is a single 7-byte `mov byte ptr [ecx+0x4cc],1 / ret` - just
+    // sets Vehicle::m_bMustGetOutOfDifficultPlace (Vehicle.hpp:226) - a 5-byte trampoline copy
+    // sliced that one instruction in half, corrupting the trampoline buffer; every call through
+    // it executed garbage bytes, observed live as an 0xC0000005 write AV inside kraken.dll.
+    // (2) even with a correct trampoline it would have been a no-op fix: the flag-setter does
+    // not reposition anything itself - the real work happens later, off Vehicle::Update()'s own
+    // poll of that flag.
+    //
+    // Hooking the ACTUAL work function instead: Vehicle::_GetOutOfDifficlultPlaceInternal
+    // (VA 0x005E4740, native's own typo, see Vehicle.cpp:251 - "TODO: must be __usercall" is the
+    // native declaration's own uncertainty flag, NOT confirmed by disassembly here: the real
+    // prologue is a plain `sub esp,0xb8 / push esi / push 0 / mov esi,ecx / call ...` - `this`
+    // arrives in ECX and nothing else is read before it's saved off, i.e. plain __thiscall(this),
+    // same ECX-first ABI as __fastcall with an unused EDX slot). Disassembly-verified safe
+    // trampoline boundary is 6 bytes here (sub esp,0xb8 is a single 6-byte instruction, next
+    // instruction starts cleanly at +6) - NOT 5, unlike CalcDamageToVehiclesHook's function.
+    using GetOutOfDifficultPlaceInternalFn = void(__fastcall*)(hta::ai::Vehicle*, void*);
+    static uint8_t s_getOutOfDifficultPlaceTrampoline[16];
+    static GetOutOfDifficultPlaceInternalFn Real_GetOutOfDifficultPlaceInternal = nullptr;
 
     // docs §23.11: is `v` a vehicle whose ODE body is CURRENTLY disabled+overwritten every
     // frame by ApplyJoltToVehicle (i.e. a real dynamic body only inside Jolt, with no ODE-side
@@ -6303,16 +8029,28 @@ namespace kraken::fix::joltshadow {
     // docs §23.11: first detector tried - reuses the already-installed CalcDamageToVehiclesHook
     // (docs §23.4), which already fires on every real vehicle-vs-vehicle ODE collision and
     // already correlates (v1, v2) with a damage-relevant dSpeed. Kept as a cheap, best-effort
-    // extra layer, but empirically (live testing this session, apply=1, several minutes across
-    // both the natural AI pile-up and a dedicated ram_test approach) this hook NEVER fired with
-    // the player as a party while apply=1 was active, despite firing readily under apply=0 -
-    // i.e. whatever dispatches CollideVehiclePartAndVehiclePart appears to skip a body once
-    // ApplyJoltToVehicle's per-frame DisablePhysics() takes effect, unlike ai::NearCallback
-    // (confirmed in §22.3 to NOT respect body-enabled state). Not conclusively root-caused -
-    // would need more disassembly of the dispatch path than this pass budgeted - so this stays
-    // installed as a freebie, but VehiclePushbackContactListener below (registered directly on
-    // Jolt's own PhysicsSystem, the mechanism already proven to fire via "other vehicles push
-    // the player") is the detector actually relied on.
+    // extra layer, VehiclePushbackContactListener below (registered directly on Jolt's own
+    // PhysicsSystem) is the detector actually relied on as primary.
+    //
+    // Earlier live testing (apply=1, Stage 3 shape: the OTHER party also Jolt-shadowed, i.e.
+    // BOTH sides' ODE bodies disabled via DisablePhysics()) found this hook never fired with the
+    // player as a party, and speculated the dispatch path skips a disabled body outright. Stage
+    // 2's own open-item verification (docs/stage2-plan.md "ApplyRamPushback"; player_only=1,
+    // ai_count=0, so the other party is a plain kinematic mirror whose OWN ODE body stays live/
+    // AI-driven - only the player's side is disabled) found the opposite: it fires readily (57
+    // player-party calls in a 60s busy-save run, dSpeed up to 10.08, matching
+    // VehiclePushbackContactListener's own closingSpeed for the same contacts). So the dispatch
+    // path doesn't skip a disabled body outright - it needs the OTHER geom's owning body to still
+    // be ODE-live for CollideVehiclePartAndVehiclePart to run at all; two Jolt-disabled bodies
+    // colliding (Stage 3 player-vs-AI-shadow) never reaches it, one Jolt-disabled body against a
+    // still-ODE-live one (Stage 2 player-vs-mirror) does. Practical effect: for the Stage 2 shape,
+    // both detectors are live for the same contact and can each independently call
+    // ApplyRamPushback in the same frame (this hook synchronously inside ODE's scene->StepScene(),
+    // the listener queued and drained later that frame from StepPhysicsProfiled) - observed
+    // harmless in that same 60s run (0 non-finite, sane impulse magnitudes throughout) since each
+    // applied impulse reduces the closing speed the other detector would need to re-trigger, but
+    // not verified deduplicated - a genuinely simultaneous double-impulse on the same contact in
+    // the same frame remains possible and unmeasured.
     static void __fastcall CalcDamageToVehiclesHook(hta::ai::Vehicle* v1, hta::ai::Vehicle* v2,
             void* contacts, float* dSpeed, void* damageInfo, void* contactPos) {
         Real_CalcDamageToVehicles(v1, v2, contacts, dSpeed, damageInfo, contactPos);
@@ -6331,6 +8069,23 @@ namespace kraken::fix::joltshadow {
         if (v1JoltDriven == v2JoltDriven)
             return; // both or neither Jolt-driven - already handled natively either way, see docs §23.11
         ApplyRamPushback(v1JoltDriven ? v1 : v2, v1JoltDriven ? v2 : v1, *dSpeed);
+    }
+
+    // docs §126: call through first (unconditionally - preserves the ODE-side effects the
+    // stock recovery already has, e.g. m_bWasStuck/m_prevPosToCheckStuck bookkeeping this file
+    // knows nothing about and has no business touching), THEN re-seat the Jolt body at wherever
+    // the native call just decided was safe. Player-only and Jolt-authoritative-only, same
+    // scope TeleportPlayerShadow itself is written for (it unconditionally manipulates
+    // g_playerShadow - calling it for an AI vehicle would silently move the PLAYER's shadow
+    // instead of the one the game actually meant).
+    static void __fastcall GetOutOfDifficultPlaceInternalHook(hta::ai::Vehicle* v, void* /*edx, unused*/) {
+        Real_GetOutOfDifficultPlaceInternal(v, nullptr);
+        if (v != nullptr && v == GetPlayerVehicle() && IsVehicleJoltAuthoritative(v)) {
+            const bool moved = kraken::fix::joltshadow::TeleportPlayerShadow(v->GetPosition(), v->GetRotation());
+            LOG_INFO("docs §126: O-key recovery (_GetOutOfDifficlultPlaceInternal) re-seated Jolt "
+                     "shadow body=%d at pos=(%.2f,%.2f,%.2f)", (int) moved,
+                (double) v->GetPosition().x, (double) v->GetPosition().y, (double) v->GetPosition().z);
+        }
     }
 
     // docs §23.11: the real detector. Registered directly on Jolt's own PhysicsSystem
@@ -6359,17 +8114,63 @@ namespace kraken::fix::joltshadow {
     static std::mutex                   g_pendingPushbackMutex;
     static std::vector<PendingPushback> g_pendingPushbacks;
 
+    // docs §57 (goal: "деревья падали при таране как с ODE"): the native ram-damage/break
+    // dispatch (ai::NearCallback -> ... -> ai::CollideVehicleAndBreakableObject,
+    // docs §56) was confirmed live (a hook, zero firings across two harness ram tests that both
+    // ended in the vehicle wedged against a tree) to never fire for the Jolt-driven vehicle - the
+    // exact same symptom docs §23.11 already found and worked around for ram PUSHBACK via this
+    // same ContactListener instead of trusting the native dispatch. Same fix shape here: queue on
+    // Jolt's worker thread (no ODE/game calls there, see VehiclePushbackContactListener's own
+    // comment on why), apply on the main thread once PhysicsSystem::Update() has returned.
+    struct PendingBreak {
+        hta::ai::BreakableObject* breakable    = nullptr;
+        float                     impactEnergy = 0.0f;
+    };
+    static std::mutex                g_pendingBreakMutex;
+    static std::vector<PendingBreak> g_pendingBreaks;
+
+    // docs §61 (goal: "сделай чтобы в jolt деревья падали как в ode"): a SEPARATE queue from
+    // PendingBreak above - docs §60.3 found (live, via a jolt-independent SetState hook) that a
+    // non-destroyable prop (every tree, docs §59.2's XML table) never goes through
+    // CreateBrokenObj/REMOVED at all. The native CollideVehicleAndBreakableObject
+    // (docs §60.5's disasm_typed trace) calls SetState(ENABLED) on it instead, on ANY real
+    // contact - no impactEnergy/criticalHitEnergy gate whatsoever, that comparison only ever
+    // changes behavior for destroyable objects. ENABLED is what creates the real ODE joint
+    // (SetJointAnchor).
+    //
+    // docs §64: extended to carry an impulse too - §63 found live that SetJointAnchor alone
+    // leaves the tree perfectly rigid (a real 2.3s player ram: rotation byte-identical from
+    // first sample to last). A tree is a Jolt STATIC body, never pushed by Jolt's own solver by
+    // definition - under pure ODE the vehicle and tree share one simulation and continuous
+    // contact resolution pushes the tree automatically every step; under Jolt nothing was
+    // injecting the vehicle's actual momentum into the tree's now-real ODE body. Same problem
+    // ApplyRamPushback already solved for vehicle-vs-vehicle - same fix shape here
+    // (AddImpulseAtPos), just every step instead of once (jolt_tree_push_scale's own comment).
+    struct PendingTreeContact {
+        hta::ai::BreakableObject* breakable = nullptr;
+        hta::CVector               impulse;
+        hta::CVector               worldPos;
+    };
+    static std::mutex                      g_pendingEnableMutex;
+    static std::vector<PendingTreeContact> g_pendingEnables;
+
     class VehiclePushbackContactListener final : public JPH::ContactListener {
     public:
         void OnContactAdded(const JPH::Body& inBody1, const JPH::Body& inBody2,
                 const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings) override {
             HarvestWheelContact(inBody1, inBody2, inManifold, ioSettings);
             HandleContact(inBody1, inBody2, inManifold);
+            HandleBreakableContact(inBody1, inBody2, inManifold);
+            HandleTreeEnableContact(inBody1, inBody2, inManifold);
         }
         void OnContactPersisted(const JPH::Body& inBody1, const JPH::Body& inBody2,
                 const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings) override {
             HarvestWheelContact(inBody1, inBody2, inManifold, ioSettings);
             HandleContact(inBody1, inBody2, inManifold);
+            // docs §63: HandleBreakableContact (destroyable/REMOVED path) deliberately stays
+            // Added-only, unchanged - see its own comment. Only the tree/ENABLE path needs the
+            // persisted-edge cadence too.
+            HandleTreeEnableContact(inBody1, inBody2, inManifold);
         }
 
     private:
@@ -6386,8 +8187,74 @@ namespace kraken::fix::joltshadow {
                 const JPH::ContactManifold& inManifold, JPH::ContactSettings& ioSettings) {
             const bool w1 = IsWheelUserData(inBody1.GetUserData());
             const bool w2 = IsWheelUserData(inBody2.GetUserData());
-            if (w1 == w2)
-                return;   // neither is a wheel, or (impossible by group filter) both are
+            if (w1 == w2) {
+                // docs §129 (temporary, read-only, not yet live-confirmed): §56/§124 Ural01
+                // cold-pin hang - new hypothesis. This branch's own comment assumed "both are
+                // wheels" was impossible "by group filter" - but JPH::GroupFilterTable only
+                // suppresses collision between bodies sharing the SAME CollisionGroup::GroupID
+                // (:171-176), and this project's vehicle-rebuild teardown is deliberately "leak
+                // forever" (a previous vehicle instance's wheel bodies are never removed from
+                // the PhysicsSystem, see the rebuild/teardown comment). A NEW vehicle's wheel
+                // landing on an OLD leaked wheel from a DIFFERENT instance (different GroupID)
+                // would read w1==w2==true right here, get silently discarded BEFORE the tyre
+                // sensor flag a few lines below is ever set, and Jolt's own un-flagged solver
+                // would then treat it as a perfectly normal solid contact - which would explain
+                // both the confirmed genuine static equilibrium (something really is holding the
+                // vehicle up) and the confirmed permanently-empty harvest buffer (this function
+                // returns before ever writing to it) at the same time, without contradicting any
+                // of the nine previously ruled-out hypotheses. Logging (throttled, atomic
+                // counter - this runs on Jolt worker threads, same as the already-proven-safe
+                // §124.12 ConstraintManager trace) whether this branch is actually reached with
+                // BOTH sides wheel-tagged during a live stuck episode, and if so which two wheel
+                // slots/indices collided - the single decisive live check before touching any
+                // behavior here.
+                if (w1 && w2) {
+                    static std::atomic<uint32_t> sBothWheelDiscardCount{0};
+                    const uint32_t n = sBothWheelDiscardCount.fetch_add(1, std::memory_order_relaxed);
+                    if ((n & 0x3Fu) == 0) {
+                        const uint64_t ud1 = inBody1.GetUserData();
+                        const uint64_t ud2 = inBody2.GetUserData();
+                        LOG_INFO("docs §129: wheel-vs-wheel contact discarded (n=%u) "
+                                 "slot1=%u idx1=%u slot2=%u idx2=%u",
+                            n, WheelUserDataSlot(ud1), WheelUserDataIndex(ud1),
+                            WheelUserDataSlot(ud2), WheelUserDataIndex(ud2));
+                    }
+                }
+                // docs §130 (temporary, read-only): §129 came back with ZERO hits during a clean
+                // live repro of the stuck case (docs §129's own hypothesis is REFUTED - see
+                // jolt-integration-techanalysis.md). SetupVelocityConstraint (below in this file)
+                // correctly zeroes every slot when !mHasContact, and OnStep is confirmed to call
+                // ClearContact() every step the harvest is empty - so if harvest really is empty
+                // every step, WheelContactConstraint's own normal-axis spring cannot be what's
+                // holding the vehicle up. Next-most-likely mechanism: the CHASSIS itself (not a
+                // wheel at all) is resting directly on terrain/an obstacle - neither side wheel-
+                // tagged, so HarvestWheelContact's caller never even considers it "a wheel
+                // problem", yet it would produce exactly the same observable symptom (genuine
+                // static equilibrium, zero WHEEL harvest records) if the wheels never reach the
+                // ground because the chassis geometry touches first (e.g. a bad landing
+                // orientation on vehicle switch). Under this diagnostic's own test config
+                // ([jolt_harness] player_only=1 ai=0) there is exactly one dynamic body group in
+                // the whole world (the player vehicle's own chassis+wheels) - so "neither side is
+                // wheel-tagged AND at least one side is Dynamic" can only be that same vehicle's
+                // chassis compound touching something. Reading GetMotionType()/GetUserData() only
+                // (raw values already read safely elsewhere in this exact file, e.g. HandleContact
+                // a few lines below) - NOT calling GetPlayerVehicle() or any other game/ODE
+                // accessor from this worker thread, which this file's own §23.11 comment
+                // documents as unsafe.
+                if (!w1 && !w2 && (inBody1.GetMotionType() == JPH::EMotionType::Dynamic ||
+                                    inBody2.GetMotionType() == JPH::EMotionType::Dynamic)) {
+                    static std::atomic<uint32_t> sChassisContactCount{0};
+                    const uint32_t n = sChassisContactCount.fetch_add(1, std::memory_order_relaxed);
+                    if ((n & 0xFFu) == 0) {
+                        LOG_INFO("docs §130: non-wheel dynamic contact (n=%u) "
+                                 "body1=(motion=%d ud=%llx) body2=(motion=%d ud=%llx) pen=%.4f",
+                            n, (int) inBody1.GetMotionType(), (unsigned long long) inBody1.GetUserData(),
+                            (int) inBody2.GetMotionType(), (unsigned long long) inBody2.GetUserData(),
+                            (double) inManifold.mPenetrationDepth);
+                    }
+                }
+                return;   // neither is a wheel, or both are (see docs §129/§130 above)
+            }
 
             const JPH::Body&  wheel = w1 ? inBody1 : inBody2;
             const uint64_t    ud    = wheel.GetUserData();
@@ -6431,6 +8298,9 @@ namespace kraken::fix::joltshadow {
                 buf.rec[at].normal = normal;
                 buf.rec[at].depth  = inManifold.mPenetrationDepth;
                 buf.rec[at].sub    = sub;
+                // docs §124 step 3: the non-wheel side of this pair - whatever the wheel is
+                // actually touching. w1/w2 already established exactly one side is the wheel.
+                buf.rec[at].other  = (w1 ? inBody2 : inBody1).GetID();
             }
         }
 
@@ -6472,6 +8342,163 @@ namespace kraken::fix::joltshadow {
             std::lock_guard<std::mutex> lock(g_pendingPushbackMutex);
             g_pendingPushbacks.push_back({joltVehicle, mirroredVehicle, closingSpeed});
         }
+
+        // docs §57: the Jolt-side counterpart to HandleContact above, for a Jolt-DYNAMIC vehicle
+        // chassis ramming a docs §55/§57 "resting prop" body (EMotionType::Static, UserData
+        // tagged with its real hta::ai::BreakableObject* by jolt.cpp's WalkSpaceForStaticExport -
+        // see CollectBreakableObjectOwners there). OnContactAdded only (rising edge) - a break
+        // should fire once, at the moment of impact, not every step the vehicle keeps resting
+        // against what's left of the prop. docs §63: handles ONLY the destroyable (energy-gated,
+        // REMOVED) path now - the non-destroyable path moved to HandleTreeEnableContact below,
+        // which needs a different (every-step) cadence and has no "don't re-process" concern
+        // since SetState(ENABLED) is idempotent. Deliberately NOT touching this function's own
+        // cadence or behavior for the destroyable case - it's proven working, docs §57/§58.
+        static void HandleBreakableContact(const JPH::Body& inBody1, const JPH::Body& inBody2,
+                const JPH::ContactManifold& inManifold) {
+            const bool body1Dynamic = inBody1.GetMotionType() == JPH::EMotionType::Dynamic;
+            const bool body2Dynamic = inBody2.GetMotionType() == JPH::EMotionType::Dynamic;
+            if (body1Dynamic == body2Dynamic)
+                return;
+            const JPH::Body& dynamicBody = body1Dynamic ? inBody1 : inBody2;
+            const JPH::Body& propBody    = body1Dynamic ? inBody2 : inBody1;
+            if (propBody.GetMotionType() != JPH::EMotionType::Static)
+                return; // the non-dynamic side must specifically be a docs §55 static prop, not a kinematic mirror (that's HandleContact's job)
+
+            // Wheels ramming a prop are excluded (matches HandleContact's own wheel exclusion,
+            // and the native path's own bias toward chassis hits, docs §56.2's
+            // CollideVehicleAndBreakableObject reading - a wheel CAN reach it there via
+            // Wheel::GetVehicle, but keeping this to chassis-only for the first working version
+            // is the conservative choice: a wheel grazing a sapling shouldn't fell it).
+            if (IsWheelUserData(dynamicBody.GetUserData()))
+                return;
+            const uint64_t propTag = propBody.GetUserData();
+            if (propTag == 0)
+                return; // an untagged static body - plain terrain/road/rock/other obstacle, not a resolved breakable prop (docs §57's ResolveBreakableOwner didn't find an owner for it)
+            hta::ai::Vehicle* vehicle = reinterpret_cast<hta::ai::Vehicle*>(dynamicBody.GetUserData());
+            if (vehicle == nullptr)
+                return;
+            hta::ai::BreakableObject* breakable = reinterpret_cast<hta::ai::BreakableObject*>(propTag);
+            if (!LooksLikeLiveBreakableObject(breakable))
+                return; // docs §66: stale export-time tag into memory since invalidated - see the helper's own comment
+            if (!breakable->IsDestroyable())
+                return; // docs §63: handled by HandleTreeEnableContact instead
+
+            JPH::Vec3 normal = inManifold.mWorldSpaceNormal;
+            if (!body1Dynamic)
+                normal = -normal;
+
+            // docs §58 (user: "калибруй"): point velocity (linear + angular contribution AT
+            // the contact point), not just the chassis COM's linear velocity - matches native's
+            // dBodyGetPointVel exactly (docs §56.2's CollideVehicleAndBreakableObject, confirmed
+            // live via tools/lora disasm_typed). mBaseOffset + mRelativeContactPointsOn1/2 is the
+            // same world-space-contact-point pattern HarvestWheelContact above already uses.
+            const auto& contactPts = body1Dynamic ? inManifold.mRelativeContactPointsOn1
+                                                    : inManifold.mRelativeContactPointsOn2;
+            if (contactPts.empty())
+                return;
+            const JPH::RVec3 contactPoint = inManifold.mBaseOffset + contactPts[0];
+            const float closingSpeed = dynamicBody.GetPointVelocity(contactPoint).Dot(normal);
+            if (closingSpeed <= 0.0f)
+                return; // separating or tangential graze, not a ram
+
+            const JPH::MotionProperties* motionProps = dynamicBody.GetMotionProperties();
+            if (motionProps == nullptr)
+                return;
+            const float invMass = motionProps->GetInverseMass();
+            if (invMass <= 0.0f)
+                return; // infinite mass (shouldn't happen for a Dynamic body) - no finite energy to compute
+            const float mass = 1.0f / invMass;
+            // docs §58: mass * closingSpeed^2, NO 0.5 factor - confirmed via tools/lora
+            // disasm_typed to be the exact native break-gate in
+            // ai::CollideVehicleAndBreakableObject (VA 0x492a00, source line 125): it compares
+            // vehicle->GetMass() [vtable+0x110, ai::PhysicObj::GetMass, confirmed against PE
+            // vtable bytes via vft_method] * closingSpeed^2 directly against
+            // BreakableObject::GetCriticalHitEnergy() ([edi+0x148]) - no 1/2 anywhere in that
+            // comparison. (There IS a reduced-mass * 0.5-if-destroyable formula nearby in the
+            // same function, but it feeds ai::Obj::InflictDamage's DamageInfo - HP damage - a
+            // few lines later, not this break decision; docs §57's code comment conflated the
+            // two.) jolt_break_energy_scale now sits on top of this verified base formula
+            // instead of an arbitrary guess.
+            const float impactEnergy = mass * closingSpeed * closingSpeed
+                * kraken::Config::Instance().jolt_break_energy_scale.value;
+
+            std::lock_guard<std::mutex> lock(g_pendingBreakMutex);
+            g_pendingBreaks.push_back({breakable, impactEnergy});
+        }
+
+        // docs §63 (goal: "деревья падали как в ODE"): split out of HandleBreakableContact above
+        // specifically so this can run on EVERY step contact persists (wired into
+        // OnContactPersisted too, below - not just OnContactAdded), not just the rising edge.
+        // §62 found the joint force-threshold "break" system (physic.cpp) is dead code - zero
+        // callers on any of its 5 setter functions anywhere in the binary - so nothing ever
+        // arms a joint to snap. The only way left to confirm a tree is actually toppling (versus
+        // just getting anchored and sitting there) is watching breakablediag.cpp's §63 pos/rot
+        // log change across several samples of sustained contact - which needs this to fire every
+        // step, not once. Calling SetState(ENABLED) repeatedly is free: its own same-state
+        // early-exit already got exercised safely 18 times in a row under pure ODE (docs §60.2).
+        static void HandleTreeEnableContact(const JPH::Body& inBody1, const JPH::Body& inBody2,
+                const JPH::ContactManifold& inManifold) {
+            const bool body1Dynamic = inBody1.GetMotionType() == JPH::EMotionType::Dynamic;
+            const bool body2Dynamic = inBody2.GetMotionType() == JPH::EMotionType::Dynamic;
+            if (body1Dynamic == body2Dynamic)
+                return;
+            const JPH::Body& dynamicBody = body1Dynamic ? inBody1 : inBody2;
+            const JPH::Body& propBody    = body1Dynamic ? inBody2 : inBody1;
+            if (propBody.GetMotionType() != JPH::EMotionType::Static)
+                return;
+            if (IsWheelUserData(dynamicBody.GetUserData()))
+                return; // same conservative chassis-only bias as HandleBreakableContact
+            const uint64_t propTag = propBody.GetUserData();
+            if (propTag == 0)
+                return;
+            hta::ai::Vehicle* vehicle = reinterpret_cast<hta::ai::Vehicle*>(dynamicBody.GetUserData());
+            if (vehicle == nullptr)
+                return;
+            hta::ai::BreakableObject* breakable = reinterpret_cast<hta::ai::BreakableObject*>(propTag);
+            if (!LooksLikeLiveBreakableObject(breakable))
+                return; // docs §66: stale export-time tag into memory since invalidated - see the helper's own comment
+            if (breakable->IsDestroyable())
+                return; // handled by HandleBreakableContact instead
+
+            // docs §64: same normal/contactPoint/closingSpeed pattern as HandleBreakableContact's
+            // own §58 comment (point velocity at the actual contact point, not COM) - the impulse
+            // needs the same real contact geometry the (now-removed-here) energy calc used to.
+            JPH::Vec3 normal = inManifold.mWorldSpaceNormal;
+            if (!body1Dynamic)
+                normal = -normal;
+            const auto& contactPts = body1Dynamic ? inManifold.mRelativeContactPointsOn1
+                                                    : inManifold.mRelativeContactPointsOn2;
+            if (contactPts.empty())
+                return;
+            const JPH::RVec3 contactPoint = inManifold.mBaseOffset + contactPts[0];
+            const float closingSpeed = dynamicBody.GetPointVelocity(contactPoint).Dot(normal);
+            if (closingSpeed <= 0.0f)
+                return; // separating or tangential graze, not a push
+
+            const JPH::MotionProperties* motionProps = dynamicBody.GetMotionProperties();
+            if (motionProps == nullptr)
+                return;
+            const float invMass = motionProps->GetInverseMass();
+            if (invMass <= 0.0f)
+                return;
+            const float vehicleMass = 1.0f / invMass;
+            // docs §64: reduced mass, same shape as ApplyRamPushback's own formula above - bounds
+            // the result near the SMALLER of the two masses (a heavy truck can't inject more
+            // momentum per step than the light tree itself could plausibly absorb), std::max(...,
+            // 1.0f) guards a degenerate near-zero GetMass() on a prop prototype.
+            const float treeMass = std::max(breakable->GetMass(), 1.0f);
+            const float reducedMass = (vehicleMass * treeMass) / std::max(vehicleMass + treeMass, 1.0f);
+            const float impulseMag = closingSpeed * reducedMass
+                * kraken::Config::Instance().jolt_tree_push_scale.value;
+
+            const hta::CVector impulse{normal.GetX() * impulseMag, normal.GetY() * impulseMag,
+                                        normal.GetZ() * impulseMag};
+            const hta::CVector worldPos{(float) contactPoint.GetX(), (float) contactPoint.GetY(),
+                                         (float) contactPoint.GetZ()};
+
+            std::lock_guard<std::mutex> lock(g_pendingEnableMutex);
+            g_pendingEnables.push_back({breakable, impulse, worldPos});
+        }
     };
     static VehiclePushbackContactListener g_pushbackContactListener;
 
@@ -6497,6 +8524,97 @@ namespace kraken::fix::joltshadow {
             ApplyRamPushback(pair.first, pair.second, closingSpeed);
     }
 
+    // docs §57: same "drain on the main thread, right after StepPhysicsProfiled returns"
+    // placement/reasoning as DrainPendingPushbacks above - SetState() below reaches into
+    // CreateBrokenObj/effect-node/blast-wave game code, none of it safe to call from a Jolt
+    // worker thread. Dedupes by BreakableObject* first (same "a compound-shape hit can generate
+    // several manifolds in one step" reasoning as DrainPendingPushbacks - though props are single
+    // simple shapes today, docs §55, cheap insurance if that ever changes) and keeps only the
+    // strongest impactEnergy seen this frame, rather than possibly calling SetState() twice on
+    // the same object from two manifolds of the same hit.
+    static void DrainPendingBreaks() {
+        std::vector<PendingBreak> events;
+        {
+            std::lock_guard<std::mutex> lock(g_pendingBreakMutex);
+            events.swap(g_pendingBreaks);
+        }
+        if (events.empty())
+            return;
+
+        std::map<hta::ai::BreakableObject*, float> strongest;
+        for (const PendingBreak& e : events) {
+            // docs §66: same stale-tag guard as the Handle* queueing functions (its own comment)
+            // - the window between queueing (worker thread, this step) and draining (main thread,
+            // moments later) is far narrower than the level-load-to-now window that actually
+            // crashed live, but the check is cheap and the failure mode is identical if hit.
+            if (!LooksLikeLiveBreakableObject(e.breakable))
+                continue;
+            float& best = strongest[e.breakable];
+            best = std::max(best, e.impactEnergy);
+        }
+        for (const auto& [breakable, impactEnergy] : strongest) {
+            // Re-checked here, not just at export time (jolt.cpp's CollectBreakableObjectOwners
+            // already filters on IsDestroyable() once, at level load) - state can legitimately
+            // change between then and now (destroyed by something else entirely, e.g. an
+            // explosion via the STILL-WORKING native path, docs §56 only found the RAM-specific
+            // dispatch broken) and re-calling SetState(REMOVED) on an already-REMOVED object is
+            // pure waste at best.
+            if (!breakable->IsDestroyable() || breakable->GetState() == hta::ai::BreakableObject::REMOVED)
+                continue;
+            const float threshold = breakable->GetCriticalHitEnergy();
+            if (threshold < 0.0f || impactEnergy < threshold)
+                continue; // negative threshold (docs §55 saw -1 on one prototype) means "never breaks this way" in the XML data, same convention respected here
+            breakable->SetState(hta::ai::BreakableObject::REMOVED);
+            LOG_INFO("docs §57: broke prop %p via Jolt-side ram detection (impactEnergy=%.1f >= "
+                     "criticalHitEnergy=%.1f) - native dispatch path confirmed non-firing here, "
+                     "docs §56.6", (void*) breakable, (double) impactEnergy, (double) threshold);
+        }
+    }
+
+    // docs §61: the non-destroyable counterpart to DrainPendingBreaks above - same "drain on the
+    // main thread, right after StepPhysicsProfiled returns" placement/reasoning (SetState() below
+    // reaches into SetJointAnchor/ODE joint creation, not safe from a Jolt worker thread either).
+    // No impactEnergy to compare here at all - see g_pendingEnables' own comment for why.
+    static void DrainPendingEnables() {
+        std::vector<PendingTreeContact> events;
+        {
+            std::lock_guard<std::mutex> lock(g_pendingEnableMutex);
+            events.swap(g_pendingEnables);
+        }
+        if (events.empty())
+            return;
+
+        // No dedup-to-a-set here (unlike DrainPendingBreaks/DrainPendingPushbacks) - docs §64:
+        // each event carries its OWN per-contact impulse now, and every one of them represents a
+        // real step of sustained contact worth applying, not just a duplicate notification of the
+        // same fact. SetState/IsDestroyable are still safe to re-check per event.
+        for (const PendingTreeContact& e : events) {
+            hta::ai::BreakableObject* breakable = e.breakable;
+            // docs §66: same stale-tag guard as the Handle* queueing functions (its own comment).
+            if (!LooksLikeLiveBreakableObject(breakable))
+                continue;
+            // Re-checked here, same IsDestroyable() reasoning as DrainPendingBreaks (state can
+            // legitimately change between queueing and draining). No GetState()==DISABLED guard,
+            // deliberately, matching HandleTreeEnableContact's own comment - repeats are free
+            // (SetState's own same-state early-exit) and needed for breakablediag.cpp's §63
+            // pos/rot log to sample more than once per tree.
+            if (breakable->IsDestroyable())
+                continue;
+            breakable->SetState(hta::ai::BreakableObject::ENABLED);
+            // docs §64: this is the actual push - §63 found SetState/SetJointAnchor alone leaves
+            // the tree perfectly rigid (physic.cpp's force-threshold check is dead code, §62 -
+            // it never "snaps", the tree has to be pushed like any other ODE dynamic body).
+            // EnablePhysics() first in case the tree's ODE body starts auto-disabled/resting -
+            // same reasoning as ApplyRamPushback's own call - a disabled body ignores impulses.
+            breakable->EnablePhysics();
+            breakable->AddImpulseAtPos(e.impulse, e.worldPos);
+            LOG_INFO("docs §61: enabled non-destroyable prop %p via Jolt-side contact detection "
+                     "(native dispatch path confirmed non-firing here, docs §56.6/§60.1) - real ODE "
+                     "joint now anchors it via SetJointAnchor; docs §64 impulse=(%.2f,%.2f,%.2f) applied",
+                     (void*) breakable, (double) e.impulse.x, (double) e.impulse.y, (double) e.impulse.z);
+        }
+    }
+
     static void InstallRamDamageDiagnostic() {
         void* const orig = reinterpret_cast<void*>(0x0088F700);
         DWORD oldProtect;
@@ -6512,6 +8630,94 @@ namespace kraken::fix::joltshadow {
 
         routines::Redirect(5, orig, reinterpret_cast<void*>(&CalcDamageToVehiclesHook));
         LOG_INFO("docs §23.4: ram-damage diagnostic installed (ai::CalcDamageToVehicles @ 0x0088F700)");
+    }
+
+    static void InstallGetOutOfDifficultPlaceHook() {
+        // docs §126: 0x005E4740 = Vehicle::_GetOutOfDifficlultPlaceInternal, NOT the public
+        // GetOutOfDifficultPlace (0x005CBB00) - see the long comment above
+        // GetOutOfDifficultPlaceInternalFn for why the first attempt at this VA crashed live.
+        // Trampoline copy size is 6, disassembly-verified (capstone against the deployed
+        // hta.exe): first instruction at this VA is `sub esp, 0xb8`, a single clean 6-byte
+        // instruction - copying only 5 would slice it in half exactly like the first attempt did
+        // to GetOutOfDifficultPlace's 7-byte body.
+        void* const orig = reinterpret_cast<void*>(0x005E4740);
+        constexpr size_t kCopyLen = 6;
+        DWORD oldProtect;
+        VirtualProtect(s_getOutOfDifficultPlaceTrampoline, sizeof(s_getOutOfDifficultPlaceTrampoline),
+            PAGE_EXECUTE_READWRITE, &oldProtect);
+        std::memcpy(s_getOutOfDifficultPlaceTrampoline, orig, kCopyLen);
+        s_getOutOfDifficultPlaceTrampoline[kCopyLen] = 0xE9;
+        *reinterpret_cast<int32_t*>(s_getOutOfDifficultPlaceTrampoline + kCopyLen + 1) = static_cast<int32_t>(
+            reinterpret_cast<uintptr_t>(orig) + kCopyLen
+            - (reinterpret_cast<uintptr_t>(s_getOutOfDifficultPlaceTrampoline) + kCopyLen + 5));
+        VirtualProtect(s_getOutOfDifficultPlaceTrampoline, sizeof(s_getOutOfDifficultPlaceTrampoline),
+            oldProtect, &oldProtect);
+        Real_GetOutOfDifficultPlaceInternal = reinterpret_cast<GetOutOfDifficultPlaceInternalFn>(
+            reinterpret_cast<uintptr_t>(s_getOutOfDifficultPlaceTrampoline));
+
+        // Redirect() itself always writes a 5-byte JMP regardless of `size` - the extra byte here
+        // (6 vs the JMP's own 5) gets filled with 0xCC padding by Redirect's own memset, which is
+        // exactly what should happen to the now-orphaned 6th byte of `sub esp,0xb8` at the LIVE
+        // function (the trampoline above already has its own untouched copy to run from).
+        routines::Redirect(kCopyLen, orig, reinterpret_cast<void*>(&GetOutOfDifficultPlaceInternalHook));
+        LOG_INFO("docs §126: O-key recovery Jolt fix installed "
+                 "(ai::Vehicle::_GetOutOfDifficlultPlaceInternal @ 0x005E4740)");
+    }
+
+    // docs §56.5: user confirmed live, on a real hard ram (not a gentle bump), that trees still
+    // don't break after §55's ghosting fix. §56.2/§56.3 fully traced the native dispatch chain
+    // (NearCallback -> MustCheckForCollision -> dCollide -> ColliderKrnl::CollideObjs ->
+    // CollideVehicleAndBreakableObject -> hit-energy/damage) and found no explicit apply=1 gate
+    // anywhere in it, and the project's own already-recorded §23.11 data says the native damage
+    // path fires fine whenever the OTHER side of a contact is still ODE-live - which a breakable
+    // prop always is (only vehicles ever get DisablePhysics()). So on paper this should already
+    // work post-§55. It empirically doesn't, so this hooks the dispatcher itself instead of
+    // continuing to reason from static disassembly alone.
+    //
+    // CollideObjs (VA 0x0088CB50), not CollideVehicleAndBreakableObject/
+    // CollideVehiclePartAndVehiclePart directly - deliberately the lower-risk target of the
+    // three: its signature is the most confidently determined (PDB regrel offsets +4/+8 for its
+    // two stack params match a plain 2-register-then-2-stack __fastcall exactly - obj1/obj2 in
+    // ecx/edx, dContact* and numContacts* on the stack, docs §56.2's own disasm of it), and its
+    // call site inside NearCallback is a direct `call`, not an indirect table dispatch, so
+    // there's no ambiguity about what's actually being redirected. Same 5-byte trampoline-at-a-
+    // confirmed-instruction-boundary technique as InstallRamDamageDiagnostic above - the first
+    // instruction at the hook site (`mov eax, dword ptr [0xa33e94]`, the A1-moffs32 encoding, EAX
+    // destination only) is exactly 5 bytes (confirmed via disasm: 0x88cb50-0x88cb55), a clean
+    // boundary for a 5-byte E9 rel32 patch.
+    using CollideObjsFn = int(__fastcall*)(void*, void*, void*, uint32_t*);
+    static uint8_t s_collideObjsTrampoline[16];
+    static CollideObjsFn Real_CollideObjs = nullptr;
+
+    static int __fastcall CollideObjsHook(void* obj1, void* obj2, void* contact, uint32_t* numContacts) {
+        const int result = Real_CollideObjs(obj1, obj2, contact, numContacts);
+
+        // Gated on the same opt-in flag as the other hot-path-per-contact diagnostics (§22.3's
+        // joint-count check) rather than always-on - this fires for every dispatched near-
+        // collision pair in the game, not just player-vs-tree, and would spam kraken.log during
+        // normal play otherwise.
+        if (kraken::Config::Instance().jolt_hotpath_diag.value != 0) {
+            LOG_INFO("docs §56.5: CollideObjs obj1=%p obj2=%p numContacts=%u result=%d",
+                obj1, obj2, numContacts != nullptr ? *numContacts : 0u, result);
+        }
+        return result;
+    }
+
+    static void InstallCollideObjsDiagnostic() {
+        void* const orig = reinterpret_cast<void*>(0x0088CB50);
+        DWORD oldProtect;
+        VirtualProtect(s_collideObjsTrampoline, sizeof(s_collideObjsTrampoline), PAGE_EXECUTE_READWRITE, &oldProtect);
+        std::memcpy(s_collideObjsTrampoline, orig, 5);
+        s_collideObjsTrampoline[5] = 0xE9;
+        *reinterpret_cast<int32_t*>(s_collideObjsTrampoline + 6) = static_cast<int32_t>(
+            reinterpret_cast<uintptr_t>(orig) + 5
+            - (reinterpret_cast<uintptr_t>(s_collideObjsTrampoline) + 10));
+        VirtualProtect(s_collideObjsTrampoline, sizeof(s_collideObjsTrampoline), oldProtect, &oldProtect);
+        Real_CollideObjs = reinterpret_cast<CollideObjsFn>(
+            reinterpret_cast<uintptr_t>(s_collideObjsTrampoline));
+
+        routines::Redirect(5, orig, reinterpret_cast<void*>(&CollideObjsHook));
+        LOG_INFO("docs §56.5: CollideObjs dispatch diagnostic installed (ai::ColliderKrnl::CollideObjs @ 0x0088CB50)");
     }
 
     // docs §39: sanity-check the ported wheelmodel_core math in this build - a subset of
@@ -6627,6 +8833,14 @@ namespace kraken::fix::joltshadow {
         }
 
         InstallRamDamageDiagnostic();
+        // docs §126: re-enabled after the crash post-mortem - wrong VA (public flag-setter, not
+        // the work function) AND an unverified 5-byte trampoline slicing a 7-byte instruction in
+        // half. Now targets the actual work function with a disassembly-verified 6-byte
+        // boundary. See docs/sec126-get-out-of-difficult-place-jolt-fix.md. Verify via the new
+        // get_out_of_difficult_place.txt test-harness trigger (deterministic, no keypress
+        // simulation) BEFORE trusting this live again.
+        InstallGetOutOfDifficultPlaceHook();
+        InstallCollideObjsDiagnostic();
         // docs §23.11: registers VehiclePushbackContactListener as the primary ram-pushback
         // detector - see its comment for why this, not CalcDamageToVehiclesHook above, is the
         // one actually relied on. Jolt keeps only one ContactListener pointer at a time;
@@ -6636,13 +8850,13 @@ namespace kraken::fix::joltshadow {
 
         if (config.jolt_apply.value != 0) {
             LOG_INFO("Feature enabled - Jolt WILL DRIVE the player's vehicle this run (player_only=%u, max_speed=%.0fm/s gate)",
-                config.jolt_player_only.value, (double) kMaxAppliedSpeedMps);
+                config.jolt_player_only.value, (double) config.jolt_wm4_max_speed_mps.value);
         } else {
             LOG_INFO("Feature enabled - shadowing the player's vehicle in a parallel Jolt VehicleConstraint (read-only, logs divergence only)");
         }
-        if (config.jolt_player_only.value == 0 && config.jolt_ai_count.value > 0) {
-            LOG_INFO("Stage 3: up to %u AI vehicle(s) will also be shadowed%s",
-                config.jolt_ai_count.value, config.jolt_apply.value != 0 ? " and driven" : "");
+        if (config.jolt_player_only.value == 0 && config.jolt_ai.value != 0) {
+            LOG_INFO("Stage 3: all AI vehicles (up to %u) will also be shadowed%s",
+                (unsigned) kMaxAiShadowsPerFrame, config.jolt_apply.value != 0 ? " and driven" : "");
         }
 
         g_activeTuning = DefaultTuningParams();

@@ -802,6 +802,19 @@ namespace kraken::fix::physic {
                             for (int i = 0; i < 3; i++) {
                                 if (relCF1[i] > jBI->b1MaxF[i]) {
                                     jBI->flags |= dJOINT_BROKEN;
+                                    // docs §62 (goal: "деревья падали как в ODE"): this flag alone
+                                    // doesn't detach anything - that's a separate per-world joint
+                                    // sweep (ODE's own dJointGroupEmpty-adjacent maintenance loop,
+                                    // extern/hta/extern/ode/contrib/BreakableJoints/ode.cpp:221,
+                                    // calling dJointAttach(j,0,0)) that this mod never hooks - it's
+                                    // generic ODE bookkeeping unrelated to vehicles/Jolt, so it
+                                    // should still be running natively, unmodified, every step.
+                                    // This log is the only direct confirmation that the THRESHOLD
+                                    // side actually trips live - cross-reference the joint pointer
+                                    // against breakablediag.cpp's §62 m_jointId log.
+                                    LOG_INFO("docs §62: joint %p BROKEN (b1 force axis=%d "
+                                             "relCF1=%.1f > b1MaxF=%.1f)", (void*) joint.ptr[i],
+                                             i, (double) relCF1[i], (double) jBI->b1MaxF[i]);
                                     goto doneCheckingBreaks;
                                 }
                             }
@@ -811,6 +824,10 @@ namespace kraken::fix::physic {
                             for (int i = 0; i < 3; i++) {
                                 if (relCT1[i] > jBI->b1MaxT[i]) {
                                     jBI->flags |= dJOINT_BROKEN;
+                                    // docs §62: same as the B1_FORCE case above.
+                                    LOG_INFO("docs §62: joint %p BROKEN (b1 torque axis=%d "
+                                             "relCT1=%.1f > b1MaxT=%.1f)", (void*) joint.ptr[i],
+                                             i, (double) relCT1[i], (double) jBI->b1MaxT[i]);
                                     goto doneCheckingBreaks;
                                 }
                             }
@@ -827,6 +844,10 @@ namespace kraken::fix::physic {
                                 for (int i = 0; i < 3; i++) {
                                     if (relCF2[i] > jBI->b2MaxF[i]) {
                                         jBI->flags |= dJOINT_BROKEN;
+                                        // docs §62: same as the B1_FORCE case above.
+                                        LOG_INFO("docs §62: joint %p BROKEN (b2 force axis=%d "
+                                                 "relCF2=%.1f > b2MaxF=%.1f)", (void*) joint.ptr[i],
+                                                 i, (double) relCF2[i], (double) jBI->b2MaxF[i]);
                                         goto doneCheckingBreaks;
                                     }
                                 }
@@ -836,6 +857,10 @@ namespace kraken::fix::physic {
                                 for (int i = 0; i < 3; i++) {
                                     if (relCT2[i] > jBI->b2MaxT[i]) {
                                         jBI->flags |= dJOINT_BROKEN;
+                                        // docs §62: same as the B1_FORCE case above.
+                                        LOG_INFO("docs §62: joint %p BROKEN (b2 torque axis=%d "
+                                                 "relCT2=%.1f > b2MaxT=%.1f)", (void*) joint.ptr[i],
+                                                 i, (double) relCT2[i], (double) jBI->b2MaxT[i]);
                                         goto doneCheckingBreaks;
                                     }
                                 }

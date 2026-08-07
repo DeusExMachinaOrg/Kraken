@@ -52,12 +52,13 @@ namespace kraken {
         this->testharness_tear_wheel_at_t       = { "testharness","tear_wheel_at_t",                 -1.0,  true, -1.0,   3600.0       };
         this->testharness_ram_test              = { "testharness","ram_test",                        0,     true,  0,     1           };
         this->testharness_ram_test_offset       = { "testharness","ram_test_offset",                15.0,   true,  3.0,   50.0        };
+        this->ode_diag                          = { "ode_diag",   "enabled",                         0,     true,  0,     1           };
         this->jolt                              = { "jolt",       "enabled",                         0,     true,  0,     1           };
         this->jolt_threads                      = { "jolt",       "threads",                         0,     true,  0,     64          };
         this->jolt_shadow                       = { "jolt_harness","shadow",                         0,     true,  0,     1           };
         this->jolt_apply                        = { "jolt_harness","apply",                          0,     true,  0,     1           };
         this->jolt_player_only                  = { "jolt_harness","player_only",                    1,     true,  0,     1           };
-        this->jolt_ai_count                     = { "jolt_harness","ai_count",                       0,     true,  0,     128         };
+        this->jolt_ai                            = { "jolt_harness","ai",                             0,     true,  0,     1           };
         this->jolt_susp_frequency               = { "jolt_harness","susp_frequency",                 1.0,   true,  0.5,   2.0         };
         this->jolt_susp_rest_fraction           = { "jolt_harness","susp_rest_fraction",             0.07,  true,  0.02,  0.4         };
         this->jolt_susp_damping                 = { "jolt_harness","susp_damping",                   1.0,   true,  0.2,   3.0         };
@@ -66,6 +67,7 @@ namespace kraken {
         this->jolt_collision_cylinder            = { "jolt_harness","collision_cylinder",               0,     true,  0,     1           };
         this->jolt_wheelmodel                    = { "jolt_harness","wheelmodel",                       0,     true,  0,     4           };
         this->jolt_wm4_compress_fraction         = { "jolt_harness","wm4_compress_fraction",           0.5f,  true,  0.0f,  1.0f        };
+        this->jolt_wm4_susp_max_scale            = { "jolt_harness","wm4_susp_max_scale",              0.15f, true,  0.02f, 1.0f        };
         this->jolt_wm4_joint_at_mount            = { "jolt_harness","wm4_joint_at_mount",              0,     true,  0,     1           };
         this->jolt_wm4_chassis_mass_excl_wheels  = { "jolt_harness","wm4_chassis_mass_excl_wheels",    1,     true,  0,     1           };
         this->jolt_wm4_spin                      = { "jolt_harness","wm4_spin",                        1,     true,  0,     1           };
@@ -78,6 +80,21 @@ namespace kraken {
         this->jolt_wm4_sleep                     = { "jolt_harness","wm4_sleep",                       0,     true,  0,     1           };
         this->jolt_wm4_governor                  = { "jolt_harness","wm4_governor",                    1,     true,  0,     1           };
         this->jolt_wm4_soildrag                  = { "jolt_harness","wm4_soildrag",                    1,     true,  0,     1           };
+        this->jolt_wm4_max_speed_mps             = { "jolt_harness","wm4_max_speed_mps",              100.0f, true,  10.0f, 1000.0f      };
+        // docs §122. Defaults are the ODE world's own values; the master switch is off.
+        this->jolt_body_damping                  = { "jolt_harness","body_damping",                   0,     true,  0,     1           };
+        this->jolt_damping_linear                = { "jolt_harness","damping_linear",                 0.1f,  true,  0.0f,  10.0f       };
+        this->jolt_damping_angular               = { "jolt_harness","damping_angular",                0.3f,  true,  0.0f,  10.0f       };
+        this->jolt_wm4_diag_interval              = { "jolt_harness","wm4_diag_interval",              60,    true,  1,     600         };
+        // docs §122.17. Off by default: same as body_damping, a drive-model change on a closed
+        // stage that needs a per-vehicle measurement before its default moves.
+        this->jolt_chassis_inertia_ode_box       = { "jolt_harness","chassis_inertia_ode_box",         0,     true,  0,     1           };
+        // docs §124: turned ON by default per explicit user direction, WITH the known Ural01
+        // cold-pin hang (docs §124.11-124.13, ~40% of vehicle-switch rebuilds under this flag
+        // lose ground contact permanently, root cause not found) - user asked for this
+        // specifically after that risk was explained. See docs sec124 and sec126 (the "O" key
+        // recovery mitigation, itself not always sufficient for this exact failure).
+        this->jolt_wm4_contact_constraint        = { "jolt_harness","wm4_contact_constraint",          1,     true,  0,     1           };
         this->jolt_wm4_steer_kinematic           = { "jolt_harness","wm4_steer_kinematic",             2,     true,  0,     2           };
         this->jolt_wm4_steer_hz                  = { "jolt_harness","wm4_steer_hz",                    20.0f, true,  1.0f,  500.0f      };
         this->jolt_wm4_steer_damping             = { "jolt_harness","wm4_steer_damping",               1.0f,  true,  0.05f, 10.0f       };
@@ -103,6 +120,8 @@ namespace kraken {
         this->jolt_autotune_max_trials          = { "jolt_harness","autotune_max_trials",             24,    true,  1,     500         };
         this->jolt_pushback_min_dspeed          = { "jolt_harness","pushback_min_dspeed",              0.8,   true,  0.0,   50.0        };
         this->jolt_pushback_scale               = { "jolt_harness","pushback_scale",                   1.0,   true,  0.0,   5.0         };
+        this->jolt_break_energy_scale           = { "jolt_harness","break_energy_scale",                1.0,   true,  0.0,   1000.0      };
+        this->jolt_tree_push_scale              = { "jolt_harness","tree_push_scale",                  0.02,  true,  0.0,   2.0         };
         this->jolt_hotpath_diag                 = { "jolt_harness","hotpath_diag",                     0,     true,  0,     1           };
         this->jolt_deferred_destroy             = { "jolt_harness","deferred_destroy",                0,     true,  0,     1           };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
@@ -174,12 +193,13 @@ namespace kraken {
         this->LoadValue(&this->testharness_tear_wheel_at_t);
         this->LoadValue(&this->testharness_ram_test);
         this->LoadValue(&this->testharness_ram_test_offset);
+        this->LoadValue(&this->ode_diag);
         this->LoadValue(&this->jolt);
         this->LoadValue(&this->jolt_threads);
         this->LoadValue(&this->jolt_shadow);
         this->LoadValue(&this->jolt_apply);
         this->LoadValue(&this->jolt_player_only);
-        this->LoadValue(&this->jolt_ai_count);
+        this->LoadValue(&this->jolt_ai);
         this->LoadValue(&this->jolt_susp_frequency);
         this->LoadValue(&this->jolt_susp_rest_fraction);
         this->LoadValue(&this->jolt_susp_damping);
@@ -198,12 +218,20 @@ namespace kraken {
         this->LoadValue(&this->jolt_wm4_sleep);
         this->LoadValue(&this->jolt_wm4_governor);
         this->LoadValue(&this->jolt_wm4_soildrag);
+        this->LoadValue(&this->jolt_wm4_max_speed_mps);
+        this->LoadValue(&this->jolt_body_damping);
+        this->LoadValue(&this->jolt_damping_linear);
+        this->LoadValue(&this->jolt_damping_angular);
+        this->LoadValue(&this->jolt_wm4_diag_interval);
+        this->LoadValue(&this->jolt_chassis_inertia_ode_box);
+        this->LoadValue(&this->jolt_wm4_contact_constraint);
         this->LoadValue(&this->jolt_wm4_steer_kinematic);
         this->LoadValue(&this->jolt_wm4_steer_hz);
         this->LoadValue(&this->jolt_wm4_steer_damping);
         this->LoadValue(&this->jolt_wm4_variants);
         this->LoadValue(&this->jolt_wm4_joint_at_mount);
         this->LoadValue(&this->jolt_wm4_compress_fraction);
+        this->LoadValue(&this->jolt_wm4_susp_max_scale);
         this->LoadValue(&this->jolt_wm_tyre_stiffness);
         this->LoadValue(&this->jolt_wm_tyre_thickness);
         this->LoadValue(&this->jolt_wm_tyre_damping);
@@ -225,6 +253,8 @@ namespace kraken {
         this->LoadValue(&this->jolt_autotune_max_trials);
         this->LoadValue(&this->jolt_pushback_min_dspeed);
         this->LoadValue(&this->jolt_pushback_scale);
+        this->LoadValue(&this->jolt_break_energy_scale);
+        this->LoadValue(&this->jolt_tree_push_scale);
         this->LoadValue(&this->jolt_hotpath_diag);
         this->LoadValue(&this->jolt_deferred_destroy);
     };
@@ -274,12 +304,13 @@ namespace kraken {
         this->DumpValue(&this->testharness_tear_wheel_at_t);
         this->DumpValue(&this->testharness_ram_test);
         this->DumpValue(&this->testharness_ram_test_offset);
+        this->DumpValue(&this->ode_diag);
         this->DumpValue(&this->jolt);
         this->DumpValue(&this->jolt_threads);
         this->DumpValue(&this->jolt_shadow);
         this->DumpValue(&this->jolt_apply);
         this->DumpValue(&this->jolt_player_only);
-        this->DumpValue(&this->jolt_ai_count);
+        this->DumpValue(&this->jolt_ai);
         this->DumpValue(&this->jolt_susp_frequency);
         this->DumpValue(&this->jolt_susp_rest_fraction);
         this->DumpValue(&this->jolt_susp_damping);
@@ -298,11 +329,19 @@ namespace kraken {
         this->DumpValue(&this->jolt_wm4_sleep);
         this->DumpValue(&this->jolt_wm4_governor);
         this->DumpValue(&this->jolt_wm4_soildrag);
+        this->DumpValue(&this->jolt_wm4_max_speed_mps);
+        this->DumpValue(&this->jolt_body_damping);
+        this->DumpValue(&this->jolt_damping_linear);
+        this->DumpValue(&this->jolt_damping_angular);
+        this->DumpValue(&this->jolt_wm4_diag_interval);
+        this->DumpValue(&this->jolt_chassis_inertia_ode_box);
+        this->DumpValue(&this->jolt_wm4_contact_constraint);
         this->DumpValue(&this->jolt_wm4_steer_kinematic);
         this->DumpValue(&this->jolt_wm4_steer_hz);
         this->DumpValue(&this->jolt_wm4_steer_damping);
         this->DumpValue(&this->jolt_wm4_joint_at_mount);
         this->DumpValue(&this->jolt_wm4_compress_fraction);
+        this->DumpValue(&this->jolt_wm4_susp_max_scale);
         this->DumpValue(&this->jolt_wm_tyre_stiffness);
         this->DumpValue(&this->jolt_wm_tyre_thickness);
         this->DumpValue(&this->jolt_wm_tyre_damping);
@@ -324,6 +363,8 @@ namespace kraken {
         this->DumpValue(&this->jolt_autotune_max_trials);
         this->DumpValue(&this->jolt_pushback_min_dspeed);
         this->DumpValue(&this->jolt_pushback_scale);
+        this->DumpValue(&this->jolt_break_energy_scale);
+        this->DumpValue(&this->jolt_tree_push_scale);
         this->DumpValue(&this->jolt_hotpath_diag);
         this->DumpValue(&this->jolt_deferred_destroy);
     };

@@ -32,10 +32,26 @@
 #include "ode/ode.hpp"
 #include "routines.hpp"
 
+// docs §55: needed only to enumerate live vehicles' ODE bodies (CollectLiveVehicleBodies) so the
+// static-obstacle exporter can tell "a moving vehicle" apart from "a resting breakable prop" -
+// this file otherwise has no vehicle-object concerns (fix/joltshadow.cpp owns those).
+#include "hta/ai/CServer.hpp"
+#include "hta/ai/ObjContainer.hpp"
+#include "hta/ai/Vehicle.hpp"
+#include "hta/ai/Wheel.hpp"
+// docs §57: needed to tag each exported "resting prop" Jolt body with the real
+// hta::ai::BreakableObject* that owns it, so a Jolt-side contact can call SetState() directly -
+// see the dGeomGetData/PhysicBody::GetOwner()/cast<BreakableObject>() resolution inline in
+// WalkSpaceForStaticExport (docs §57.4).
+#include "hta/ai/BreakableObject.hpp"
+#include "hta/ai/PhysicBody.hpp"
+
 #include <cfloat>
 #include <cstdarg>
 #include <cstdio>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 JPH_SUPPRESS_WARNINGS
@@ -497,6 +513,51 @@ namespace kraken::fix::jolt {
         return *reinterpret_cast<dxGeom* const*>(reinterpret_cast<const uint8_t*>(geom) + 0x20);
     }
 
+    // docs §55: bodies belonging to live vehicles (chassis + wheels) must never be treated as a
+    // resting static prop by WalkSpaceForStaticExport below - a moving vehicle would otherwise
+    // freeze a stale collision snapshot of itself in Jolt's world while the real (mirrored or
+    // Jolt-driven) vehicle drives away. Same enumeration primitive fix/joltshadow.cpp's
+    // MirrorOtherVehicles already uses (hta::ai::CServer::Instance()->m_pObjects,
+    // updatingBegin/updatingEnd, Obj::cast<Vehicle>()) - duplicated here rather than shared across
+    // translation units, since this file has never previously needed vehicle-object visibility
+    // and joltshadow.cpp owns that concern; a minimal, self-contained local walk was judged
+    // lower-risk than threading a cross-TU dependency through for one query.
+    //
+    // Chassis body identity comes from dJointGetBody(wheel->m_jointID, 0) (body1 side of any of
+    // the vehicle's Hinge2 wheel joints - all wheels on one vehicle share the same chassis body),
+    // NOT vehicle->m_body->_id - joltshadow.cpp's docs §30 found the latter reads a stale/zero
+    // position for a ComplexPhysicObj vehicle's chassis (a different, non-collision bookkeeping
+    // body), so its pointer identity can't be trusted either. Each wheel's own body
+    // (wheel->m_body->_id) IS already proven correct elsewhere (joltshadow.cpp's §22.3 ramming
+    // diagnostic calls dBodyGetNumJoints(wheel->m_body->_id) successfully), so that one's used
+    // directly.
+    static void CollectLiveVehicleBodies(std::unordered_set<const void*>& outBodies) {
+        hta::ai::CServer* server = hta::ai::CServer::Instance();
+        if (server == nullptr || server->m_pObjects == nullptr)
+            return;
+
+        hta::ai::ObjContainer* objects = server->m_pObjects;
+        for (hta::ai::ObjContainer::iterator it = objects->updatingBegin(); it != objects->updatingEnd(); ++it) {
+            hta::ai::Vehicle* vehicle = (*it)->cast<hta::ai::Vehicle>();
+            if (vehicle == nullptr)
+                continue;
+
+            dxBody* chassisBody = nullptr;
+            const uint32_t numWheels = vehicle->GetNumWheels();
+            for (uint32_t i = 0; i < numWheels; ++i) {
+                const hta::ai::Vehicle::WheelRuntimeInfo& info = vehicle->m_wheels[i];
+                if (!info.m_bWheelPresent || info.m_wheel == nullptr)
+                    continue;
+                if (info.m_wheel->m_body != nullptr && info.m_wheel->m_body->_id != nullptr)
+                    outBodies.insert(info.m_wheel->m_body->_id);
+                if (chassisBody == nullptr && info.m_wheel->m_jointID != nullptr)
+                    chassisBody = dJointGetBody(info.m_wheel->m_jointID, 0);
+            }
+            if (chassisBody != nullptr)
+                outBodies.insert(chassisBody);
+        }
+    }
+
     // Accumulator threaded through the recursive space walk (docs §22.13) - one instance per
     // ExportStaticObstaclesToJolt call, shared by every recursive WalkSpaceForStaticExport frame,
     // so a single summary can be logged once the whole tree (top-level space + any nested
@@ -504,8 +565,32 @@ namespace kraken::fix::jolt {
     struct StaticExportContext {
         JPH::BodyInterface&       bodyInterface;
         std::vector<JPH::BodyID>& newBodies;
+        // docs §55: bodies excluded from the "resting prop" path below because they're a live
+        // vehicle/wheel (see CollectLiveVehicleBodies) - anything else with a body is assumed to
+        // be a resting breakable prop (tree/fence/barrel/etc, docs §55) and gets a static Jolt
+        // snapshot like any body-less geom.
+        const std::unordered_set<const void*>& vehicleBodies;
         int32_t classHistogram[32] = {};
         int32_t boxCount = 0, sphereCount = 0, triMeshCount = 0, capsuleCount = 0;
+        // Subset of the counts above that came from a resting non-vehicle dynamic body rather
+        // than a genuinely body-less static geom (docs §55) - tracked separately purely for log
+        // visibility, they're stored and cleaned up identically either way.
+        int32_t propCount = 0;
+        // docs §57: subset of propCount that got a real BreakableObject* tag (see
+        // ResolveBreakableOwner above) - tracked separately so a live run shows how much of the
+        // prop bucket is actually reachable for the break-on-ram path, versus untagged (owner not
+        // found - e.g. not a BreakableObject, or not IsDestroyable()).
+        int32_t taggedBreakableCount = 0;
+        // docs §59: funnel breakdown of WHY the rest of propCount didn't tag (ResolveBreakableOwner
+        // above) - §57.3 left "6284/8710 untagged, not diagnosed further" as a known gap; a live
+        // "rammed a tree, nothing happened" report made it the highest-impact thing left to fix,
+        // since a player has no way to tell a tagged prop from an untagged one before hitting it.
+        // (docs §61: the gap turned out to be entirely unresolvedNotDestroyable, i.e. trees - now
+        // tagged too, see ResolveBreakableOwner's own comment, so that counter is gone; the other
+        // three remain genuinely unresolvable - no owner, not a PhysicBody, or not a BreakableObject
+        // at all.)
+        int32_t unresolvedNoData = 0, unresolvedNotPhysicBody = 0, unresolvedNoOwner = 0,
+                unresolvedNotBreakable = 0;
         int32_t skippedDynamicCount = 0, skippedOtherClassCount = 0;
         // Geoms that had an exportable class but hit CreateBody()==nullptr (cMaxBodies
         // exhausted) - aggregated instead of logged per-geom (docs §35), see the
@@ -514,6 +599,73 @@ namespace kraken::fix::jolt {
         int32_t walkedCount = 0;
         int32_t nestedSpaceCount = 0;
     };
+
+    // docs §57.4 (goal: "деревья падали при таране как с ODE"): resolves the real
+    // hta::ai::BreakableObject* that owns a given ODE geom, if any, so
+    // WalkSpaceForStaticExport can tag the Jolt body it builds for that geom (docs §55's "resting
+    // prop" path) with a pointer a Jolt-side contact listener can later call SetState() on
+    // (fix/joltshadow.cpp's HandleBreakableContact) - §56's raw disassembly digging found the
+    // NATIVE ODE dispatch that would normally do this (ai::NearCallback ->
+    // ai::ColliderKrnl::CollideObjs -> ai::CollideVehicleAndBreakableObject) never actually fires
+    // for the Jolt-driven vehicle (confirmed live via a hook, zero firings across two harness ram
+    // tests that both ended in the vehicle wedged against a tree) despite every gate checked
+    // along that path passing (dGeomIsEnabled always true) - root cause not pinned down further
+    // (would need a hook on NearCallback itself, a meaningfully bigger risk), so this synthesizes
+    // the same real-game effect entirely on Jolt's own side instead, the same strategy docs
+    // §23.11 already proved out for ram PUSHBACK specifically (native dispatch unreliable there
+    // too under apply=1) via VehiclePushbackContactListener.
+    //
+    // Goes backward from the geom (dGeomGetData -> ai::PhysicBody::GetOwner() ->
+    // cast<BreakableObject>()) - the SAME chain ai::NearCallback itself uses on every body-having
+    // geom it processes (docs §56.2's disassembly: dGeomGetData immediately followed by an
+    // IsKindOf check then PhysicBody::GetOwner()) - reusing a mechanism the game's own working
+    // collision dispatch already relies on, rather than inventing a second, independent one. A
+    // FORWARD attempt (enumerate BreakableObjects via hta::ai::CServer's m_pObjects, walk their
+    // own body's geom list) was tried first and found 0/~8700 matches live - m_pObjects turned
+    // out to only hold a few hundred "actively simulated" entities (vehicles, AI, etc), not the
+    // thousands of static, usually-dormant-until-hit world props - confirmed by adding counters
+    // (docs §57.3) and seeing "0 matched cast<BreakableObject>" against a scanned total nowhere
+    // near the known prop count from data/gamedata's own XML.
+    static hta::ai::BreakableObject* ResolveBreakableOwner(dxGeom* geom, StaticExportContext& ctx) {
+        void* geomData = dGeomGetData(geom);
+        if (geomData == nullptr) {
+            ++ctx.unresolvedNoData;
+            return nullptr;
+        }
+        // docs §57.4: the safety check NearCallback itself performs before trusting this pointer
+        // as a PhysicBody* (docs §56.2's disassembly - IsKindOf comes BEFORE GetOwner() there,
+        // never skipped) - dGeomGetData's contract for an arbitrary geom is otherwise unverified,
+        // and this runs across ~8700+ geoms at level-load, not a handful, so a bad cast here
+        // isn't a one-off risk. 0xA00CB0 = ai::PhysicBody::m_classPhysicBody's own address
+        // (0x400000 image base + RVA 0x600cb0, confirmed via tools/lora's symbol_at_rva against
+        // game.pdb - independently identifies the exact constant NearCallback's own disassembly
+        // pushes before its IsKindOf call, not guessed from context).
+        hta::m3d::Object* asObject = reinterpret_cast<hta::m3d::Object*>(geomData);
+        if (!asObject->IsKindOf(reinterpret_cast<const hta::m3d::Class*>(0xA00CB0))) {
+            ++ctx.unresolvedNotPhysicBody;
+            return nullptr;
+        }
+        hta::ai::PhysicBody* physicBody = reinterpret_cast<hta::ai::PhysicBody*>(geomData);
+        hta::ai::PhysicObj* owner = physicBody->GetOwner();
+        if (owner == nullptr) {
+            ++ctx.unresolvedNoOwner;
+            return nullptr;
+        }
+        hta::ai::BreakableObject* breakable = owner->cast<hta::ai::BreakableObject>();
+        if (breakable == nullptr) {
+            ++ctx.unresolvedNotBreakable;
+            return nullptr;
+        }
+        // docs §61 (goal: "в jolt деревья падали как в ode"): used to reject here when
+        // !IsDestroyable() (counted as unresolvedNotDestroyable) - that made every tree
+        // permanently untaggable, since IsDestroyable()==false for every tree prototype (docs
+        // §59.2's XML table). §60.3 found trees don't break via this destroyable path at all - they
+        // go through SetState(ENABLED)/SetJointAnchor instead (joltshadow.cpp's
+        // DrainPendingEnables), which needs the SAME tag. Both destroyable and non-destroyable
+        // objects are now tagged; DrainPendingBreaks/DrainPendingEnables each re-check
+        // IsDestroyable() themselves to route to the correct one.
+        return breakable;
+    }
 
     // Walks one dxSpace's geoms (both m_firstEnabled/m_firstDisabled lists), recursing into any
     // nested sub-space it finds (docs §22.13) - a body-less geom whose class falls in
@@ -534,10 +686,22 @@ namespace kraken::fix::jolt {
             dxGeom* geom = (listIndex == 0) ? SpaceFirstEnabledGeom(space) : SpaceFirstDisabledGeom(space);
             for (; geom != nullptr; geom = GeomNextInSpace(geom)) {
                 ++ctx.walkedCount;
-                if (dGeomGetBody(geom) != nullptr) {
-                    ++ctx.skippedDynamicCount; // anything ODE could move - vehicles, wheels, shells, ...
+                dxBody* odeBody = dGeomGetBody(geom);
+                // docs §55: only a LIVE VEHICLE body is skipped now - it's already correctly
+                // handled live (Jolt-driven writeback or fix/joltshadow.cpp's kinematic mirror/AI
+                // shadow), and giving it a second, stale static snapshot here would freeze a
+                // ghost collider where it happened to be at export time. Anything else with a
+                // body (shells, and above all the thousands of Class="BreakableObject" world
+                // props - trees, fences, barrels, posts, walls, all confirmed via
+                // data/gamedata/gameobjects/breakableobjects.xml to carry a Mass, i.e. a real ODE
+                // body, presumably so the game can react physically when one is rammed) falls
+                // through to the SAME export path body-less static geoms already use below - see
+                // isProp/ctx.propCount.
+                if (odeBody != nullptr && ctx.vehicleBodies.count(odeBody) != 0) {
+                    ++ctx.skippedDynamicCount;
                     continue;
                 }
+                const bool isProp = odeBody != nullptr;
 
                 const int32_t geomClass = dGeomGetClass(geom);
                 if (geomClass >= 0 && geomClass < 32)
@@ -549,6 +713,36 @@ namespace kraken::fix::jolt {
                     continue;
                 }
 
+                // docs §55: unwrap ai::GeomTransform (ODE geom class 6, confirmed via
+                // BuildChassisCompoundShape's own already-working unwrap, fix/joltshadow.cpp docs
+                // §23.10) - a generic "shape at an offset from its owner" wrapper used throughout
+                // this engine, previously the single biggest bucket of body-less geoms this
+                // export silently dropped (class-6 histogram entries logged below). The INNER
+                // geom's position/rotation is always LOCAL to the transform by ODE's own
+                // dGeomTransform contract, regardless of whether the outer transform has a body -
+                // compose outer-world (read the normal way, works whether or not geom has a body)
+                // with inner-local exactly like BuildChassisCompoundShape does.
+                dxGeom*    shapeGeom       = geom;
+                bool       isTransformWrapped = false;
+                JPH::RVec3 outerWorldPos   = JPH::RVec3(0.0f, 0.0f, 0.0f);
+                JPH::Quat  outerWorldRot   = JPH::Quat::sIdentity();
+                if (geomClass == dGeomTransformClass) {
+                    dxGeom* inner = dGeomTransformGetGeom(geom);
+                    if (inner == nullptr) {
+                        ++ctx.skippedOtherClassCount;
+                        continue;
+                    }
+                    shapeGeom = inner;
+                    isTransformWrapped = true;
+                    const float* outerPos = dGeomGetPosition(geom);
+                    float outerQuat[4];
+                    dGeomGetQuaternion(geom, outerQuat);
+                    outerWorldPos = JPH::RVec3(outerPos[0], outerPos[1], outerPos[2]);
+                    JPH::Quat rawOuterRot(outerQuat[1], outerQuat[2], outerQuat[3], outerQuat[0]);
+                    outerWorldRot = (rawOuterRot.LengthSq() > 1.0e-8f) ? rawOuterRot.Normalized() : JPH::Quat::sIdentity();
+                }
+                const int32_t shapeClass = isTransformWrapped ? dGeomGetClass(shapeGeom) : geomClass;
+
                 JPH::Ref<JPH::Shape> shape;
                 // Trimesh vertices come back already in world space (dGeomTriMeshGetTriangle
                 // applies the geom's position/rotation internally, docs §22.9) - same convention
@@ -559,9 +753,9 @@ namespace kraken::fix::jolt {
                 // rotation is applied (docs §22.13) - only capsule needs this (identity/no-op
                 // for everything else).
                 JPH::Quat localShapeRemap = JPH::Quat::sIdentity();
-                if (geomClass == dBoxClass) {
+                if (shapeClass == dBoxClass) {
                     float lengths[3]; // full side lengths, not half-extents
-                    dGeomBoxGetLengths(geom, lengths);
+                    dGeomBoxGetLengths(shapeGeom, lengths);
                     JPH::BoxShapeSettings settings(JPH::Vec3(lengths[0] * 0.5f, lengths[1] * 0.5f, lengths[2] * 0.5f));
                     JPH::ShapeSettings::ShapeResult result = settings.Create();
                     if (result.HasError()) {
@@ -570,8 +764,8 @@ namespace kraken::fix::jolt {
                         continue;
                     }
                     shape = result.Get();
-                } else if (geomClass == dSphereClass) {
-                    const float radius = (float) dGeomSphereGetRadius(geom);
+                } else if (shapeClass == dSphereClass) {
+                    const float radius = (float) dGeomSphereGetRadius(shapeGeom);
                     JPH::SphereShapeSettings settings(radius);
                     JPH::ShapeSettings::ShapeResult result = settings.Create();
                     if (result.HasError()) {
@@ -580,8 +774,17 @@ namespace kraken::fix::jolt {
                         continue;
                     }
                     shape = result.Get();
-                } else if (geomClass == dTriMeshClass) {
-                    const int32_t triCount = dGeomTriMeshGetTriangleCount(geom);
+                } else if (shapeClass == dTriMeshClass) {
+                    // docs §55: same conservative scope limit BuildChassisCompoundShape already
+                    // draws for vehicle parts - a transform-wrapped trimesh's vertex space
+                    // (already-world, like every other trimesh here, or local-to-transform like
+                    // box/sphere/capsule?) is unverified, so skip rather than risk silently wrong
+                    // geometry. Not known to occur in practice; counted like any other skip.
+                    if (isTransformWrapped) {
+                        ++ctx.skippedOtherClassCount;
+                        continue;
+                    }
+                    const int32_t triCount = dGeomTriMeshGetTriangleCount(shapeGeom);
                     if (triCount <= 0) {
                         ++ctx.skippedOtherClassCount;
                         continue;
@@ -592,7 +795,7 @@ namespace kraken::fix::jolt {
                     triangles.reserve((size_t) triCount);
                     for (int32_t t = 0; t < triCount; ++t) {
                         float v0[4], v1[4], v2[4];
-                        dGeomTriMeshGetTriangle(geom, t, v0, v1, v2);
+                        dGeomTriMeshGetTriangle(shapeGeom, t, v0, v1, v2);
                         const uint32_t base = (uint32_t) vertices.size();
                         vertices.emplace_back(v0[0], v0[1], v0[2]);
                         vertices.emplace_back(v1[0], v1[1], v1[2]);
@@ -608,9 +811,9 @@ namespace kraken::fix::jolt {
                     }
                     shape = result.Get();
                     worldSpaceVertices = true;
-                } else if (geomClass == dCCylinderClass) {
+                } else if (shapeClass == dCCylinderClass) {
                     float radius = 0.0f, length = 0.0f;
-                    dGeomCCylinderGetParams(geom, &radius, &length);
+                    dGeomCCylinderGetParams(shapeGeom, &radius, &length);
                     if (radius <= 0.0f || length <= 0.0f) {
                         ++ctx.skippedOtherClassCount;
                         continue;
@@ -640,11 +843,11 @@ namespace kraken::fix::jolt {
                 JPH::RVec3 bodyPos  = JPH::RVec3(0.0f, 0.0f, 0.0f);
                 JPH::Quat  bodyRot  = JPH::Quat::sIdentity();
                 if (!worldSpaceVertices) {
-                    const float* pos = dGeomGetPosition(geom);
+                    const float* pos = dGeomGetPosition(shapeGeom);
                     float quat[4]; // ODE's native dQuaternion layout: {w, x, y, z}
-                    dGeomGetQuaternion(geom, quat);
-                    bodyPos = JPH::RVec3(pos[0], pos[1], pos[2]);
-                    JPH::Quat rawRot(quat[1], quat[2], quat[3], quat[0]);
+                    dGeomGetQuaternion(shapeGeom, quat);
+                    JPH::RVec3 rawPos(pos[0], pos[1], pos[2]);
+                    JPH::Quat  rawRot(quat[1], quat[2], quat[3], quat[0]);
                     // dQfromR (what dGeomGetQuaternion computes from a body-less geom's own
                     // rotation matrix, docs §22.9) isn't guaranteed to return a unit quaternion
                     // for every geom in practice - hit live as repeated JPH_ASSERT
@@ -652,10 +855,25 @@ namespace kraken::fix::jolt {
                     // false, but a non-unit quaternion still means wrong/undefined rotation math
                     // downstream). Normalize defensively; fall back to identity for the
                     // degenerate near-zero case rather than feed Normalize() a ~0 vector.
-                    bodyRot = (rawRot.LengthSq() > 1.0e-8f) ? rawRot.Normalized() : JPH::Quat::sIdentity();
+                    rawRot = (rawRot.LengthSq() > 1.0e-8f) ? rawRot.Normalized() : JPH::Quat::sIdentity();
+                    if (isTransformWrapped) {
+                        bodyPos = outerWorldPos + outerWorldRot * rawPos;
+                        bodyRot = outerWorldRot * rawRot;
+                    } else {
+                        bodyPos = rawPos;
+                        bodyRot = rawRot;
+                    }
                     bodyRot = bodyRot * localShapeRemap; // no-op (identity) for everything but capsule
                 }
 
+                // docs §55: still EMotionType::Static even for a resting prop (isProp) - a
+                // one-time snapshot at export time, not a live mirror. Known, accepted gap: if a
+                // prop gets broken/moved after this export, its Jolt collider stays behind until
+                // the next export (level/save load) - same tradeoff already accepted for "static"
+                // meaning "as of export time" everywhere else in this function. A live per-frame
+                // mirror (fix/joltshadow.cpp's MirrorOtherVehicles pattern) was considered and
+                // rejected: thousands of these exist per level (docs §55 live count: ~4200+ on one
+                // save) versus the handful of vehicles that pattern was sized for.
                 JPH::BodyCreationSettings bodySettings(
                     shape, bodyPos, bodyRot, JPH::EMotionType::Static, Layers::NON_MOVING);
 
@@ -670,12 +888,30 @@ namespace kraken::fix::jolt {
                     ++ctx.skippedCapacityCount;
                     continue;
                 }
+                // docs §57: tag with the owning BreakableObject* (resolved via ResolveBreakableOwner
+                // from THIS geom - the OUTER one, pre-unwrap, matching ResolveBreakableOwner's own
+                // dGeomGetData(geom) call; a transform-wrapped shape is looked up by its outer
+                // geom, never shapeGeom), so HandleBreakableContact (joltshadow.cpp) can act on a
+                // real ram without going through the native dispatch docs §56 found never fires
+                // here. Only ever set for isProp bodies - vehicles/wheels are tagged separately
+                // (their own Vehicle*/'WHL' scheme) and plain static geoms (roads, rocks,
+                // landscape) get no tag at all (UserData left at Jolt's default 0), exactly what
+                // lets HandleBreakableContact tell "a tagged prop" apart from "any other static
+                // body" by a single != 0 check.
+                if (isProp) {
+                    hta::ai::BreakableObject* owner = ResolveBreakableOwner(geom, ctx);
+                    if (owner != nullptr) {
+                        body->SetUserData(reinterpret_cast<uint64_t>(owner));
+                        ++ctx.taggedBreakableCount;
+                    }
+                }
                 ctx.newBodies.push_back(body->GetID());
                 ctx.bodyInterface.AddBody(body->GetID(), JPH::EActivation::DontActivate);
-                if (geomClass == dBoxClass) ++ctx.boxCount;
-                else if (geomClass == dSphereClass) ++ctx.sphereCount;
-                else if (geomClass == dCCylinderClass) ++ctx.capsuleCount;
+                if (shapeClass == dBoxClass) ++ctx.boxCount;
+                else if (shapeClass == dSphereClass) ++ctx.sphereCount;
+                else if (shapeClass == dCCylinderClass) ++ctx.capsuleCount;
                 else ++ctx.triMeshCount;
+                if (isProp) ++ctx.propCount;
             }
         }
     }
@@ -709,7 +945,13 @@ namespace kraken::fix::jolt {
         std::vector<JPH::BodyID> newBodies;
         newBodies.reserve((size_t) topLevelCount);
 
-        StaticExportContext ctx{bodyInterface, newBodies};
+        // docs §55: built fresh right before each export (level load only, not per-frame) - see
+        // CollectLiveVehicleBodies' own comment for why this can't just be "any body = skip"
+        // any more.
+        std::unordered_set<const void*> vehicleBodies;
+        CollectLiveVehicleBodies(vehicleBodies);
+
+        StaticExportContext ctx{bodyInterface, newBodies, vehicleBodies};
         WalkSpaceForStaticExport(space, ctx, 0);
 
         const int32_t exportedCount = (int32_t) newBodies.size();
@@ -730,21 +972,31 @@ namespace kraken::fix::jolt {
                         "get a Jolt body (cMaxBodies capacity exhausted) - raise cMaxBodies (docs "
                         "§22.14/§35)", ctx.skippedCapacityCount);
         }
-        LOG_INFO("Jolt: exported %d static obstacles (%d box, %d sphere, %d trimesh, %d capsule) - "
-                 "%d geoms walked total (%d nested sub-space(s) recursed into, %d at top level per "
-                 "dSpaceGetNumGeoms), %d dynamic geoms skipped, %d body-less geoms of unexported "
-                 "class skipped, %d skipped (capacity exhausted)",
+        LOG_INFO("Jolt: exported %d static obstacles (%d box, %d sphere, %d trimesh, %d capsule, "
+                 "%d resting prop(s) [docs §55], %d tagged breakable [docs §57]) - %d geoms walked "
+                 "total (%d nested sub-space(s) recursed into, %d at top level per "
+                 "dSpaceGetNumGeoms), %d live-vehicle geoms skipped, %d body-less geoms of "
+                 "unexported class skipped, %d skipped (capacity exhausted)",
                  exportedCount, ctx.boxCount, ctx.sphereCount, ctx.triMeshCount, ctx.capsuleCount,
-                 ctx.walkedCount, ctx.nestedSpaceCount, topLevelCount, ctx.skippedDynamicCount,
-                 ctx.skippedOtherClassCount, ctx.skippedCapacityCount);
+                 ctx.propCount, ctx.taggedBreakableCount, ctx.walkedCount, ctx.nestedSpaceCount,
+                 topLevelCount, ctx.skippedDynamicCount, ctx.skippedOtherClassCount,
+                 ctx.skippedCapacityCount);
+        // docs §59/§61: funnel breakdown, see StaticExportContext's own comment - breakableNotDestroyable
+        // dropped (docs §61: no longer a rejection reason, trees are tagged too now).
+        LOG_INFO("docs §59: untagged resting-prop breakdown - noGeomData=%d notPhysicBody=%d "
+                 "noOwner=%d ownerNotBreakable=%d (sum should equal %d resting minus %d tagged = %d)",
+                 ctx.unresolvedNoData, ctx.unresolvedNotPhysicBody, ctx.unresolvedNoOwner,
+                 ctx.unresolvedNotBreakable,
+                 ctx.propCount, ctx.taggedBreakableCount, ctx.propCount - ctx.taggedBreakableCount);
         for (int32_t c = 0; c < 32; ++c) {
             const bool isSpaceClass = c >= dFirstSpaceClass && c <= dLastSpaceClass;
             if (ctx.classHistogram[c] > 0 && c != dBoxClass && c != dSphereClass && c != dTriMeshClass
-                && c != dCCylinderClass && !isSpaceClass) {
-                LOG_INFO("Jolt: static obstacle export - %d body-less geom(s) of unexported ODE class %d "
-                         "(docs §22.9/§22.13 - classes confirmed by disassembly: 0=sphere, 1=box, "
-                         "2=capsule, 7=trimesh, 11-14=space (recursed into, not \"unexported\"); "
-                         "others not confirmed against this binary, treat the raw ID as a lead not a fact)",
+                && c != dCCylinderClass && c != dGeomTransformClass && !isSpaceClass) {
+                LOG_INFO("Jolt: static obstacle export - %d geom(s) of unexported ODE class %d "
+                         "(docs §22.9/§22.13/§55 - classes confirmed by disassembly: 0=sphere, 1=box, "
+                         "2=capsule, 6=transform (unwrapped, not \"unexported\"), 7=trimesh, "
+                         "11-14=space (recursed into, not \"unexported\"); others not confirmed "
+                         "against this binary, treat the raw ID as a lead not a fact)",
                          ctx.classHistogram[c], c);
             }
         }

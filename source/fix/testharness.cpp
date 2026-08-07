@@ -21,6 +21,8 @@
 #include "hta/ai/CServer.hpp"
 #include "hta/ai/ObjContainer.hpp"
 #include "hta/ai/Player.hpp"
+#include "hta/m3d/CWorld.hpp"
+#include "hta/m3d/Landscape.hpp"
 
 #include "fix/testharness.hpp"
 #include "fix/joltshadow.hpp"
@@ -62,6 +64,11 @@ namespace kraken::fix::testharness {
         bool                tornWheel = false; // one-shot latch for testharness_tear_wheel_at_t
         std::string        lastVehicleSwitch; // debounce for switch_vehicle.txt, same pattern as lastTrigger
         std::string        lastSaveLoad;      // docs §115: debounce for load_save.txt, same pattern again
+        // docs §126: debounce for get_out_of_difficult_place.txt - the "O" hotkey recovery,
+        // triggered from a test script instead of an actual keypress (SendKeys/keybd_event both
+        // failed to reach this game's own input handling live, see sec126 doc - this drop-box is
+        // the reliable alternative the user asked for).
+        std::string        lastGetOutOfDifficultPlace;
     };
 
     static State g_state;
@@ -230,10 +237,29 @@ namespace kraken::fix::testharness {
 
             state.spawnPos = targetPos - forward * offset;
             state.spawnRot = targetRot;
+
+            // Found live (docs stage2-plan.md §Step 2): copying targetPos.y verbatim ignores
+            // terrain height variation between the target and a point `offset` meters behind it - on
+            // sloped ground the player's compound wheelmodel=4 body (chassis + 4 separate wheel
+            // bodies) can spawn embedded in the ground, and Jolt's solver resolves that
+            // interpenetration with one violent impulse (observed live: ~458 m/s in a smooth,
+            // near-ballistic line immediately after spawn, safely absorbed by joltshadow's own
+            // "body is flying" gate but leaving ApplyRamPushback completely untested). Resample
+            // the ground height at the NEW xz and preserve the target's own height-above-ground
+            // (its own resting clearance, whatever that is for this vehicle) rather than
+            // assuming targetPos.y is correct at a different point on the map.
+            hta::m3d::Landscape& landscape = hta::ai::CServer::Instance()->GetWorld()->GetLandscape();
+            const float targetGroundY  = landscape.GetLsHeight(targetPos.x, targetPos.z);
+            const float spawnGroundY   = landscape.GetLsHeight(state.spawnPos.x, state.spawnPos.z);
+            const float clearance      = targetPos.y - targetGroundY;
+            state.spawnPos.y = spawnGroundY + clearance;
+
             state.hasSpawn = true;
 
-            LOG_INFO("ram_test: will spawn player %.1fm behind other vehicle %p and drive into it per scenario.csv",
-                (double) offset, (void*) target);
+            LOG_INFO("ram_test: will spawn player %.1fm behind other vehicle %p and drive into it per scenario.csv "
+                "(ground-resampled spawn y=%.2f, target ground y=%.2f clearance=%.2f, spawn ground y=%.2f)",
+                (double) offset, (void*) target, (double) state.spawnPos.y, (double) targetGroundY,
+                (double) clearance, (double) spawnGroundY);
         }
 
         hta::ai::Vehicle* vehicle = GetTargetVehicle();
@@ -427,10 +453,35 @@ namespace kraken::fix::testharness {
         LOG_INFO("Vehicle switch: changed player vehicle to prototype '%s' (id=%d)", token.c_str(), prototypeId);
     }
 
+    // docs §126: calls Vehicle::GetOutOfDifficultPlace() DIRECTLY on the player's vehicle - the
+    // real, normal, properly-typed public method (not a raw trampoline poke, no crash risk of
+    // its own), exactly what the "O" hotkey itself calls. File protocol matches
+    // switch_vehicle.txt: any non-empty line, changing content re-fires (a nonce after '#' lets
+    // the same underlying request retrigger, same reasoning as CheckVehicleSwitch above).
+    static void CheckGetOutOfDifficultPlaceTrigger(State& state) {
+        std::ifstream f(state.baseDir / "get_out_of_difficult_place.txt");
+        if (!f.is_open()) return;
+
+        std::string token;
+        std::getline(f, token);
+        if (token.empty() || token == state.lastGetOutOfDifficultPlace) return;
+        state.lastGetOutOfDifficultPlace = token;
+
+        hta::ai::DynamicScene* scene = hta::ai::DynamicScene::Instance();
+        hta::ai::Vehicle* vehicle = scene ? scene->GetVehicleControlledByPlayer() : nullptr;
+        if (vehicle == nullptr) {
+            LOG_WARNING("docs §126: get_out_of_difficult_place.txt triggered but no player vehicle yet");
+            return;
+        }
+        LOG_INFO("docs §126: calling player vehicle->GetOutOfDifficultPlace() from test harness");
+        vehicle->GetOutOfDifficultPlace();
+    }
+
     static void Tick(float dt) {
         State& state = g_state;
 
         CheckVehicleSwitch(state);
+        CheckGetOutOfDifficultPlaceTrigger(state);
 
         std::ifstream trigger(state.baseDir / "trigger.txt");
         if (trigger.is_open()) {
@@ -482,6 +533,30 @@ namespace kraken::fix::testharness {
             vehicle->m_steerRadians = sample->steer;
             vehicle->SetBrake(sample->brake);
             vehicle->m_bHandBrake   = sample->handbrake;
+
+            // Diagnostic finding (docs/stage2-plan.md Sec2.7): unlike m_throttle (protected by
+            // KeepThrottleHook below), m_steerRadians has no equivalent guard - something else
+            // writes it every tick too (the same "live input-device polling" the KeepThrottleHook
+            // comment already names for throttle) and reliably wins on any scenario longer than a
+            // few seconds, observed live as steerRad staying stuck at the polled value for the
+            // rest of the run regardless of what this Tick() just wrote. _KeepSteer only
+            // CONSUMES m_steerRadians (via wheel->m_steering * m_steerRadians, rate-limited into
+            // m_curAngle) - it never re-derives it, so forcing m_curAngle here directly, every
+            // tick, bypasses the whole race instead of trying to out-write it. Test/harness-only:
+            // gated on the same `sample` (a scenario must be running), touches no field a real
+            // player's own input doesn't already touch every frame via the native path.
+            const uint32_t numWheels = vehicle->GetNumWheels();
+            for (uint32_t w = 0; w < numWheels; ++w) {
+                hta::ai::Vehicle::WheelRuntimeInfo& info = vehicle->m_wheels[w];
+                if (!info.m_bWheelPresent || info.m_wheel == nullptr)
+                    continue;
+                hta::ai::Wheel* wheel = info.m_wheel;
+                float sign = 0.0f;
+                if (wheel->m_steering == hta::ai::Wheel::STEERING_CORRECT) sign = 1.0f;
+                else if (wheel->m_steering == hta::ai::Wheel::STEERING_INVERSE) sign = -1.0f;
+                if (sign != 0.0f)
+                    wheel->m_curAngle = sign * sample->steer;
+            }
         }
 
         hta::CVector    pos    = vehicle->GetPosition();

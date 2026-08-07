@@ -134,7 +134,15 @@ namespace kraken::fix::wheelmodel {
     // pen = δ (radial) for ★/†, or δ_s for ‡. Returns the world force and the
     // longitudinal share f∥·w that feeds the spin reaction (§5).
     // -------------------------------------------------------------------------
-    struct WMForce { vec3 F; float fpar_w = 0.0f; };
+    struct WMForce {
+        vec3 F; float fpar_w = 0.0f;
+        // docs §125 debug taps - standstill-creep investigation. Cheap (a handful of floats),
+        // left in rather than stripped: the caller only logs them at the existing diag interval,
+        // and having them on tap is what turned the LAST round of this bug from guesswork into a
+        // number. Zero-initialized so a return-before-friction (pen<=0, tLen~0, etc.) reads as 0.
+        float dbg_v_par = 0.0f, dbg_v_lat = 0.0f, dbg_stick = 0.0f;
+        float dbg_capPar = 0.0f, dbg_damperPar = 0.0f, dbg_D = 0.0f;
+    };
 
     inline WMForce GeneralizedContactForce(
         const vec3& p, const vec3& n, float pen, float w,
@@ -218,11 +226,31 @@ namespace kraken::fix::wheelmodel {
             const float capLat = m * fabsf(v_lat) / dt;
             f_lat = wm_clamp(f_lat, -capLat, capLat);
 
-            // static friction near standstill: blend lateral to a critical damper
-            // that holds the patch (the slip curve mis-fires at ~0 speed).
+            // static friction near standstill: blend toward a damper that reaches the FULL
+            // available friction budget by a small fraction of stick_speed, not a gentle slope
+            // that only gets there at stick_speed itself. docs §125 / stage2-plan.md §2.9 has the
+            // full bisection history: a symmetric copy of the ORIGINAL (1x, critical-damping)
+            // coefficient was stable but only shrank the standstill creep, never zeroed it
+            // (v_eq = F_bias/c for any finite c - confirmed live, v_par pinned at 0.033 m/s while
+            // D offered 400+N unused). A bang-bang +-D target used that headroom but is
+            // discontinuous at v=0, which explicit integration cannot track - it chattered
+            // violently instead (v_par past +-2 m/s). This 2x gain is the bisected middle: still
+            // continuous (hence stable), steep enough to converge the creep to ~0.0035 m/s and
+            // hold position. A regression was suspected against verify_steer_drift_fix.py (sustained
+            // full-lock steer + throttle) via the AddForce-at-contact-point torque lever, but
+            // isolation testing DISPROVED it: the SAME test fails just as consistently with f_par
+            // fully untouched and zero added diagnostics (4/4, matching this fix's 5/5) - it is a
+            // pre-existing reliability problem in wmSpinAngle's integration, unrelated to this
+            // change. See stage2-plan.md §2.9/§2.10 before re-litigating this coefficient.
             const float stick = wm_clamp(1.0f - fabsf(Dot(v_p, t)) / P.stick_speed, 0.0f, 1.0f);
-            const float damper = wm_clamp(-v_lat * 2.0f * sqrtf(fmaxf(P.k_t * m, 0.0f)), -D, D);
+            const float kStick = 2.0f * (2.0f * sqrtf(fmaxf(P.k_t * m, 0.0f)));
+            const float damper = wm_clamp(-v_lat * kStick, -D, D);
             f_lat = wm_lerp(f_lat, damper, stick);
+            const float damperPar = wm_clamp(-v_par * kStick, -D, D);
+            f_par = wm_lerp(f_par, damperPar, stick);
+
+            out.dbg_v_par = v_par; out.dbg_v_lat = v_lat; out.dbg_stick = stick;
+            out.dbg_capPar = capPar; out.dbg_damperPar = damperPar; out.dbg_D = D;
 
             Fvec = Fvec + t * f_par + l * f_lat;
             out.fpar_w = f_par * w;

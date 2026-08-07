@@ -14,6 +14,7 @@
 
 #include "fix/fileserver.hpp"
 #include "fix/physic.hpp"
+#include "fix/breakablediag.hpp"
 #include "fix/autobrakefix.hpp"
 #include "fix/objcontupgrade.hpp"
 #include "fix/luabinds.hpp"
@@ -36,6 +37,7 @@
 #include "fix/testharness.hpp"
 #include "fix/jolt.hpp"
 #include "fix/joltshadow.hpp"
+#include "fix/odediag.hpp"
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
     Config* G_CONFIG = new Config();
@@ -202,6 +204,7 @@ namespace kraken {
         ConstantHotfix();
         fix::fileserver::Apply();
         fix::physic::Apply();
+        fix::breakablediag::Apply();
         fix::autobrakefix::Apply();
         fix::objcontupgrade::Apply();
         fix::luabinds::Apply(G_CONFIG);
@@ -224,5 +227,6 @@ namespace kraken {
         fix::testharness::Apply();
         fix::jolt::Apply();
         fix::joltshadow::Apply();
+        fix::odediag::Apply();
     };
 };

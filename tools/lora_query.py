@@ -8,9 +8,18 @@ executed in order in a single Python process (so a session loaded via the
 "load" tool stays alive for later steps in the same invocation). Prints each
 step's result as JSON, one per line.
 
+argv[1] may instead be the PATH of a file containing that JSON - useful when the
+shell's quoting rules make a long inline argument painful, which on Windows they
+usually do. A path is told from JSON by looking at the first character: valid
+step JSON always starts with '[', and no path does.
+
+Use FORWARD SLASHES in exe_path/pdb_path. The backslash form has to survive both
+the shell and the JSON decoder, and getting the doubling wrong yields a
+JSONDecodeError rather than anything informative.
+
 Example:
   python tools/lora_query.py '[
-    {"tool": "load", "args": {"exe_path": "F:\\\\HTA_Kraken\\\\hta.exe", "pdb_path": "F:\\\\HTA_Kraken\\\\game.pdb"}},
+    {"tool": "load", "args": {"exe_path": "C:/Users/etozh/code/HTA_Kraken/hta.exe", "pdb_path": "C:/Users/etozh/code/HTA_Kraken/game.pdb"}},
     {"tool": "find_functions", "args": {"pattern": "*NearCallback*"}}
   ]'
 """
@@ -46,7 +55,12 @@ async def run_steps(steps):
 
 
 def main():
-    steps = json.loads(sys.argv[1])
+    arg = sys.argv[1]
+    if arg.lstrip()[:1] == "[":
+        steps = json.loads(arg)
+    else:
+        with open(arg, "r", encoding="utf-8") as f:
+            steps = json.load(f)
     asyncio.run(run_steps(steps))
 
 

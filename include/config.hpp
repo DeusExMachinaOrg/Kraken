@@ -88,12 +88,17 @@ namespace kraken {
         // reproduced deterministically instead of waiting for real AI/combat (docs §22.4).
         ConfigValue<uint32_t>                 testharness_ram_test;
         ConfigValue<float>                    testharness_ram_test_offset;
+        // docs §46e (task #59): its own section, deliberately NOT under [jolt]/[jolt_harness] -
+        // this diagnostic (fix::odediag) hooks independently of [jolt]enabled specifically so it
+        // can log ODE chassis coordinates (GetPosition/GetMassCenterPosition) with Jolt fully
+        // OFF, for a direct jolt=0 vs jolt=1 comparison across two separate launches.
+        ConfigValue<uint32_t>                 ode_diag;
         ConfigValue<uint32_t>                 jolt;
         ConfigValue<uint32_t>                 jolt_threads;
         ConfigValue<uint32_t>                 jolt_shadow;
         ConfigValue<uint32_t>                 jolt_apply;
         ConfigValue<uint32_t>                 jolt_player_only;
-        ConfigValue<uint32_t>                 jolt_ai_count;
+        ConfigValue<uint32_t>                 jolt_ai;
         ConfigValue<float>                    jolt_susp_frequency;
         ConfigValue<float>                    jolt_susp_rest_fraction;
         ConfigValue<float>                    jolt_susp_damping;
@@ -108,6 +113,16 @@ namespace kraken {
         // immediates), so 0.5 here is the value its kraken.ini carried; the effective clamp to
         // [0.05, 0.95] lives in the code that reads it, exactly as the recovered build did it.
         ConfigValue<float>                    jolt_wm4_compress_fraction;
+        // docs §46g/§46i (task #59): scales mSuspensionMaxLength down from the invented
+        // "0.05 + suspensionRange" ceiling (ODE has no real hard stop to derive it from - see
+        // that constant's own comment in joltshadow.cpp). Measured live against a genuinely
+        // independent jolt=0 baseline on Ural01: 1.0 -> ~0.98m real chassis-height error, 0.6 ->
+        // 0.65m, 0.15 -> 0.20m, 0.05 -> 0.11m (roughly linear, no hard floor). Exposed as a
+        // config value rather than a hardcoded constant so it can be tuned without a rebuild -
+        // closing the gap further costs real suspension travel (a near-zero value here makes
+        // the ride feel like a rigid axle), so the right number is a judgment call, not a fact
+        // to hardcode.
+        ConfigValue<float>                    jolt_wm4_susp_max_scale;
         // docs §75: where the SixDOF anchor sits. 0 (default, and what the recovered build
         // shipped) anchors at the WHEEL CENTRE, which is what makes the travel limits and the
         // motor target "relative to spawn" coherent. 1 restores the plan's original wording,
@@ -213,6 +228,80 @@ namespace kraken {
         // v / R, applied per wheel at the end of CollideWheelAndLandscape. The last un-ported
         // every-frame force, and the third lever of the same bundle as wm4_assists/wm4_governor.
         ConfigValue<uint32_t>                 jolt_wm4_soildrag;
+        // Stage 2 §2.5: "body is flying" write-back safety cap, was a hardcoded 60.0 constexpr
+        // (kMaxAppliedSpeedMps). The cross-vehicle sweep found ArcadeScout01 - deliberately much
+        // faster than the rest of the roster (vehicles.xml: MaxEngineRpm 10000 vs Scout's 7000,
+        // DriftCoeff ~0) - legitimately clearing 60 m/s under sustained full throttle and tripping
+        // the gate every frame while at speed. Default raised to comfortably clear that (observed
+        // peak 62 m/s) while staying far below actual blown-up magnitudes (458 m/s+ measured
+        // during the §-1/Step-2 constraint-explosion bugs) - the gate must still catch a real
+        // blowup, just not a fast car.
+        ConfigValue<float>                    jolt_wm4_max_speed_mps;
+        // docs §122: ODE's GLOBAL body damping, which the port never had. ai::DynamicScene::InitOnce
+        // calls dWorldSetDampingFlag(1) and dWorldSetDampingParameters(linear 0.1, angular 0.3), and
+        // dBodyCreate copies those into EVERY body at construction - chassis, wheels, debris alike,
+        // with no per-body override anywhere in the game. dxStepBody (RVA 0x4fc8f0) then applies
+        //     lvel *= (1 - linear_scale * h)   avel *= (1 - angular_scale * h)
+        // once per body per step, with NO velocity threshold (dxDamping in this build is a bare
+        // {float,float}; the threshold fields are a later ODE revision). The stepsize is multiplied
+        // in explicitly, so 0.1 and 0.3 are rates in 1/s, not a per-tick haircut.
+        //
+        // Jolt's law is the same expression - MotionProperties.inl:143 does
+        // `v *= max(0, 1 - c*dt)` - so this is an exact mapping rather than an approximation, and
+        // the two scales below are the ODE values verbatim. Only the max(0,...) clamp differs, and
+        // at c*dt of 0.003-0.01 it never engages.
+        //
+        // Off by default because it changes the drive model on a closed stage. §122 measured that
+        // this plus the §103 soil drag accounts for 63-79% of the reference's coast resistance,
+        // against 26% for soil drag alone - so the expected effect is on the post-throttle tail,
+        // the worst part of every run in §103 and §108.
+        ConfigValue<uint32_t>                 jolt_body_damping;
+        // docs §122.10/§123: the diagnostic block (§30/§32/§66/§67/§101-§103/§122...) fires every
+        // kLogIntervalFrames physics steps, 60 by default (~1 Hz at 60fps) - fine for eyeballing a
+        // log, useless for telling a wheel that chatters at its suspension's natural frequency
+        // (2-4 Hz here) from one that takes a single multi-second hop, since 1 Hz sampling aliases
+        // both into the same handful of contact/no-contact snapshots. Lowering this for a short,
+        // scripted measurement raises the sample rate without touching the physics or the per-step
+        // harvest itself - the counters being read are already safe to read at any cadence (docs
+        // §59/§63: read only after PhysicsSystem::Update has returned, no worker thread live).
+        // Left at 60 by default: a permanently denser log is not what this lever is for.
+        ConfigValue<uint32_t>                 jolt_wm4_diag_interval;
+        // docs §122.15/§122.17: the shadow chassis normally gets its inertia tensor from
+        // JPH::EOverrideMassProperties::CalculateInertia over the REAL compound collision shape
+        // (BuildChassisCompoundShape - Chassis/Cabin/Basket/etc boxes+spheres+capsules from
+        // ComplexPhysicObj::m_vehicleParts, §23.10). The reference never does this: ai::
+        // ComplexPhysicObj::RefreshMass (RVA 0x2bcac0) computes ODE's real dMass with a single
+        // dMassSetBoxTotal over m_massSize - no dMassAdd, ever, so the reference's inertia is
+        // always the uniform-box formula, regardless of how many collision parts the vehicle has.
+        // A 5-vehicle sweep (§122.17) found the two computations mostly disagree, sometimes by an
+        // order of magnitude on pitch (Ixx) - Molokovoz01's 6% match (the only vehicle §122.14/
+        // §122.15 originally checked) turned out to be the best-agreeing case in the sample, not
+        // a representative one. Worst seen: 10.52x (Scout01). Roll (Izz) is inflated on every one
+        // of the 5 vehicles tested (1.04x-2.83x), independent of how well pitch agrees.
+        // 1 makes the chassis body's MASS PROPERTIES (not its collision shape - that stays the
+        // real compound geometry either way) exactly the same uniform box ODE's RefreshMass
+        // computes: JPH::MassProperties::SetMassAndInertiaOfSolidBox(massSize, 1.0f) then
+        // ScaleToMass(vehicle mass), via JPH::EOverrideMassProperties::MassAndInertiaProvided.
+        // Off by default, same reasoning as jolt_body_damping: this is a drive-model change on a
+        // closed stage, and it should be measured per-vehicle before its default changes, not
+        // flipped on the strength of a 5-vehicle static comparison alone.
+        ConfigValue<uint32_t>                 jolt_chassis_inertia_ode_box;
+        // The two ODE scales, exposed so an arm can isolate linear from angular. Angular acts on
+        // WHEEL SPIN in mode 4 (real wheel bodies) and has nowhere to go in mode 2, which is a real
+        // asymmetry between the modes and not a bug in either.
+        ConfigValue<float>                    jolt_damping_linear;
+        ConfigValue<float>                    jolt_damping_angular;
+        // docs §124: the wheel's ground-contact force (normal spring + Pacejka friction,
+        // wm::GeneralizedContactForce) is computed once per step from the PREVIOUS step's
+        // harvested contact and applied as a plain AddForce on the wheel body, entirely outside
+        // the solver - unlike the strut's SixDOFConstraint, which IS a real constraint and gets
+        // properly Gauss-Seidel-solved. The reference (ODE) solves its suspension joint and its
+        // ground contact together in one LCP per step; this is the one-step decoupling §123.7
+        // named as the remaining architectural gap. 1 routes the SAME force math through a real
+        // JPH::Constraint (WheelContactConstraint) instead, so it iteratively co-converges with
+        // the strut within a step. Staged behind this flag per docs §124's plan - starts as a
+        // pure no-op stub (step 1) before any force actually moves.
+        ConfigValue<uint32_t>                 jolt_wm4_contact_constraint;
         // docs §105/§106: how the steer DOF holds its angle. 2 = the LITERAL port - the RotationZ
         // motor is switched OFF and the wheel's orientation is ASSIGNED each frame from the
         // commanded steer and its current spin, exactly as _TurnWheelByAngle ->
@@ -284,6 +373,33 @@ namespace kraken {
         ConfigValue<uint32_t>                 jolt_autotune_max_trials;
         ConfigValue<float>                    jolt_pushback_min_dspeed;
         ConfigValue<float>                    jolt_pushback_scale;
+        // docs §58 (user: "калибруй"): multiplies the Jolt-side impact energy - now
+        // vehicle->GetMass() * closingSpeed^2, confirmed via tools/lora disasm_typed of the
+        // live binary to be the EXACT native break-gate formula from
+        // ai::CollideVehicleAndBreakableObject (VA 0x492a00, source line 125) - before it's
+        // compared against each BreakableObject's own GetCriticalHitEnergy()
+        // (fix/joltshadow.cpp's HandleBreakableContact). Base formula is a verified match, not
+        // a guess, but "verified" means read from disassembly, not cross-checked against a live
+        // native firing - the native path itself still never fires under apply=1 (docs §56.6),
+        // so this scale remains the dial for whatever gap that leaves (e.g. this game build's
+        // actual chassis mass vs vehicle->GetMass()'s exact return value was not independently
+        // re-measured on the Jolt side this pass).
+        ConfigValue<float>                    jolt_break_energy_scale;
+        // docs §64 (goal: "деревья падали как в ODE"): §63 found the tree stays perfectly rigid
+        // (rot unchanged) through 2.3s of a real player ram, and even in a scripted 25s sustained
+        // ram nothing moved for the first ~5s - because a tree is a Jolt STATIC body (never
+        // pushed by Jolt's own solver, by definition) and SetJointAnchor alone imparts zero
+        // velocity. Under pure ODE the vehicle and tree share ONE simulation, so continuous
+        // contact resolution pushes the tree every step automatically; under Jolt that link is
+        // missing entirely - nothing was injecting the vehicle's actual momentum into the tree's
+        // now-real ODE body. Same class of problem ApplyRamPushback already solved for
+        // vehicle-vs-vehicle (AddImpulse there); this is AddImpulseAtPos applied every step
+        // contact persists (HandleTreeEnableContact, joltshadow.cpp) rather than once, so the
+        // scale needs to be MUCH smaller than jolt_pushback_scale's 1.0 default - applied at
+        // ~90-100Hz, not once per contact. 0.02 is a rough starting guess (not yet calibrated
+        // against a live "does it feel like a normal ram" pass) - the whole point of a separate,
+        // live-tunable scale here, same as jolt_break_energy_scale's own history.
+        ConfigValue<float>                    jolt_tree_push_scale;
         // docs §52 (Этап 0): gates per-frame hot-path DIAGNOSTICS (dBodyGetNumJoints ramming
         // probes in ApplyJoltToVehicle, etc.) that must NOT be paid for during a perf-profiling
         // run. Default 0 (off) - a clean [jolt_profile] measurement should not include the cost
