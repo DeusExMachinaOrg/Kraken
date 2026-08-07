@@ -4,9 +4,16 @@
 
 #include "config.hpp"
 #include "ext/logger.hpp"
+#include "net/entity_registry.hpp"
 #include "net/session.hpp"
 #include "net/transport.hpp"
+#include "net/vehicle_snapshot.hpp"
 #include "routines.hpp"
+
+#include "hta/CVector.hpp"
+#include "hta/Quaternion.hpp"
+#include "hta/ai/Player.hpp"
+#include "hta/ai/Vehicle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -32,6 +39,12 @@ struct RuntimeState {
     std::unique_ptr<Session> session;
     std::vector<PeerId> peers;
     Clock::time_point next_ping{};
+    Clock::time_point next_snapshot{};
+    std::uint32_t next_snapshot_sequence = 1;
+    std::uint32_t server_tick = 0;
+    EntityRegistry entities;
+    ObjId host_vehicle_obj_id = kInvalidObjId;
+    bool is_host = false;
     bool hook_installed = false;
 };
 
@@ -148,6 +161,77 @@ void pump()
         (void)g_state.session->ping(peer);
 }
 
+VehicleVector3 to_snapshot_vector(const hta::CVector& value)
+{
+    return {value.x, value.y, value.z};
+}
+
+VehicleQuaternion to_snapshot_quaternion(const hta::Quaternion& value)
+{
+    return {value.x, value.y, value.z, value.w};
+}
+
+void capture_and_broadcast_host_snapshot()
+{
+    if (!g_state.is_host || g_state.peers.empty())
+        return;
+
+    const Clock::time_point now = Clock::now();
+    if (now < g_state.next_snapshot)
+        return;
+    g_state.next_snapshot = now + std::chrono::milliseconds(50);
+
+    hta::ai::Player* const player = hta::ai::Player::Instance();
+    hta::ai::Vehicle* const vehicle = player ? player->GetVehicle() : nullptr;
+    if (vehicle == nullptr)
+        return;
+
+    const ObjId vehicle_obj_id = vehicle->GetId();
+    NetId entity_id = kInvalidNetId;
+    if (!g_state.entities.lookup_net_id(vehicle_obj_id, entity_id)) {
+        if (g_state.host_vehicle_obj_id != kInvalidObjId)
+            (void)g_state.entities.unbind_obj_id(g_state.host_vehicle_obj_id);
+
+        const EntityRegistryBindResult bound =
+            g_state.entities.bind(1, vehicle_obj_id);
+        if (bound != EntityRegistryBindResult::Inserted &&
+            bound != EntityRegistryBindResult::AlreadyBound) {
+            LOG_ERROR("cannot bind host vehicle objId=%d code=%u", vehicle_obj_id,
+                      static_cast<unsigned>(bound));
+            return;
+        }
+        g_state.host_vehicle_obj_id = vehicle_obj_id;
+        if (!g_state.entities.lookup_net_id(vehicle_obj_id, entity_id))
+            return;
+    }
+
+    VehicleSnapshot snapshot{};
+    snapshot.entity_id = entity_id;
+    snapshot.sequence = g_state.next_snapshot_sequence++;
+    snapshot.server_tick = g_state.server_tick;
+    snapshot.position = to_snapshot_vector(vehicle->GetPosition());
+    snapshot.rotation = to_snapshot_quaternion(vehicle->GetRotation());
+    snapshot.linear_velocity = to_snapshot_vector(vehicle->GetLinearVelocity());
+    snapshot.angular_velocity = to_snapshot_vector(vehicle->GetAngularVelocity());
+
+    std::array<Byte, kVehicleSnapshotWireSize> payload{};
+    const VehicleSnapshotCodecError encoded =
+        encode_vehicle_snapshot(snapshot, MutableByteView{payload});
+    if (!vehicle_snapshot_codec_succeeded(encoded)) {
+        LOG_ERROR("host snapshot encode failed code=%u",
+                  static_cast<unsigned>(encoded));
+        return;
+    }
+
+    for (const PeerId peer : g_state.peers) {
+        const TransportResult result = g_state.session->send(
+            peer, MessageType::Snapshot, Channel::Unreliable, ByteView{payload});
+        if (!result)
+            LOG_ERROR("snapshot send to peer=%u failed code=%u", peer,
+                      static_cast<unsigned>(result.code));
+    }
+}
+
 // The original call is ai::CServer::Update(float): ECX=this, float on stack.
 // A free __fastcall hook reserves EDX as the second dummy argument.
 void __fastcall server_update_hook(void* server, void*, float elapsed_time)
@@ -155,7 +239,9 @@ void __fastcall server_update_hook(void* server, void*, float elapsed_time)
     // Receive/apply packets before native gameplay and ODE advance.
     pump();
     g_server_update(server, nullptr, elapsed_time);
-    // M1 snapshot capture will be added here, after the authoritative frame.
+    ++g_state.server_tick;
+    // The ODE frame is complete here; capture only through Vehicle/PhysicObj API.
+    capture_and_broadcast_host_snapshot();
 }
 
 } // namespace
@@ -220,6 +306,12 @@ void Apply(const Config* config)
     }
 
     g_state.next_ping = Clock::now() + std::chrono::seconds(1);
+    g_state.next_snapshot = Clock::now();
+    g_state.next_snapshot_sequence = 1;
+    g_state.server_tick = 0;
+    g_state.entities.clear();
+    g_state.host_vehicle_obj_id = kInvalidObjId;
+    g_state.is_host = effective.host;
     LOG_INFO("network started role=%s endpoint=%s:%u max_peers=%u",
              effective.host ? "host" : "client",
              effective.host ? "0.0.0.0" : effective.address.c_str(),

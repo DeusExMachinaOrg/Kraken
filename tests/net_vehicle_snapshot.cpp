@@ -25,7 +25,8 @@ bool same(float left, float right)
 
 bool same(const VehicleSnapshot& left, const VehicleSnapshot& right)
 {
-    return left.sequence == right.sequence &&
+    return left.entity_id == right.entity_id &&
+           left.sequence == right.sequence &&
            left.server_tick == right.server_tick &&
            same(left.position.x, right.position.x) &&
            same(left.position.y, right.position.y) &&
@@ -57,6 +58,7 @@ int main()
     using namespace kraken::net;
 
     VehicleSnapshot expected{
+        0xDEC0DE01u,
         0xFEDCBA98u,
         0x10203040u,
         {123.5f, -456.25f, 789.75f},
@@ -70,10 +72,15 @@ int main()
     passed &= check(encode_vehicle_snapshot(expected, wire) ==
                         VehicleSnapshotCodecError::None,
                     "roundtrip encode");
-    passed &= check(static_cast<std::uint8_t>(wire[8]) == 0x98u &&
-                        static_cast<std::uint8_t>(wire[9]) == 0xBAu &&
-                        static_cast<std::uint8_t>(wire[10]) == 0xDCu &&
-                        static_cast<std::uint8_t>(wire[11]) == 0xFEu,
+    passed &= check(static_cast<std::uint8_t>(wire[8]) == 0x01u &&
+                        static_cast<std::uint8_t>(wire[9]) == 0xDEu &&
+                        static_cast<std::uint8_t>(wire[10]) == 0xC0u &&
+                        static_cast<std::uint8_t>(wire[11]) == 0xDEu,
+                    "entity id is little-endian");
+    passed &= check(static_cast<std::uint8_t>(wire[12]) == 0x98u &&
+                        static_cast<std::uint8_t>(wire[13]) == 0xBAu &&
+                        static_cast<std::uint8_t>(wire[14]) == 0xDCu &&
+                        static_cast<std::uint8_t>(wire[15]) == 0xFEu,
                     "sequence is little-endian");
 
     VehicleSnapshot decoded{};
@@ -96,7 +103,13 @@ int main()
                         VehicleSnapshotCodecError::NonFiniteValue,
                     "NaN is rejected on encode");
 
-    put_u32_le(wire.data() + 16,
+    VehicleSnapshot invalid_entity = expected;
+    invalid_entity.entity_id = 0;
+    passed &= check(encode_vehicle_snapshot(invalid_entity, wire) ==
+                        VehicleSnapshotCodecError::InvalidEntityId,
+                    "zero entity id is rejected");
+
+    put_u32_le(wire.data() + 20,
                std::bit_cast<std::uint32_t>(
                    std::numeric_limits<float>::quiet_NaN()));
     passed &= check(decode_vehicle_snapshot(wire, decoded) ==
@@ -115,7 +128,7 @@ int main()
     passed &= check(encode_vehicle_snapshot(expected, wire) ==
                         VehicleSnapshotCodecError::None,
                     "restore valid wire before quaternion decode");
-    put_u32_le(wire.data() + 28 + 12,
+    put_u32_le(wire.data() + 32 + 12,
                std::bit_cast<std::uint32_t>(0.0f));
     passed &= check(decode_vehicle_snapshot(wire, decoded) ==
                         VehicleSnapshotCodecError::InvalidQuaternion,

@@ -10,12 +10,13 @@ namespace {
 constexpr std::size_t kMagicOffset = 0;
 constexpr std::size_t kVersionOffset = 4;
 constexpr std::size_t kFlagsOffset = 6;
-constexpr std::size_t kSequenceOffset = 8;
-constexpr std::size_t kServerTickOffset = 12;
-constexpr std::size_t kPositionOffset = 16;
-constexpr std::size_t kRotationOffset = 28;
-constexpr std::size_t kLinearVelocityOffset = 44;
-constexpr std::size_t kAngularVelocityOffset = 56;
+constexpr std::size_t kEntityIdOffset = 8;
+constexpr std::size_t kSequenceOffset = 12;
+constexpr std::size_t kServerTickOffset = 16;
+constexpr std::size_t kPositionOffset = 20;
+constexpr std::size_t kRotationOffset = 32;
+constexpr std::size_t kLinearVelocityOffset = 48;
+constexpr std::size_t kAngularVelocityOffset = 60;
 
 void put_u16(Byte* destination, std::uint16_t value) noexcept
 {
@@ -124,6 +125,9 @@ void put_quaternion(Byte* destination, const VehicleQuaternion& value) noexcept
 [[nodiscard]] VehicleSnapshotCodecError validate(
     const VehicleSnapshot& snapshot) noexcept
 {
+    if (snapshot.entity_id == 0)
+        return VehicleSnapshotCodecError::InvalidEntityId;
+
     if (!finite(snapshot.position) || !finite(snapshot.rotation) ||
         !finite(snapshot.linear_velocity) ||
         !finite(snapshot.angular_velocity))
@@ -159,6 +163,7 @@ VehicleSnapshotCodecError encode_vehicle_snapshot(
     put_u32(data + kMagicOffset, kVehicleSnapshotWireMagic);
     put_u16(data + kVersionOffset, kVehicleSnapshotWireVersion);
     put_u16(data + kFlagsOffset, kVehicleSnapshotWireFlags);
+    put_u32(data + kEntityIdOffset, snapshot.entity_id);
     put_u32(data + kSequenceOffset, snapshot.sequence);
     put_u32(data + kServerTickOffset, snapshot.server_tick);
     put_vector(data + kPositionOffset, snapshot.position);
@@ -183,6 +188,7 @@ VehicleSnapshotCodecError decode_vehicle_snapshot(
         return VehicleSnapshotCodecError::BadFlags;
 
     VehicleSnapshot decoded{};
+    decoded.entity_id = get_u32(data + kEntityIdOffset);
     decoded.sequence = get_u32(data + kSequenceOffset);
     decoded.server_tick = get_u32(data + kServerTickOffset);
     decoded.position = get_vector(data + kPositionOffset);

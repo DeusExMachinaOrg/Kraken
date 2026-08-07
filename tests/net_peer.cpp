@@ -1,5 +1,6 @@
 #include "net/session.hpp"
 #include "net/transport.hpp"
+#include "net/vehicle_snapshot.hpp"
 
 #include <array>
 #include <chrono>
@@ -47,6 +48,7 @@ int main(int argc, char** argv)
     bool connected = false;
     bool received_rtt = false;
     unsigned rtt_samples = 0;
+    unsigned snapshot_samples = 0;
     auto next_ping = std::chrono::steady_clock::now();
     const auto deadline = std::chrono::steady_clock::now() + 20s;
     std::array<SessionEvent, 32> events{};
@@ -85,6 +87,20 @@ int main(int argc, char** argv)
                           << std::endl;
                 break;
             case SessionEventType::Message:
+                if (event.message_type == MessageType::Snapshot) {
+                    VehicleSnapshot snapshot{};
+                    const VehicleSnapshotCodecError decoded =
+                        decode_vehicle_snapshot(event.payload, snapshot);
+                    if (!vehicle_snapshot_codec_succeeded(decoded)) {
+                        std::cerr << "snapshot decode failed code="
+                                  << static_cast<unsigned>(decoded) << '\n';
+                        return 6;
+                    }
+                    ++snapshot_samples;
+                    std::cout << "snapshot entity=" << snapshot.entity_id
+                              << " sequence=" << snapshot.sequence
+                              << " tick=" << snapshot.server_tick << std::endl;
+                }
                 break;
             }
         }

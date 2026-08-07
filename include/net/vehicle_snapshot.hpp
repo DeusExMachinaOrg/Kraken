@@ -14,7 +14,7 @@ namespace kraken::net {
 inline constexpr std::uint32_t kVehicleSnapshotWireMagic = 0x31534B56u;
 inline constexpr std::uint16_t kVehicleSnapshotWireVersion = 1;
 inline constexpr std::uint16_t kVehicleSnapshotWireFlags = 0;
-inline constexpr std::size_t kVehicleSnapshotWireSize = 68;
+inline constexpr std::size_t kVehicleSnapshotWireSize = 72;
 
 inline constexpr float kVehicleSnapshotMaxPositionComponent = 1'000'000.0f;
 inline constexpr float kVehicleSnapshotMaxLinearVelocityComponent = 100'000.0f;
@@ -35,6 +35,9 @@ struct VehicleQuaternion {
 };
 
 struct VehicleSnapshot {
+    // Authoritative network entity identity. Engine objId is deliberately not
+    // serialized: each process owns its local objId allocation.
+    std::uint32_t entity_id = 0;
     std::uint32_t sequence = 0;
     std::uint32_t server_tick = 0;
     VehicleVector3 position{};
@@ -50,6 +53,7 @@ enum class VehicleSnapshotCodecError : std::uint8_t {
     BadMagic,
     BadVersion,
     BadFlags,
+    InvalidEntityId,
     NonFiniteValue,
     ValueOutOfBounds,
     InvalidQuaternion,
