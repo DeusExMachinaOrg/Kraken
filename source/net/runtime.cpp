@@ -92,6 +92,7 @@ struct PeerController {
     WeaponCommand weapon{};
     bool has_weapon = false;
     std::uint32_t last_weapon_sequence = 0;
+    bool unstuck_was_requested = false;
 };
 
 struct LootRecord {
@@ -144,6 +145,30 @@ ServerUpdateFn g_server_update =
 FireFromWeaponCustom2Fn g_fire_from_weapon_custom2 =
     reinterpret_cast<FireFromWeaponCustom2Fn>(0x005DCBF0);
 
+void relay_weapon_command(const WeaponCommand& command);
+bool bind_local_player_vehicle();
+
+void relay_host_weapon_presentation(hta::ai::Vehicle* vehicle,
+                                    bool trigger_held, ObjId target_obj_id)
+{
+    if (!g_state.is_host || !g_state.session || !g_state.session->running() ||
+        vehicle == nullptr)
+        return;
+    NetId shooter = kInvalidNetId;
+    NetId target = kInvalidNetId;
+    if (!g_state.entities.lookup_net_id(vehicle->GetId(), shooter) ||
+        !g_state.entities.lookup_net_id(target_obj_id, target))
+        return;
+    WeaponCommand command{};
+    command.entity_id = shooter;
+    command.sequence = g_state.next_weapon_sequence++;
+    command.client_tick = g_state.server_tick;
+    command.gun_id = 0;
+    command.trigger_held = trigger_held;
+    command.target_entity_id = target;
+    relay_weapon_command(command);
+}
+
 void __fastcall fire_from_weapon_custom2_hook(hta::ai::Vehicle* vehicle, void*,
                                                bool trigger_held,
                                                std::int32_t target_obj_id)
@@ -154,6 +179,7 @@ void __fastcall fire_from_weapon_custom2_hook(hta::ai::Vehicle* vehicle, void*,
         player->GetVehicle() == vehicle;
     if (!local_client_vehicle ||
         !submit_native_weapon_intent(vehicle, trigger_held, target_obj_id)) {
+        relay_host_weapon_presentation(vehicle, trigger_held, target_obj_id);
         // Host fire, AI fire, and non-network/local-map fire retain the exact
         // original engine behavior.
         g_fire_from_weapon_custom2(vehicle, trigger_held, target_obj_id);
@@ -508,6 +534,7 @@ void receive_entity_assignment(const SessionEvent& event)
     if (entity == kInvalidNetId)
         return;
     g_state.local_entity_id = entity;
+    (void)bind_local_player_vehicle();
     LOG_INFO("local entity assigned id=%u", entity);
 }
 
@@ -817,6 +844,7 @@ void send_client_input()
     hta::ai::Vehicle* const vehicle = player ? player->GetVehicle() : nullptr;
     if (vehicle == nullptr)
         return;
+    (void)bind_local_player_vehicle();
     InputCommand input{};
     input.entity_id = g_state.local_entity_id;
     input.sequence = g_state.next_input_sequence++;
@@ -825,6 +853,7 @@ void send_client_input()
     input.steer = vehicle->m_steerRadians;
     input.brake = vehicle->m_brake;
     input.handbrake = vehicle->m_bHandBrake;
+    input.request_unstuck = vehicle->m_bMustGetOutOfDifficultPlace;
     std::array<Byte, kInputCommandWireSize> payload{};
     if (encode_input_command(input, payload) == InputCommandCodecError::None)
         (void)g_state.session->send(g_state.peers.front(), MessageType::Input,
@@ -840,6 +869,27 @@ hta::ai::Vehicle* find_vehicle(NetId entity_id)
     hta::ai::Obj* const object = server && server->m_pObjects
         ? server->m_pObjects->GetEntityByObjId(object_id) : nullptr;
     return object ? reinterpret_cast<hta::ai::Vehicle*>(object) : nullptr;
+}
+
+bool bind_local_player_vehicle()
+{
+    if (g_state.is_host || g_state.local_entity_id == kInvalidNetId)
+        return false;
+    hta::ai::Player* const player = hta::ai::Player::Instance();
+    hta::ai::Vehicle* const vehicle = player ? player->GetVehicle() : nullptr;
+    if (vehicle == nullptr)
+        return false;
+    ObjId mapped = kInvalidObjId;
+    if (g_state.entities.lookup_obj_id(g_state.local_entity_id, mapped))
+        return mapped == vehicle->GetId();
+    const EntityRegistryBindResult result = g_state.entities.bind(
+        g_state.local_entity_id, vehicle->GetId());
+    if (result == EntityRegistryBindResult::Inserted) {
+        LOG_INFO("bound local player entity=%u objId=%d",
+                 g_state.local_entity_id, vehicle->GetId());
+        return true;
+    }
+    return result == EntityRegistryBindResult::AlreadyBound;
 }
 
 float health_fraction(const hta::ai::Vehicle& vehicle)
@@ -910,6 +960,11 @@ void apply_host_inputs()
         vehicle->m_steerRadians = controller.input.steer;
         vehicle->SetBrake(controller.input.brake);
         vehicle->m_bHandBrake = controller.input.handbrake;
+        if (controller.input.request_unstuck && !controller.unstuck_was_requested) {
+            vehicle->GetOutOfDifficultPlace();
+            LOG_INFO("host executed unstuck entity=%u", controller.entity_id);
+        }
+        controller.unstuck_was_requested = controller.input.request_unstuck;
     }
 }
 
@@ -1070,6 +1125,7 @@ void apply_local_correction()
     hta::ai::Vehicle* const vehicle = player ? player->GetVehicle() : nullptr;
     if (!vehicle)
         return;
+    (void)bind_local_player_vehicle();
     constexpr float alpha = 0.15f;
     const hta::CVector current = vehicle->GetPosition();
     const hta::CVector target_pos = to_engine_vector(authoritative.position);
