@@ -3,6 +3,7 @@
 #include "net/runtime.hpp"
 
 #include "config.hpp"
+#include "ext/runtime.hpp"
 #include "ext/logger.hpp"
 #include "net/entity_registry.hpp"
 #include "net/input_command.hpp"
@@ -19,6 +20,8 @@
 #include "hta/ai/CServer.hpp"
 #include "hta/ai/ObjContainer.hpp"
 #include "hta/ai/Vehicle.hpp"
+#include "hta/m3d/Kernel.hpp"
+#include "hta/m3d/ScriptServer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -87,6 +90,33 @@ struct RuntimeState {
 RuntimeState g_state;
 ServerUpdateFn g_server_update =
     reinterpret_cast<ServerUpdateFn>(kServerUpdateAddress);
+
+int __fastcall lua_submit_local_weapon_command(hta::m3d::sArgStack& args)
+{
+    bool accepted = false;
+    if (args.m_numInArgs == 2 &&
+        args.m_InArgs[0].GetType() == hta::m3d::sArg::ARGTYPE_INT &&
+        args.m_InArgs[1].GetType() == hta::m3d::sArg::ARGTYPE_BOOL)
+        accepted = SubmitLocalWeaponCommand(args.m_InArgs[0].GetI(),
+                                            args.m_InArgs[1].GetB());
+    if (hta::m3d::sArg* const output = args.newOut())
+        output->SetB(accepted);
+    return 0;
+}
+
+void register_lua_api()
+{
+    hta::m3d::Kernel* const kernel = hta::m3d::Kernel::Instance();
+    hta::m3d::ScriptServer* const script_server =
+        kernel ? kernel->m_scriptServer : nullptr;
+    if (script_server == nullptr)
+        return;
+    const hta::m3d::eScriptError error = script_server->registerGlobalFunction(
+        &lua_submit_local_weapon_command, "MP_SubmitWeaponCommand", "bool",
+        "int gunId, bool trigger", "Submit weapon intent to the session host");
+    LOG_INFO("Lua API MP_SubmitWeaponCommand registered code=%u",
+             static_cast<unsigned>(error));
+}
 
 struct EffectiveConfig {
     bool enabled = false;
@@ -790,6 +820,7 @@ void Apply(const Config* config)
     g_state.next_weapon_sequence = 1;
     g_state.host_vehicle_obj_id = kInvalidObjId;
     g_state.is_host = effective.host;
+    ::kraken::runtime::OnLoad(&register_lua_api);
     LOG_INFO("network started role=%s endpoint=%s:%u max_peers=%u",
              effective.host ? "host" : "client",
              effective.host ? "0.0.0.0" : effective.address.c_str(),

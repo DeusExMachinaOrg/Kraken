@@ -225,6 +225,7 @@ source/net/   transport.cpp     ENet-обёртка, poll из игрового 
 -- сессия
 MP_IsActive()            MP_IsHost()           MP_GetLocalPeerId()
 MP_Host(port, maxPeers)  MP_Join(addr, port)   MP_Disconnect()
+MP_SubmitWeaponCommand(gunId, trigger)          -- уже реализован в M3
 MP_GetPeers()            -- {peerId, name, vehicle(obj), ping}
 
 -- объекты
