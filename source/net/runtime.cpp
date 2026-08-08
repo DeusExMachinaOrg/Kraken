@@ -333,6 +333,58 @@ void send_entity_assignment(PeerId peer, NetId entity_id)
                                 Channel::Reliable, payload);
 }
 
+void send_entity_despawn(PeerId peer, NetId entity_id)
+{
+    std::array<Byte, 4> payload{};
+    for (int index = 0; index != 4; ++index)
+        payload[index] = static_cast<Byte>(entity_id >> (8 * index));
+    (void)g_state.session->send(peer, MessageType::EntityDespawn,
+                                Channel::Reliable, payload);
+}
+
+bool decode_entity_id(ByteView payload, NetId& entity_id)
+{
+    if (payload.size() != 4)
+        return false;
+    entity_id = 0;
+    for (int index = 0; index != 4; ++index)
+        entity_id |= static_cast<NetId>(static_cast<std::uint8_t>(payload[index]))
+                     << (8 * index);
+    return entity_id != kInvalidNetId;
+}
+
+void schedule_entity_removal(NetId entity_id)
+{
+    ObjId object_id = kInvalidObjId;
+    if (g_state.entities.lookup_obj_id(entity_id, object_id)) {
+        if (hta::ai::CServer* const server = hta::ai::CServer::Instance();
+            server != nullptr && server->m_pObjects != nullptr)
+            server->m_pObjects->AddObjIdToRemove(object_id);
+        (void)g_state.entities.unbind_net_id(entity_id);
+    }
+    std::erase_if(g_state.remote_entities,
+                  [entity_id](const RemoteEntity& remote) {
+                      return remote.entity_id == entity_id;
+                  });
+}
+
+void schedule_all_remote_removals()
+{
+    std::vector<NetId> entity_ids;
+    entity_ids.reserve(g_state.remote_entities.size());
+    for (const RemoteEntity& remote : g_state.remote_entities)
+        entity_ids.push_back(remote.entity_id);
+    for (const NetId entity_id : entity_ids)
+        schedule_entity_removal(entity_id);
+}
+
+void broadcast_entity_despawn(NetId entity_id, PeerId excluded_peer)
+{
+    for (const PeerId peer : g_state.peers)
+        if (peer != excluded_peer)
+            send_entity_despawn(peer, entity_id);
+}
+
 void receive_entity_assignment(const SessionEvent& event)
 {
     if (g_state.is_host || event.payload.size() != 4)
@@ -344,6 +396,21 @@ void receive_entity_assignment(const SessionEvent& event)
         return;
     g_state.local_entity_id = entity;
     LOG_INFO("local entity assigned id=%u", entity);
+}
+
+void receive_entity_despawn(const SessionEvent& event)
+{
+    if (g_state.is_host)
+        return;
+    NetId entity_id = kInvalidNetId;
+    if (!decode_entity_id(event.payload, entity_id)) {
+        LOG_ERROR("peer=%u invalid entity despawn payload", event.peer);
+        return;
+    }
+    if (entity_id == g_state.local_entity_id)
+        return;
+    schedule_entity_removal(entity_id);
+    LOG_INFO("ghost despawned entity=%u", entity_id);
 }
 
 void receive_input(const SessionEvent& event)
@@ -566,7 +633,23 @@ void handle_event(SessionEvent&& event)
     case SessionEventType::PeerDisconnected:
         std::erase(g_state.peers, event.peer);
         LOG_INFO("peer=%u disconnected", event.peer);
-        std::erase_if(g_state.controllers, [peer = event.peer](const PeerController& c) { return c.peer == peer; });
+        if (g_state.is_host) {
+            const PeerController* const controller = find_controller(event.peer);
+            if (controller != nullptr) {
+                const NetId entity_id = controller->entity_id;
+                std::erase_if(g_state.controllers,
+                              [peer = event.peer](const PeerController& c) {
+                                  return c.peer == peer;
+                              });
+                schedule_entity_removal(entity_id);
+                broadcast_entity_despawn(entity_id, event.peer);
+            }
+        }
+        else {
+            // A client has exactly one authoritative host.  Its loss invalidates
+            // every visible ghost, rather than leaving stale vehicles behind.
+            schedule_all_remote_removals();
+        }
         break;
 
     case SessionEventType::RoundTripTime:
@@ -578,6 +661,8 @@ void handle_event(SessionEvent&& event)
             receive_remote_snapshot(event);
         else if (event.message_type == MessageType::EntityAssign)
             receive_entity_assignment(event);
+        else if (event.message_type == MessageType::EntityDespawn)
+            receive_entity_despawn(event);
         else if (event.message_type == MessageType::Input)
             receive_input(event);
         else if (event.message_type == MessageType::WeaponCommand)
@@ -1102,6 +1187,13 @@ bool EndSession()
         return false;
     g_state.session->stop();
     g_state.session.reset();
+    if (g_state.is_host) {
+        for (const PeerController& controller : g_state.controllers)
+            schedule_entity_removal(controller.entity_id);
+    }
+    else {
+        schedule_all_remote_removals();
+    }
     g_state.peers.clear();
     g_state.entities.clear();
     g_state.remote_entities.clear();

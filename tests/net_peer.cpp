@@ -20,7 +20,7 @@ int main(int argc, char** argv)
 
     if (argc < 2 || (std::string(argv[1]) != "host" &&
                      std::string(argv[1]) != "client")) {
-        std::cerr << "usage: kraken_net_peer_test <host|client> [port] [address] [--scripted-snapshots|--scripted-input|--scripted-weapon]\n";
+        std::cerr << "usage: kraken_net_peer_test <host|client> [port] [address] [--scripted-snapshots|--scripted-input|--scripted-weapon|--scripted-despawn]\n";
         return 64;
     }
 
@@ -35,6 +35,8 @@ int main(int argc, char** argv)
         std::string(argv[4]) == "--scripted-input";
     const bool scripted_weapon = argc >= 5 &&
         std::string(argv[4]) == "--scripted-weapon";
+    const bool scripted_despawn = argc >= 5 &&
+        std::string(argv[4]) == "--scripted-despawn";
 
     EnetTransport transport;
     SessionConfig config{};
@@ -62,6 +64,8 @@ int main(int argc, char** argv)
     std::uint32_t snapshot_sequence = 1;
     std::uint32_t input_sequence = 1;
     bool sent_weapon = false;
+    bool sent_despawn = false;
+    bool received_despawn = false;
     PeerId server_peer = kInvalidPeer;
     std::uint32_t local_entity = 0;
     const auto deadline = std::chrono::steady_clock::now() + 20s;
@@ -86,7 +90,7 @@ int main(int argc, char** argv)
                 peers.push_back(event.peer);
                 if (!is_host)
                     server_peer = event.peer;
-                if (is_host && scripted_snapshots) {
+                if (is_host && (scripted_snapshots || scripted_despawn)) {
                     std::array<Byte, 4> assignment{};
                     assignment[0] = static_cast<Byte>(42);
                     (void)session.send(event.peer, MessageType::EntityAssign,
@@ -139,6 +143,14 @@ int main(int argc, char** argv)
                               << " gun=" << command.gun_id
                               << " trigger=" << command.trigger_held << std::endl;
                 }
+                if (event.message_type == MessageType::EntityDespawn &&
+                    event.payload.size() == 4) {
+                    std::uint32_t entity = 0;
+                    for (int byte = 0; byte != 4; ++byte)
+                        entity |= static_cast<std::uint32_t>(static_cast<std::uint8_t>(event.payload[byte])) << (8 * byte);
+                    received_despawn = entity == 42;
+                    std::cout << "entity_despawn=" << entity << std::endl;
+                }
                 break;
             }
         }
@@ -165,6 +177,15 @@ int main(int argc, char** argv)
             for (PeerId peer : peers)
                 (void)session.send(peer, MessageType::Snapshot,
                                    Channel::Unreliable, payload);
+        }
+        if (is_host && scripted_despawn && connected && !sent_despawn &&
+            now >= next_snapshot + 200ms) {
+            std::array<Byte, 4> payload{};
+            payload[0] = static_cast<Byte>(42);
+            for (PeerId peer : peers)
+                (void)session.send(peer, MessageType::EntityDespawn,
+                                   Channel::Reliable, payload);
+            sent_despawn = true;
         }
         if (!is_host && scripted_input && local_entity != 0 &&
             now >= next_snapshot) {
@@ -196,7 +217,8 @@ int main(int argc, char** argv)
                                Channel::Reliable, payload);
             sent_weapon = true;
         }
-        if (received_rtt && rtt_samples >= 10)
+        if (received_rtt && rtt_samples >= 10 &&
+            (!scripted_despawn || is_host || received_despawn))
             break;
         std::this_thread::sleep_for(1ms);
     }
@@ -209,6 +231,10 @@ int main(int argc, char** argv)
     if (!received_rtt) {
         std::cerr << "timeout waiting for RTT\n";
         return 5;
+    }
+    if (scripted_despawn && !is_host && !received_despawn) {
+        std::cerr << "timeout waiting for entity despawn\n";
+        return 11;
     }
     return 0;
 }
