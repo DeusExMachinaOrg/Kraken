@@ -42,6 +42,9 @@ bool RequestLocalLoot(LootId loot_id, LootTransactionId transaction_id,
                       std::uint32_t amount);
 LootId SpawnHostLoot(std::int32_t chest_prototype_id, std::int32_t resource_id,
                      std::uint32_t amount);
+bool BeginSession();
+bool EndSession();
+bool IsSessionActive();
 namespace {
 
 constexpr uintptr_t kServerUpdateCallSite = 0x005C809D;
@@ -76,7 +79,7 @@ struct PeerController {
 struct LootRecord {
     LootId loot_id = 0;
     ObjId chest_obj_id = kInvalidObjId;
-    std::int32_t resource_id = -1;
+    std::int32_t prototype_id = -1;
     std::uint32_t remaining_amount = 0;
 };
 
@@ -157,6 +160,24 @@ int __fastcall lua_spawn_host_loot(hta::m3d::sArgStack& args)
     return 0;
 }
 
+int __fastcall lua_begin_session(hta::m3d::sArgStack& args)
+{
+    if (hta::m3d::sArg* const output = args.newOut()) output->SetB(args.m_numInArgs == 0 && BeginSession());
+    return 0;
+}
+
+int __fastcall lua_end_session(hta::m3d::sArgStack& args)
+{
+    if (hta::m3d::sArg* const output = args.newOut()) output->SetB(args.m_numInArgs == 0 && EndSession());
+    return 0;
+}
+
+int __fastcall lua_is_session_active(hta::m3d::sArgStack& args)
+{
+    if (hta::m3d::sArg* const output = args.newOut()) output->SetB(args.m_numInArgs == 0 && IsSessionActive());
+    return 0;
+}
+
 void register_lua_api()
 {
     hta::m3d::Kernel* const kernel = hta::m3d::Kernel::Instance();
@@ -173,8 +194,14 @@ void register_lua_api()
         "MP_RequestLoot", "bool", "int lootId, int transactionId, int amount",
         "Request an idempotent loot pickup from the session host");
     const hta::m3d::eScriptError spawn_error = script_server->registerGlobalFunction(&lua_spawn_host_loot,
-        "MP_SpawnHostLoot", "int", "int chestPrototypeId, int resourceId, int amount",
+        "MP_SpawnHostLoot", "int", "int chestPrototypeId, int itemPrototypeId, int amount",
         "Host-only: spawn a chest-backed loot record");
+    (void)script_server->registerGlobalFunction(&lua_begin_session,
+        "MP_BeginSession", "bool", "", "Enter the multiplayer session from a local shelter");
+    (void)script_server->registerGlobalFunction(&lua_end_session,
+        "MP_EndSession", "bool", "", "Leave the multiplayer session and return to a local shelter");
+    (void)script_server->registerGlobalFunction(&lua_is_session_active,
+        "MP_IsSessionActive", "bool", "", "Whether the multiplayer session is active");
     LOG_INFO("Lua loot API registered request=%u spawn=%u",
              static_cast<unsigned>(request_error), static_cast<unsigned>(spawn_error));
 }
@@ -185,7 +212,10 @@ struct EffectiveConfig {
     std::string address = "127.0.0.1";
     std::uint16_t port = kDefaultPort;
     std::uint32_t max_peers = 16;
+    bool autostart = true;
 };
+
+std::optional<EffectiveConfig> g_lifecycle_config;
 
 std::optional<std::string> environment(const char* name)
 {
@@ -225,6 +255,7 @@ EffectiveConfig effective_config(const Config& config)
         "KRAKEN_MP_PORT", config.multiplayer_port.value, 1024, 65535));
     result.max_peers = environment_uint("KRAKEN_MP_MAX_PEERS",
                                         config.multiplayer_max_peers.value, 2, 16);
+    result.autostart = environment_uint("KRAKEN_MP_AUTOSTART", 1, 0, 1) != 0;
     return result;
 }
 
@@ -418,7 +449,7 @@ void receive_loot_request(const SessionEvent& event)
     result.loot_id = request.loot_id;
     LootRecord* const loot = find_loot(request.loot_id);
     if (loot == nullptr) result.code = LootResultCode::NotFound;
-    else if (loot->remaining_amount == 0) { result.resource_id=loot->resource_id; result.code=LootResultCode::Exhausted; }
+    else if (loot->remaining_amount == 0) { result.prototype_id=loot->prototype_id; result.code=LootResultCode::Exhausted; }
     else {
         hta::ai::Vehicle* const vehicle = find_vehicle(controller->entity_id);
         hta::ai::CServer* const server = hta::ai::CServer::Instance();
@@ -431,15 +462,15 @@ void receive_loot_request(const SessionEvent& event)
             const hta::CVector a = vehicle->GetPosition();
             const hta::CVector b = chest->GetPosition();
             const float dx=a.x-b.x, dy=a.y-b.y, dz=a.z-b.z;
-            result.resource_id = loot->resource_id;
+            result.prototype_id = loot->prototype_id;
             result.remaining_amount = loot->remaining_amount;
             if (dx*dx + dy*dy + dz*dz > 144.0f) result.code = LootResultCode::TooFar;
-            else if (!vehicle->m_repository->CanPlaceItems(loot->resource_id, static_cast<int32_t>(request.amount))) result.code = LootResultCode::InventoryFull;
+            else if (!vehicle->m_repository->CanPlaceItems(loot->prototype_id, static_cast<int32_t>(request.amount))) result.code = LootResultCode::InventoryFull;
             else {
                 const std::uint32_t granted = (std::min)(request.amount, loot->remaining_amount);
-                if (!vehicle->m_repository->AddItems(loot->resource_id, static_cast<int32_t>(granted))) result.code = LootResultCode::InventoryFull;
+                if (!vehicle->m_repository->AddItems(loot->prototype_id, static_cast<int32_t>(granted))) result.code = LootResultCode::InventoryFull;
                 else {
-                    (void)chest->GetRepository()->GiveUpThingByResourceId(loot->resource_id, static_cast<int32_t>(granted));
+                    (void)chest->GetRepository()->GiveUpThingByPrototypeId(loot->prototype_id, static_cast<int32_t>(granted));
                     loot->remaining_amount -= granted;
                     result.granted_amount = granted;
                     result.remaining_amount = loot->remaining_amount;
@@ -917,8 +948,28 @@ void Apply(const Config* config)
     const EffectiveConfig effective = effective_config(*config);
     if (!effective.enabled)
         return;
+    g_lifecycle_config = effective;
     if (g_state.session)
         return;
+
+    // M5: a shelter can keep the engine hook/API loaded while the mod delays
+    // the actual network connection until MP_BeginSession().
+    if (!effective.autostart) {
+        try {
+            routines::ChangeCall(reinterpret_cast<void*>(kServerUpdateCallSite),
+                                 &server_update_hook);
+            g_state.hook_installed = true;
+        }
+        catch (const std::exception& error) {
+            LOG_ERROR("failed to install session hook: %s", error.what());
+            return;
+        }
+        g_state.is_host = effective.host;
+        ::kraken::runtime::OnLoad(&register_lua_api);
+        LOG_INFO("network ready role=%s (autostart=0)",
+                 effective.host ? "host" : "client");
+        return;
+    }
 
     SessionConfig session_config{};
     session_config.role = effective.host
@@ -989,6 +1040,56 @@ void Apply(const Config* config)
              effective.port, effective.max_peers);
 }
 
+bool IsSessionActive()
+{
+    return g_state.session != nullptr && g_state.session->running();
+}
+
+bool EndSession()
+{
+    if (!g_state.session)
+        return false;
+    g_state.session->stop();
+    g_state.session.reset();
+    g_state.peers.clear();
+    g_state.entities.clear();
+    g_state.remote_entities.clear();
+    g_state.controllers.clear();
+    g_state.loot_records.clear();
+    g_state.loot_receipts.clear();
+    g_state.local_entity_id = kInvalidNetId;
+    LOG_INFO("session ended; local shelter state is untouched");
+    return true;
+}
+
+bool BeginSession()
+{
+    if (IsSessionActive())
+        return true;
+    if (!g_lifecycle_config || !g_state.hook_installed)
+        return false;
+    const EffectiveConfig& effective = *g_lifecycle_config;
+    SessionConfig session_config{};
+    session_config.role = effective.host ? SessionRole::Server : SessionRole::Client;
+    session_config.transport.role = effective.host ? TransportRole::Server : TransportRole::Client;
+    session_config.transport.bind_endpoint.host = effective.host ? "0.0.0.0" : "127.0.0.1";
+    session_config.transport.bind_endpoint.port = effective.port;
+    session_config.transport.max_peers = effective.max_peers;
+    g_state.session = std::make_unique<Session>(g_state.transport, std::move(session_config));
+    TransportResult result = g_state.session->start();
+    if (!result) { g_state.session.reset(); return false; }
+    if (!effective.host) {
+        result = g_state.session->connect(Endpoint{effective.address, effective.port});
+        if (!result) { g_state.session->stop(); g_state.session.reset(); return false; }
+    }
+    g_state.is_host = effective.host;
+    g_state.next_ping = Clock::now() + std::chrono::seconds(1);
+    g_state.next_snapshot = Clock::now();
+    LOG_INFO("session began role=%s endpoint=%s:%u", effective.host ? "host" : "client",
+             effective.host ? "0.0.0.0" : effective.address.c_str(), effective.port);
+    return true;
+}
+
 bool SubmitLocalWeaponCommand(int gun_id, bool trigger_held)
 {
     if (g_state.is_host || !g_state.session ||
@@ -1022,10 +1123,10 @@ bool RequestLocalLoot(LootId loot_id, LootTransactionId transaction_id,
         MessageType::LootRequest, Channel::Reliable, payload));
 }
 
-LootId SpawnHostLoot(std::int32_t chest_prototype_id, std::int32_t resource_id,
+LootId SpawnHostLoot(std::int32_t chest_prototype_id, std::int32_t item_prototype_id,
                      std::uint32_t amount)
 {
-    if (!g_state.is_host || amount == 0 || chest_prototype_id < 0 || resource_id < 0)
+    if (!g_state.is_host || amount == 0 || chest_prototype_id < 0 || item_prototype_id < 0)
         return 0;
     hta::ai::CServer* const server = hta::ai::CServer::Instance();
     hta::ai::Player* const player = hta::ai::Player::Instance();
@@ -1041,14 +1142,14 @@ LootId SpawnHostLoot(std::int32_t chest_prototype_id, std::int32_t resource_id,
     hta::ai::Obj* const object = server->m_pObjects->GetEntityByObjId(object_id);
     hta::ai::Chest* const chest = object ? reinterpret_cast<hta::ai::Chest*>(object) : nullptr;
     if (chest == nullptr || chest->GetRepository() == nullptr ||
-        !chest->GetRepository()->AddItems(resource_id, static_cast<int32_t>(amount)))
+        !chest->GetRepository()->AddItems(item_prototype_id, static_cast<int32_t>(amount)))
         return 0;
     hta::CVector position = vehicle->GetPosition();
     position.x += 4.0f;
     chest->SetPositionSelf(position);
-    g_state.loot_records.push_back({loot_id, object_id, resource_id, amount});
-    LOG_INFO("loot spawned id=%u objId=%d resource=%d amount=%u", loot_id,
-             object_id, resource_id, amount);
+    g_state.loot_records.push_back({loot_id, object_id, item_prototype_id, amount});
+    LOG_INFO("loot spawned id=%u objId=%d prototype=%d amount=%u", loot_id,
+             object_id, item_prototype_id, amount);
     return loot_id;
 }
 

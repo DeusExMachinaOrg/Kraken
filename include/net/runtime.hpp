@@ -15,6 +15,9 @@ void Apply(const Config* config);
 // projectile.  The host validates and executes the matching original engine
 // weapon call in its ODE world.
 bool SubmitLocalWeaponCommand(int gun_id, bool trigger_held);
+bool BeginSession();
+bool EndSession();
+[[nodiscard]] bool IsSessionActive();
 
 } // namespace kraken::net::runtime
 

@@ -37,7 +37,7 @@ enum class LootResultCode : std::uint8_t {
 struct LootResult {
     LootTransactionId transaction_id = 0;
     LootId loot_id = 0;
-    std::int32_t resource_id = -1;
+    std::int32_t prototype_id = -1;
     std::uint32_t granted_amount = 0;
     std::uint32_t remaining_amount = 0;
     LootResultCode code = LootResultCode::InvalidRequest;
