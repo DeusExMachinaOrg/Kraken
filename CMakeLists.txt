@@ -51,6 +51,7 @@ add_library(kraken SHARED
 
     source/net/enet_transport.cpp
     source/net/entity_registry.cpp
+    source/net/lan_discovery.cpp
     source/net/input_command.cpp
     source/net/loot_transaction.cpp
     source/net/weapon_command.cpp
@@ -92,6 +93,7 @@ target_compile_definitions(kraken PRIVATE WIN32_LEAN_AND_MEAN)
 target_link_libraries(kraken PRIVATE
     kernel32
     user32
+    ws2_32
     lim
     hta
     enet
@@ -130,6 +132,20 @@ if(BUILD_TESTING)
     set_property(TARGET kraken_net_loopback_test PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     add_test(NAME kraken_net_loopback COMMAND kraken_net_loopback_test)
+
+    add_executable(kraken_net_lan_discovery_test
+        tests/net_lan_discovery.cpp
+        source/net/lan_discovery.cpp
+    )
+    target_compile_features(kraken_net_lan_discovery_test PRIVATE cxx_std_20)
+    target_compile_definitions(kraken_net_lan_discovery_test PRIVATE
+        WIN32_LEAN_AND_MEAN
+    )
+    target_include_directories(kraken_net_lan_discovery_test PRIVATE include)
+    target_link_libraries(kraken_net_lan_discovery_test PRIVATE ws2_32)
+    set_property(TARGET kraken_net_lan_discovery_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_lan_discovery COMMAND kraken_net_lan_discovery_test)
 
     add_executable(kraken_net_peer_test
         tests/net_peer.cpp

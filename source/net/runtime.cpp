@@ -7,6 +7,7 @@
 #include "ext/logger.hpp"
 #include "net/entity_registry.hpp"
 #include "net/input_command.hpp"
+#include "net/lan_discovery.hpp"
 #include "net/loot_transaction.hpp"
 #include "net/session.hpp"
 #include "net/snapshot_interpolation.hpp"
@@ -55,6 +56,8 @@ using ServerUpdateFn = void(__fastcall*)(void*, void*, float);
 
 constexpr std::uint64_t kInterpolationDelayMs = 100;
 constexpr std::uint32_t kMaxFutureCommandTicks = 600;
+constexpr std::uint16_t kLanDiscoveryPort = 27016;
+constexpr auto kLanDiscoveryTimeout = std::chrono::milliseconds(1500);
 
 struct RemoteEntity {
     NetId entity_id = kInvalidNetId;
@@ -92,6 +95,7 @@ struct LootReceipt {
 
 struct RuntimeState {
     EnetTransport transport;
+    LanDiscovery lan_discovery;
     std::unique_ptr<Session> session;
     std::vector<PeerId> peers;
     Clock::time_point next_ping{};
@@ -241,6 +245,7 @@ struct EffectiveConfig {
     std::uint16_t port = kDefaultPort;
     std::uint32_t max_peers = 16;
     bool autostart = true;
+    bool auto_lan = true;
 };
 
 std::optional<EffectiveConfig> g_lifecycle_config;
@@ -284,6 +289,7 @@ EffectiveConfig effective_config(const Config& config)
     result.max_peers = environment_uint("KRAKEN_MP_MAX_PEERS",
                                         config.multiplayer_max_peers.value, 2, 16);
     result.autostart = environment_uint("KRAKEN_MP_AUTOSTART", 1, 0, 1) != 0;
+    result.auto_lan = environment_uint("KRAKEN_MP_AUTO_LAN", 1, 0, 1) != 0;
     return result;
 }
 
@@ -931,6 +937,8 @@ void pump()
     if (!g_state.session)
         return;
 
+    g_state.lan_discovery.pump();
+
     const TransportResult result = g_state.session->pump();
     if (!result && result.code != TransportResultCode::WouldBlock)
         LOG_ERROR("network pump failed code=%u", static_cast<unsigned>(result.code));
@@ -1102,15 +1110,13 @@ void Apply(const Config* config)
     if (!config)
         return;
     const EffectiveConfig effective = effective_config(*config);
-    if (!effective.enabled)
-        return;
     g_lifecycle_config = effective;
     if (g_state.session)
         return;
 
     // M5: a shelter can keep the engine hook/API loaded while the mod delays
     // the actual network connection until MP_BeginSession().
-    if (!effective.autostart) {
+    if (!effective.enabled || !effective.autostart || effective.auto_lan) {
         try {
             routines::ChangeCall(reinterpret_cast<void*>(kServerUpdateCallSite),
                                  &server_update_hook);
@@ -1122,8 +1128,8 @@ void Apply(const Config* config)
         }
         g_state.is_host = effective.host;
         ::kraken::runtime::OnLoad(&register_lua_api);
-        LOG_INFO("network ready role=%s (autostart=0)",
-                 effective.host ? "host" : "client");
+        LOG_INFO("network API ready (autostart=%u enabled=%u)",
+                 effective.autostart ? 1u : 0u, effective.enabled ? 1u : 0u);
         return;
     }
 
@@ -1211,6 +1217,7 @@ bool EndSession()
         return false;
     g_state.session->stop();
     g_state.session.reset();
+    g_state.lan_discovery.stop();
     if (g_state.is_host) {
         for (const PeerController& controller : g_state.controllers)
             schedule_entity_removal(controller.entity_id);
@@ -1235,7 +1242,31 @@ bool BeginSession()
         return true;
     if (!g_lifecycle_config || !g_state.hook_installed)
         return false;
-    const EffectiveConfig& effective = *g_lifecycle_config;
+    EffectiveConfig effective = *g_lifecycle_config;
+    if (effective.auto_lan) {
+        if (g_state.lan_discovery.become_host(kLanDiscoveryPort,
+                                              effective.port)) {
+            effective.host = true;
+            LOG_INFO("LAN discovery elected this peer as host port=%u",
+                     effective.port);
+        }
+        else {
+            const std::optional<Endpoint> endpoint = LanDiscovery::discover(
+                kLanDiscoveryPort, kLanDiscoveryTimeout);
+            if (!endpoint) {
+                LOG_ERROR("LAN discovery found no host; start a raid on another LAN peer first");
+                return false;
+            }
+            effective.host = false;
+            effective.address = endpoint->host;
+            effective.port = endpoint->port;
+            LOG_INFO("LAN discovery found host=%s:%u",
+                     effective.address.c_str(), effective.port);
+        }
+    }
+    g_lifecycle_config->host = effective.host;
+    g_lifecycle_config->address = effective.address;
+    g_lifecycle_config->port = effective.port;
     SessionConfig session_config{};
     session_config.role = effective.host ? SessionRole::Server : SessionRole::Client;
     session_config.transport.role = effective.host ? TransportRole::Server : TransportRole::Client;
@@ -1244,10 +1275,19 @@ bool BeginSession()
     session_config.transport.max_peers = effective.max_peers;
     g_state.session = std::make_unique<Session>(g_state.transport, std::move(session_config));
     TransportResult result = g_state.session->start();
-    if (!result) { g_state.session.reset(); return false; }
+    if (!result) {
+        g_state.session.reset();
+        g_state.lan_discovery.stop();
+        return false;
+    }
     if (!effective.host) {
         result = g_state.session->connect(Endpoint{effective.address, effective.port});
-        if (!result) { g_state.session->stop(); g_state.session.reset(); return false; }
+        if (!result) {
+            g_state.session->stop();
+            g_state.session.reset();
+            g_state.lan_discovery.stop();
+            return false;
+        }
     }
     g_state.is_host = effective.host;
     g_state.next_ping = Clock::now() + std::chrono::seconds(1);
@@ -1274,6 +1314,7 @@ bool ConfigureSession(bool host, const char* address, unsigned short port,
     g_lifecycle_config->address = address;
     g_lifecycle_config->port = port;
     g_lifecycle_config->max_peers = max_peers;
+    g_lifecycle_config->auto_lan = false;
     LOG_INFO("LAN session configured role=%s endpoint=%s:%u max_peers=%u",
              host ? "host" : "client", address, port, max_peers);
     return true;
