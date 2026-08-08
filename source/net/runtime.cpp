@@ -69,7 +69,6 @@ using FireFromWeaponCustom2Fn = void(__thiscall*)(hta::ai::Vehicle*, bool,
                                                    std::int32_t);
 
 constexpr std::uint64_t kInterpolationDelayMs = 100;
-constexpr std::uint32_t kMaxFutureCommandTicks = 600;
 constexpr std::uint16_t kLanDiscoveryPort = 27016;
 constexpr auto kLanDiscoveryTimeout = std::chrono::milliseconds(1500);
 
@@ -566,11 +565,9 @@ void receive_input(const SessionEvent& event)
         LOG_ERROR("drop input peer=%u code=%u", event.peer, static_cast<unsigned>(decoded));
         return;
     }
-    if (input.client_tick > g_state.server_tick + kMaxFutureCommandTicks) {
-        LOG_ERROR("drop future input peer=%u tick=%u server=%u", event.peer,
-                  input.client_tick, g_state.server_tick);
-        return;
-    }
+    // server_tick is process-local (each client starts it at a different
+    // moment), so comparing it across the network rejects valid input. Packet
+    // order is enforced by the per-peer sequence number below.
     if (controller->has_input && !sequence_is_newer(input.sequence, controller->last_sequence))
         return;
     controller->input = input;
@@ -624,11 +621,6 @@ void receive_weapon_command(const SessionEvent& event)
         command.entity_id != controller->entity_id) {
         LOG_ERROR("drop weapon peer=%u code=%u", event.peer,
                   static_cast<unsigned>(decoded));
-        return;
-    }
-    if (command.client_tick > g_state.server_tick + kMaxFutureCommandTicks) {
-        LOG_ERROR("drop future weapon peer=%u tick=%u server=%u", event.peer,
-                  command.client_tick, g_state.server_tick);
         return;
     }
     if (controller->has_weapon &&
