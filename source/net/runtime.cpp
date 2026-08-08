@@ -10,6 +10,7 @@
 #include "net/snapshot_interpolation.hpp"
 #include "net/transport.hpp"
 #include "net/vehicle_snapshot.hpp"
+#include "net/weapon_command.hpp"
 #include "routines.hpp"
 
 #include "hta/CVector.hpp"
@@ -46,6 +47,8 @@ struct RemoteEntity {
     SnapshotInterpolationBuffer snapshots;
     std::uint32_t last_sequence = 0;
     bool has_sequence = false;
+    WeaponCommand weapon{};
+    bool has_weapon = false;
 };
 
 struct PeerController {
@@ -55,6 +58,9 @@ struct PeerController {
     bool has_input = false;
     std::uint32_t last_sequence = 0;
     ObjId vehicle_obj_id = kInvalidObjId;
+    WeaponCommand weapon{};
+    bool has_weapon = false;
+    std::uint32_t last_weapon_sequence = 0;
 };
 
 struct RuntimeState {
@@ -72,6 +78,7 @@ struct RuntimeState {
     NetId local_entity_id = kInvalidNetId;
     Clock::time_point next_input{};
     std::uint32_t next_input_sequence = 1;
+    std::uint32_t next_weapon_sequence = 1;
     ObjId host_vehicle_obj_id = kInvalidObjId;
     bool is_host = false;
     bool hook_installed = false;
@@ -208,6 +215,65 @@ void receive_input(const SessionEvent& event)
     controller->has_input = true;
 }
 
+void relay_weapon_command(const WeaponCommand& command)
+{
+    std::array<Byte, kWeaponCommandWireSize> payload{};
+    if (encode_weapon_command(command, payload) != WeaponCommandCodecError::None)
+        return;
+    for (const PeerId peer : g_state.peers)
+        (void)g_state.session->send(peer, MessageType::WeaponCommand,
+                                    Channel::Reliable, payload);
+}
+
+void receive_weapon_command(const SessionEvent& event)
+{
+    if (!g_state.is_host) {
+        WeaponCommand command{};
+        const WeaponCommandCodecError decoded =
+            decode_weapon_command(event.payload, command);
+        if (!weapon_command_codec_succeeded(decoded)) {
+            LOG_ERROR("peer=%u bad weapon command code=%u", event.peer,
+                      static_cast<unsigned>(decoded));
+            return;
+        }
+        RemoteEntity* const remote = find_or_add_remote(command.entity_id);
+        if (remote == nullptr) {
+            LOG_ERROR("too many remote entities; drop weapon entity=%u",
+                      command.entity_id);
+            return;
+        }
+        if (remote->has_weapon &&
+            !sequence_is_newer(command.sequence, remote->weapon.sequence))
+            return;
+        remote->weapon = command;
+        remote->has_weapon = true;
+        // Deliberately no Gun::Fire call here: this packet is an event for a
+        // future visual/modding layer, never a client-side combat simulation.
+        return;
+    }
+    PeerController* const controller = find_controller(event.peer);
+    if (controller == nullptr)
+        return;
+    WeaponCommand command{};
+    const WeaponCommandCodecError decoded =
+        decode_weapon_command(event.payload, command);
+    if (!weapon_command_codec_succeeded(decoded) ||
+        command.entity_id != controller->entity_id) {
+        LOG_ERROR("drop weapon peer=%u code=%u", event.peer,
+                  static_cast<unsigned>(decoded));
+        return;
+    }
+    if (controller->has_weapon &&
+        !sequence_is_newer(command.sequence, controller->last_weapon_sequence))
+        return;
+    controller->weapon = command;
+    controller->last_weapon_sequence = command.sequence;
+    controller->has_weapon = true;
+    // Clients use this event only for presentation.  The relay intentionally
+    // contains no projectile state and cannot cause client-side damage.
+    relay_weapon_command(command);
+}
+
 void receive_remote_snapshot(const SessionEvent& event)
 {
     if (g_state.is_host)
@@ -280,6 +346,8 @@ void handle_event(SessionEvent&& event)
             receive_entity_assignment(event);
         else if (event.message_type == MessageType::Input)
             receive_input(event);
+        else if (event.message_type == MessageType::WeaponCommand)
+            receive_weapon_command(event);
         LOG_DEBUG("peer=%u message=%u bytes=%u channel=%u", event.peer,
                   static_cast<unsigned>(event.message_type),
                   static_cast<unsigned>(event.payload.size()),
@@ -377,6 +445,29 @@ void apply_host_inputs()
         vehicle->m_steerRadians = controller.input.steer;
         vehicle->SetBrake(controller.input.brake);
         vehicle->m_bHandBrake = controller.input.handbrake;
+    }
+}
+
+void apply_host_weapons()
+{
+    if (!g_state.is_host)
+        return;
+    for (PeerController& controller : g_state.controllers) {
+        if (!controller.has_weapon)
+            continue;
+        hta::ai::Vehicle* const vehicle = ensure_host_vehicle(controller);
+        if (vehicle == nullptr)
+            continue;
+        const WeaponCommand command = controller.weapon;
+        controller.has_weapon = false;
+        // This is the original Vehicle -> Gun/CompoundGun route.  Its shells,
+        // collision callbacks and InflictDamage are therefore evaluated only
+        // in the host's ODE simulation.
+        const bool applied = vehicle->FireFromWeaponByGunId(
+            command.gun_id, command.trigger_held);
+        LOG_DEBUG("weapon host entity=%u gun=%d trigger=%u applied=%u",
+                  command.entity_id, command.gun_id,
+                  command.trigger_held ? 1u : 0u, applied ? 1u : 0u);
     }
 }
 
@@ -615,6 +706,7 @@ void __fastcall server_update_hook(void* server, void*, float elapsed_time)
     // Receive/apply packets before native gameplay and ODE advance.
     pump();
     apply_host_inputs();
+    apply_host_weapons();
     g_server_update(server, nullptr, elapsed_time);
     ++g_state.server_tick;
     apply_remote_snapshots();
@@ -695,12 +787,32 @@ void Apply(const Config* config)
     g_state.local_entity_id = kInvalidNetId;
     g_state.next_input = Clock::now();
     g_state.next_input_sequence = 1;
+    g_state.next_weapon_sequence = 1;
     g_state.host_vehicle_obj_id = kInvalidObjId;
     g_state.is_host = effective.host;
     LOG_INFO("network started role=%s endpoint=%s:%u max_peers=%u",
              effective.host ? "host" : "client",
              effective.host ? "0.0.0.0" : effective.address.c_str(),
              effective.port, effective.max_peers);
+}
+
+bool SubmitLocalWeaponCommand(int gun_id, bool trigger_held)
+{
+    if (g_state.is_host || !g_state.session ||
+        g_state.local_entity_id == kInvalidNetId || g_state.peers.empty())
+        return false;
+    WeaponCommand command{};
+    command.entity_id = g_state.local_entity_id;
+    command.sequence = g_state.next_weapon_sequence++;
+    command.client_tick = g_state.server_tick;
+    command.gun_id = gun_id;
+    command.trigger_held = trigger_held;
+    std::array<Byte, kWeaponCommandWireSize> payload{};
+    if (encode_weapon_command(command, payload) != WeaponCommandCodecError::None)
+        return false;
+    return static_cast<bool>(g_state.session->send(
+        g_state.peers.front(), MessageType::WeaponCommand, Channel::Reliable,
+        payload));
 }
 
 } // namespace kraken::net::runtime

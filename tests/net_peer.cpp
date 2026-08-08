@@ -2,6 +2,7 @@
 #include "net/input_command.hpp"
 #include "net/transport.hpp"
 #include "net/vehicle_snapshot.hpp"
+#include "net/weapon_command.hpp"
 
 #include <array>
 #include <chrono>
@@ -19,7 +20,7 @@ int main(int argc, char** argv)
 
     if (argc < 2 || (std::string(argv[1]) != "host" &&
                      std::string(argv[1]) != "client")) {
-        std::cerr << "usage: kraken_net_peer_test <host|client> [port] [address] [--scripted-snapshots|--scripted-input]\n";
+        std::cerr << "usage: kraken_net_peer_test <host|client> [port] [address] [--scripted-snapshots|--scripted-input|--scripted-weapon]\n";
         return 64;
     }
 
@@ -32,6 +33,8 @@ int main(int argc, char** argv)
         std::string(argv[4]) == "--scripted-snapshots";
     const bool scripted_input = argc >= 5 &&
         std::string(argv[4]) == "--scripted-input";
+    const bool scripted_weapon = argc >= 5 &&
+        std::string(argv[4]) == "--scripted-weapon";
 
     EnetTransport transport;
     SessionConfig config{};
@@ -58,6 +61,7 @@ int main(int argc, char** argv)
     auto next_snapshot = std::chrono::steady_clock::now();
     std::uint32_t snapshot_sequence = 1;
     std::uint32_t input_sequence = 1;
+    bool sent_weapon = false;
     PeerId server_peer = kInvalidPeer;
     std::uint32_t local_entity = 0;
     const auto deadline = std::chrono::steady_clock::now() + 20s;
@@ -126,6 +130,15 @@ int main(int argc, char** argv)
                               << " sequence=" << snapshot.sequence
                               << " tick=" << snapshot.server_tick << std::endl;
                 }
+                if (event.message_type == MessageType::WeaponCommand) {
+                    WeaponCommand command{};
+                    if (decode_weapon_command(event.payload, command) !=
+                        WeaponCommandCodecError::None)
+                        return 9;
+                    std::cout << "weapon entity=" << command.entity_id
+                              << " gun=" << command.gun_id
+                              << " trigger=" << command.trigger_held << std::endl;
+                }
                 break;
             }
         }
@@ -167,6 +180,21 @@ int main(int argc, char** argv)
                 return 8;
             (void)session.send(server_peer, MessageType::Input,
                                Channel::Unreliable, payload);
+        }
+        if (!is_host && scripted_weapon && local_entity != 0 && !sent_weapon) {
+            WeaponCommand command{};
+            command.entity_id = local_entity;
+            command.sequence = 1;
+            command.client_tick = 1;
+            command.gun_id = 0;
+            command.trigger_held = false;
+            std::array<Byte, kWeaponCommandWireSize> payload{};
+            if (encode_weapon_command(command, payload) !=
+                WeaponCommandCodecError::None)
+                return 10;
+            (void)session.send(server_peer, MessageType::WeaponCommand,
+                               Channel::Reliable, payload);
+            sent_weapon = true;
         }
         if (received_rtt && rtt_samples >= 10)
             break;

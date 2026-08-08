@@ -52,6 +52,7 @@ add_library(kraken SHARED
     source/net/enet_transport.cpp
     source/net/entity_registry.cpp
     source/net/input_command.cpp
+    source/net/weapon_command.cpp
     source/net/session.cpp
     source/net/snapshot_interpolation.cpp
     source/net/vehicle_snapshot.cpp
@@ -134,6 +135,7 @@ if(BUILD_TESTING)
         source/net/enet_transport.cpp
         source/net/session.cpp
         source/net/input_command.cpp
+        source/net/weapon_command.cpp
         source/net/vehicle_snapshot.cpp
     )
     target_compile_features(kraken_net_peer_test PRIVATE cxx_std_20)
@@ -192,4 +194,14 @@ if(BUILD_TESTING)
     set_property(TARGET kraken_net_input_command_test PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     add_test(NAME kraken_net_input_command COMMAND kraken_net_input_command_test)
+
+    add_executable(kraken_net_weapon_command_test
+        tests/net_weapon_command.cpp
+        source/net/weapon_command.cpp
+    )
+    target_compile_features(kraken_net_weapon_command_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_weapon_command_test PRIVATE include)
+    set_property(TARGET kraken_net_weapon_command_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_weapon_command COMMAND kraken_net_weapon_command_test)
 endif()
