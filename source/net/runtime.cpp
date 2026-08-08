@@ -54,6 +54,7 @@ using Clock = std::chrono::steady_clock;
 using ServerUpdateFn = void(__fastcall*)(void*, void*, float);
 
 constexpr std::uint64_t kInterpolationDelayMs = 100;
+constexpr std::uint32_t kMaxFutureCommandTicks = 600;
 
 struct RemoteEntity {
     NetId entity_id = kInvalidNetId;
@@ -94,6 +95,9 @@ struct RuntimeState {
     std::unique_ptr<Session> session;
     std::vector<PeerId> peers;
     Clock::time_point next_ping{};
+    Clock::time_point next_reconnect{};
+    std::chrono::seconds reconnect_backoff{1};
+    float snapshot_interest_radius = 500.0f;
     Clock::time_point next_snapshot{};
     std::uint32_t next_snapshot_sequence = 1;
     std::uint32_t server_tick = 0;
@@ -355,6 +359,11 @@ void receive_input(const SessionEvent& event)
         LOG_ERROR("drop input peer=%u code=%u", event.peer, static_cast<unsigned>(decoded));
         return;
     }
+    if (input.client_tick > g_state.server_tick + kMaxFutureCommandTicks) {
+        LOG_ERROR("drop future input peer=%u tick=%u server=%u", event.peer,
+                  input.client_tick, g_state.server_tick);
+        return;
+    }
     if (controller->has_input && !sequence_is_newer(input.sequence, controller->last_sequence))
         return;
     controller->input = input;
@@ -408,6 +417,11 @@ void receive_weapon_command(const SessionEvent& event)
         command.entity_id != controller->entity_id) {
         LOG_ERROR("drop weapon peer=%u code=%u", event.peer,
                   static_cast<unsigned>(decoded));
+        return;
+    }
+    if (command.client_tick > g_state.server_tick + kMaxFutureCommandTicks) {
+        LOG_ERROR("drop future weapon peer=%u tick=%u server=%u", event.peer,
+                  command.client_tick, g_state.server_tick);
         return;
     }
     if (controller->has_weapon &&
@@ -540,6 +554,7 @@ void handle_event(SessionEvent&& event)
             g_state.peers.end())
             g_state.peers.push_back(event.peer);
         LOG_INFO("peer=%u handshake complete", event.peer);
+        g_state.reconnect_backoff = std::chrono::seconds(1);
         if (g_state.is_host) {
             const NetId entity = event.peer + 1;
             g_state.controllers.push_back(PeerController{event.peer, entity});
@@ -821,6 +836,19 @@ void pump()
     }
 
     const Clock::time_point now = Clock::now();
+    if (!g_state.is_host && g_state.peers.empty() &&
+        g_state.session->state() == SessionState::Ready &&
+        g_lifecycle_config && now >= g_state.next_reconnect) {
+        const Endpoint endpoint{g_lifecycle_config->address,
+                                g_lifecycle_config->port};
+        const TransportResult reconnect = g_state.session->connect(endpoint);
+        g_state.next_reconnect = now + g_state.reconnect_backoff;
+        g_state.reconnect_backoff = (std::min)(g_state.reconnect_backoff * 2,
+            std::chrono::seconds(16));
+        LOG_INFO("reconnect %s:%u code=%u backoff=%llds", endpoint.host.c_str(),
+                 endpoint.port, static_cast<unsigned>(reconnect.code),
+                 static_cast<long long>(g_state.reconnect_backoff.count()));
+    }
     if (now < g_state.next_ping)
         return;
     g_state.next_ping = now + std::chrono::seconds(1);
@@ -836,6 +864,21 @@ VehicleVector3 to_snapshot_vector(const hta::CVector& value)
 VehicleQuaternion to_snapshot_quaternion(const hta::Quaternion& value)
 {
     return {value.x, value.y, value.z, value.w};
+}
+
+bool peer_is_interested(PeerId peer, NetId subject, const hta::ai::Vehicle& source)
+{
+    PeerController* const controller = find_controller(peer);
+    if (controller == nullptr || controller->entity_id == subject)
+        return true; // own correction must never be culled
+    hta::ai::Vehicle* const viewer = find_vehicle(controller->entity_id);
+    if (viewer == nullptr)
+        return true; // until its vehicle exists, favour correctness over culling
+    const hta::CVector a = source.GetPosition();
+    const hta::CVector b = viewer->GetPosition();
+    const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+    const float radius = g_state.snapshot_interest_radius;
+    return dx * dx + dy * dy + dz * dz <= radius * radius;
 }
 
 void capture_and_broadcast_host_snapshot()
@@ -891,6 +934,8 @@ void capture_and_broadcast_host_snapshot()
     }
 
     for (const PeerId peer : g_state.peers) {
+        if (!peer_is_interested(peer, snapshot.entity_id, *vehicle))
+            continue;
         const TransportResult result = g_state.session->send(
             peer, MessageType::Snapshot, Channel::Unreliable, ByteView{payload});
         if (!result)
@@ -916,9 +961,11 @@ void capture_and_broadcast_host_snapshot()
         if (!vehicle_snapshot_codec_succeeded(
                 encode_vehicle_snapshot(remote, remote_payload)))
             continue;
-        for (const PeerId peer : g_state.peers)
-            (void)g_state.session->send(peer, MessageType::Snapshot,
-                                        Channel::Unreliable, remote_payload);
+        for (const PeerId peer : g_state.peers) {
+            if (peer_is_interested(peer, remote.entity_id, *remote_vehicle))
+                (void)g_state.session->send(peer, MessageType::Snapshot,
+                                            Channel::Unreliable, remote_payload);
+        }
     }
 }
 
@@ -1021,6 +1068,10 @@ void Apply(const Config* config)
     }
 
     g_state.next_ping = Clock::now() + std::chrono::seconds(1);
+    g_state.next_reconnect = Clock::now() + std::chrono::seconds(1);
+    g_state.reconnect_backoff = std::chrono::seconds(1);
+    g_state.snapshot_interest_radius = static_cast<float>(environment_uint(
+        "KRAKEN_MP_INTEREST_RADIUS", 500, 25, 100000));
     g_state.next_snapshot = Clock::now();
     g_state.next_snapshot_sequence = 1;
     g_state.server_tick = 0;
@@ -1084,6 +1135,10 @@ bool BeginSession()
     }
     g_state.is_host = effective.host;
     g_state.next_ping = Clock::now() + std::chrono::seconds(1);
+    g_state.next_reconnect = Clock::now() + std::chrono::seconds(1);
+    g_state.reconnect_backoff = std::chrono::seconds(1);
+    g_state.snapshot_interest_radius = static_cast<float>(environment_uint(
+        "KRAKEN_MP_INTEREST_RADIUS", 500, 25, 100000));
     g_state.next_snapshot = Clock::now();
     LOG_INFO("session began role=%s endpoint=%s:%u", effective.host ? "host" : "client",
              effective.host ? "0.0.0.0" : effective.address.c_str(), effective.port);

@@ -270,7 +270,7 @@ MP_OnSessionStart()         MP_OnSessionEnd(reason)
 | **M3** | Бой | **Завершён 2026-08-08:** команда `WeaponCommand` (владелец/sequence/tick/gun/trigger) валидируется на host. Только host вызывает исходный `Vehicle::FireFromWeaponByGunId`, поэтому снаряды, ODE-коллизии и `InflictDamage` вычисляются в единственном authoritative-мире; clients получают только event для визуального слоя |
 | **M4** | Лут и инвентарь | **Завершён 2026-08-08:** host создаёт chest-backed loot через `MP_SpawnHostLoot`; `MP_RequestLoot` передаёт reliable idempotent transaction. Host проверяет owner, дистанцию, вместимость `GeomRepository`, затем добавляет item prototype в инвентарь и снимает его из chest; повтор того же transactionId возвращает cached result |
 | **M5** | Сессионный цикл EFA | `KRAKEN_MP_AUTOSTART=0` держит убежище локальным: hook и Lua API готовы, но transport не запущен. `MP_BeginSession()` создаёт host/client session при входе в рейд; `MP_EndSession()` останавливает transport и очищает только network state, не трогая локальное убежище |
-| **M6** | Закалка | Lag compensation, interest management по инстансам, реконнект, NAT (см. §8) |
+| **M6** | Закалка | **Завершённый in-process scope:** snapshot interest radius (`KRAKEN_MP_INTEREST_RADIUS`, 25–100 000), reconnect 1→2→4→…16 s после `SessionState::Ready`, отбрасывание future input/weapon ticks. Полная lag compensation нуждается в aim/hit payload и history hitboxes; NAT traversal нуждается в relay/STUN инфраструктуре, поэтому не симулируются в DLL |
 
 M0 намеренно первый и содержал «спайк»: библиотека могла не собраться под x86 MSVC, а нужный call
 site — не найтись. Оба риска сняты. Вызов `ai::CServer::Update` перехвачен в точке
