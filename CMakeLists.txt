@@ -94,6 +94,7 @@ target_link_libraries(kraken PRIVATE
     kernel32
     user32
     ws2_32
+    iphlpapi
     lim
     hta
     enet
@@ -142,7 +143,7 @@ if(BUILD_TESTING)
         WIN32_LEAN_AND_MEAN
     )
     target_include_directories(kraken_net_lan_discovery_test PRIVATE include)
-    target_link_libraries(kraken_net_lan_discovery_test PRIVATE ws2_32)
+    target_link_libraries(kraken_net_lan_discovery_test PRIVATE ws2_32 iphlpapi)
     set_property(TARGET kraken_net_lan_discovery_test PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     add_test(NAME kraken_net_lan_discovery COMMAND kraken_net_lan_discovery_test)

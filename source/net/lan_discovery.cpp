@@ -5,12 +5,16 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <iphlpapi.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace kraken::net {
 namespace {
@@ -69,6 +73,57 @@ sockaddr_in ipv4_address(std::string_view host, std::uint16_t port) noexcept
     return address;
 }
 
+void append_target(std::vector<sockaddr_in>& targets, const sockaddr_in& target)
+{
+    if (target.sin_addr.s_addr == INADDR_NONE)
+        return;
+    const auto found = std::find_if(targets.begin(), targets.end(),
+        [&target](const sockaddr_in& existing) {
+            return existing.sin_addr.s_addr == target.sin_addr.s_addr &&
+                   existing.sin_port == target.sin_port;
+        });
+    if (found == targets.end())
+        targets.push_back(target);
+}
+
+std::vector<sockaddr_in> discovery_targets(const std::uint16_t port,
+                                           const std::string_view requested_target)
+{
+    // Explicit destinations are useful to tests and troubleshooting.  Normal
+    // gameplay fans out to the limited broadcast plus every adapter's directed
+    // broadcast address.  On Windows the former is commonly routed to the
+    // wrong NIC when a VPN, Hyper-V or a virtual LAN adapter exists.
+    if (requested_target != "255.255.255.255")
+        return {ipv4_address(requested_target, port)};
+
+    std::vector<sockaddr_in> targets;
+    append_target(targets, ipv4_address(requested_target, port));
+
+    ULONG bytes = 0;
+    if (GetAdaptersInfo(nullptr, &bytes) != ERROR_BUFFER_OVERFLOW || bytes == 0)
+        return targets;
+    std::vector<std::byte> buffer(bytes);
+    auto* adapters = reinterpret_cast<PIP_ADAPTER_INFO>(buffer.data());
+    if (GetAdaptersInfo(adapters, &bytes) != NO_ERROR)
+        return targets;
+    for (PIP_ADAPTER_INFO adapter = adapters; adapter != nullptr; adapter = adapter->Next) {
+        if (adapter->Type == MIB_IF_TYPE_LOOPBACK)
+            continue;
+        for (IP_ADDR_STRING* item = &adapter->IpAddressList; item != nullptr; item = item->Next) {
+            const sockaddr_in address = ipv4_address(item->IpAddress.String, port);
+            const sockaddr_in mask = ipv4_address(item->IpMask.String, port);
+            if (address.sin_addr.s_addr == INADDR_NONE || mask.sin_addr.s_addr == INADDR_NONE ||
+                address.sin_addr.s_addr == htonl(INADDR_ANY))
+                continue;
+            sockaddr_in broadcast = address;
+            broadcast.sin_addr.s_addr = (address.sin_addr.s_addr & mask.sin_addr.s_addr) |
+                                        ~mask.sin_addr.s_addr;
+            append_target(targets, broadcast);
+        }
+    }
+    return targets;
+}
+
 } // namespace
 
 LanDiscovery::~LanDiscovery()
@@ -118,17 +173,29 @@ std::optional<Endpoint> LanDiscovery::discover(
         close_socket(socket);
         return std::nullopt;
     }
-    const sockaddr_in target = ipv4_address(target_address, discovery_port);
-    if (target.sin_addr.s_addr == INADDR_NONE ||
-        sendto(socket, kRequest.data(), static_cast<int>(kRequest.size()), 0,
-               reinterpret_cast<const sockaddr*>(&target), sizeof(target)) == SOCKET_ERROR) {
+    const std::vector<sockaddr_in> targets = discovery_targets(discovery_port, target_address);
+    bool request_sent = false;
+    const auto send_request = [&] {
+        for (const sockaddr_in& target : targets) {
+            if (sendto(socket, kRequest.data(), static_cast<int>(kRequest.size()), 0,
+                       reinterpret_cast<const sockaddr*>(&target), sizeof(target)) != SOCKET_ERROR)
+                request_sent = true;
+        }
+    };
+    send_request();
+    if (!request_sent) {
         close_socket(socket);
         return std::nullopt;
     }
 
     const auto deadline = std::chrono::steady_clock::now() + timeout;
+    auto next_request = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
     std::array<char, 32> reply{};
     while (std::chrono::steady_clock::now() < deadline) {
+        if (std::chrono::steady_clock::now() >= next_request) {
+            send_request();
+            next_request += std::chrono::milliseconds(250);
+        }
         sockaddr_in sender{};
         int sender_size = sizeof(sender);
         const int received = recvfrom(socket, reply.data(), static_cast<int>(reply.size()), 0,
