@@ -26,7 +26,6 @@
 #include "hta/ai/GeomRepository.hpp"
 #include "hta/ai/ObjContainer.hpp"
 #include "hta/ai/Vehicle.hpp"
-#include "hta/ai/VehiclePart.hpp"
 #include "hta/m3d/Kernel.hpp"
 #include "hta/m3d/Object.hpp"
 #include "hta/m3d/ScriptServer.hpp"
@@ -847,22 +846,6 @@ void apply_health_fraction(hta::ai::Vehicle& vehicle, float fraction)
         vehicle.Health().m_value.set(maximum * fraction);
 }
 
-void copy_host_loadout(const hta::ai::Vehicle& source, hta::ai::Vehicle& target)
-{
-    // EFA randomizes parts after a vehicle is created.  CreateNewObject alone
-    // therefore gives a remote player only the chassis prototype. Copying the
-    // host's equipped part prototypes ensures the authoritative clone has a
-    // real weapon inventory for its first combat frame.
-    for (const auto& entry : source.m_vehicleParts) {
-        const hta::ai::VehiclePart* const part = entry.second;
-        if (part == nullptr)
-            continue;
-        const hta::ai::PrototypeInfo* const info = part->GetPrototypeInfo();
-        if (info != nullptr && !info->m_prototypeName.empty())
-            (void)target.SetNewPart(entry.first, info->m_prototypeName);
-    }
-}
-
 hta::ai::Vehicle* ensure_host_vehicle(PeerController& controller)
 {
     if (hta::ai::Vehicle* const existing = find_vehicle(controller.entity_id))
@@ -883,7 +866,6 @@ hta::ai::Vehicle* ensure_host_vehicle(PeerController& controller)
                        EntityRegistryBindResult::Inserted)
         return nullptr;
     hta::ai::Vehicle* const vehicle = reinterpret_cast<hta::ai::Vehicle*>(object);
-    copy_host_loadout(*local, *vehicle);
     hta::CVector position = local->GetPosition();
     position.x += 8.0f * static_cast<float>(controller.entity_id);
     vehicle->SetPositionSelf(position);
