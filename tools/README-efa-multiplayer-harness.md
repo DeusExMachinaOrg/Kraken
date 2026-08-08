@@ -29,6 +29,11 @@ screenshots and backups, refuses to overwrite an existing remote target, and
 removes its newly-created target if unpacking or validation fails. The overlay
 recognises the flat `r1m1\triggers.xml` layout used by `HTA_EFA` and writes the
 EFA Community Remaster source hooks to the files that this installed game loads.
+It preserves each target's own `server.lua` (which can differ across EFA
+releases) and appends the adapter include only when it is absent.
+The harness preserves map XML too, except for one targeted CP1251-safe insertion
+into EFA's existing `StartMatchmaking` trigger: it calls `EFA_MP.BeginRaid()`
+without replacing the rest of the map or its seasonal logic.
 
 ## Commands
 

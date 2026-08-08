@@ -20,14 +20,12 @@ $script:RunRoot = Join-Path $script:ArtifactRoot $script:RunId
 $script:OverlayRoot = Join-Path $script:RunRoot 'overlay'
 $script:RemoteStage = "C:\Users\etozh\AppData\Local\Temp\efa-mp-$script:RunId.zip"
 $script:RemoteScpStage = "C:/Users/etozh/AppData/Local/Temp/efa-mp-$script:RunId.zip"
+$script:RemoteScriptStage = "C:\Users\etozh\AppData\Local\Temp\efa-mp-$script:RunId.ps1"
+$script:RemoteScpScriptStage = "C:/Users/etozh/AppData/Local/Temp/efa-mp-$script:RunId.ps1"
 $script:OverlayFiles = @(
     [PSCustomObject]@{ Source = 'kraken.dll'; Target = 'kraken.dll' },
     [PSCustomObject]@{ Source = 'kraken_net_peer_test.exe'; Target = 'kraken_net_peer_test.exe' },
-    [PSCustomObject]@{ Source = 'data\scripts\server.lua'; Target = 'data\scripts\server.lua' },
-    [PSCustomObject]@{ Source = 'data\scripts\efa_multiplayer.lua'; Target = 'data\scripts\efa_multiplayer.lua' },
-    [PSCustomObject]@{ Source = 'data\maps\r0m0\cinematriggers.xml'; Target = 'data\maps\r0m0\cinematriggers.xml' },
-    [PSCustomObject]@{ Source = 'data\maps\r1m1\winter\spring\summer\autumn\main\triggers.xml'; Target = 'data\maps\r1m1\triggers.xml' },
-    [PSCustomObject]@{ Source = 'data\maps\r1m1\winter\spring\summer\autumn\main\cinematriggers.xml'; Target = 'data\maps\r1m1\cinematriggers.xml' }
+    [PSCustomObject]@{ Source = 'data\scripts\efa_multiplayer.lua'; Target = 'data\scripts\efa_multiplayer.lua' }
 )
 
 function Assert-File([string]$Path) {
@@ -42,9 +40,26 @@ function ConvertTo-EncodedPowerShell([string]$ScriptText) {
 
 function Invoke-RemotePowerShell([string]$ScriptText) {
     $encoded = ConvertTo-EncodedPowerShell $ScriptText
-    $result = & ssh -o BatchMode=yes -o ConnectTimeout=10 $RemoteSsh "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Remote command failed ($LASTEXITCODE): $result"
+    $remoteExitCode = 0
+    if ($encoded.Length -le 7000) {
+        $result = & ssh -o BatchMode=yes -o ConnectTimeout=10 $RemoteSsh "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
+        $remoteExitCode = $LASTEXITCODE
+    }
+    else {
+        $localScript = Join-Path $env:TEMP "efa-mp-$script:RunId.ps1"
+        [IO.File]::WriteAllText($localScript, $ScriptText, [Text.Encoding]::Unicode)
+        try {
+            Copy-ToRemote $localScript $script:RemoteScpScriptStage
+            $result = & ssh -o BatchMode=yes -o ConnectTimeout=10 $RemoteSsh "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$script:RemoteScriptStage`""
+            $remoteExitCode = $LASTEXITCODE
+        }
+        finally {
+            Remove-Item -LiteralPath $localScript -Force -ErrorAction SilentlyContinue
+            & ssh -o BatchMode=yes -o ConnectTimeout=10 $RemoteSsh "del /q `"$script:RemoteScriptStage`"" 2>$null
+        }
+    }
+    if ($remoteExitCode -ne 0) {
+        throw "Remote command failed ($remoteExitCode): $result"
     }
     return $result
 }
@@ -192,6 +207,58 @@ function Deploy-LocalOverlay {
         New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
         Copy-Item -LiteralPath $source -Destination $target -Force
     }
+    Install-LocalRaidStartHook $LocalGameRoot $backupRoot
+    Install-LocalServerAdapter $LocalGameRoot $backupRoot
+}
+
+function Install-LocalRaidStartHook([string]$GameRoot, [string]$BackupRoot) {
+    $relative = 'data\maps\r0m0\cinematriggers.xml'
+    $target = Join-Path $GameRoot $relative
+    Assert-File $target
+    $encoding = [Text.Encoding]::GetEncoding(1251)
+    $content = [IO.File]::ReadAllText($target, $encoding)
+    $marker = '-- Kraken multiplayer raid start'
+    $diagnostic = 'LOG("EFA MP: StartMatchmaking trigger entered")'
+    if ($content.Contains($marker) -and $content.Contains($diagnostic)) { return }
+    $pattern = '(<trigger Name="StartMatchmaking" active="0">\s*<event\s+timeout="0"\s+eventid="GE_TIME_PERIOD"\s*/>\s*<script>)'
+    $regex = [regex]::new($pattern)
+    if (-not $regex.IsMatch($content)) { throw "Cannot find StartMatchmaking hook in $target" }
+    $insertion = "`r`n`t`t`t$marker`r`n`t`t`t$diagnostic`r`n`t`t`tEFA_MP.BeginRaid()"
+    $backup = Join-Path $BackupRoot $relative
+    New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
+    Copy-Item -LiteralPath $target -Destination $backup -Force
+    if ($content.Contains($marker)) {
+        [IO.File]::WriteAllText($target, $content.Replace($marker, "$marker`r`n`t`t`t$diagnostic"), $encoding)
+    }
+    else {
+        [IO.File]::WriteAllText($target, $regex.Replace($content, '$1' + $insertion, 1), $encoding)
+    }
+}
+
+function Install-LocalServerAdapter([string]$GameRoot, [string]$BackupRoot) {
+    $server = Join-Path $GameRoot 'data\scripts\server.lua'
+    Assert-File $server
+    $efa = Join-Path $GameRoot 'data\scripts\efa.lua'
+    $serverBytes = [IO.File]::ReadAllBytes($server)
+    $efaBytes = [IO.File]::ReadAllBytes($efa)
+    if ([Text.Encoding]::ASCII.GetString($serverBytes).Contains('IfLoadSave()') -and
+        -not [Text.Encoding]::ASCII.GetString($efaBytes).Contains('function IfLoadSave')) {
+        $knownGood = Get-ChildItem -LiteralPath (Join-Path $GameRoot 'backups\efa-mp-harness') -Recurse -Filter server.lua -ErrorAction SilentlyContinue |
+            Where-Object { -not [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($_.FullName)).Contains('IfLoadSave()') } |
+            Sort-Object LastWriteTime | Select-Object -First 1
+        if ($null -eq $knownGood) { throw "Cannot restore compatible server.lua for $GameRoot" }
+        Copy-Item -LiteralPath $knownGood.FullName -Destination $server -Force
+        $serverBytes = [IO.File]::ReadAllBytes($server)
+    }
+    $marker = 'EXECUTE_SCRIPT "data\\scripts\\efa_multiplayer.lua"'
+    if ([Text.Encoding]::ASCII.GetString($serverBytes).Contains($marker)) { return }
+    $backup = Join-Path $BackupRoot 'data\scripts\server.lua'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $backup) -Force | Out-Null
+    Copy-Item -LiteralPath $server -Destination $backup -Force
+    $suffix = [Text.Encoding]::ASCII.GetBytes("`r`n-- Kraken multiplayer lifecycle adapter`r`n$marker`r`n")
+    $stream = [IO.File]::Open($server, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($suffix, 0, $suffix.Length) }
+    finally { $stream.Dispose() }
 }
 
 function Deploy-RemoteOverlay {
@@ -225,6 +292,48 @@ foreach (`$relative in `$files) {
     Copy-Item -LiteralPath `$source -Destination `$target -Force
     `$hash = (Get-FileHash -LiteralPath `$target -Algorithm SHA256).Hash
     Write-Output (`$relative.Replace('\','/') + '=' + `$hash)
+}
+`$raidHook = Join-Path `$root 'data\maps\r0m0\cinematriggers.xml'
+`$encoding = [Text.Encoding]::GetEncoding(1251)
+`$content = [IO.File]::ReadAllText(`$raidHook, `$encoding)
+`$marker = '-- Kraken multiplayer raid start'
+`$diagnostic = 'LOG("EFA MP: StartMatchmaking trigger entered")'
+if (-not (`$content.Contains(`$marker) -and `$content.Contains(`$diagnostic))) {
+    `$pattern = '(<trigger Name="StartMatchmaking" active="0">\s*<event\s+timeout="0"\s+eventid="GE_TIME_PERIOD"\s*/>\s*<script>)'
+    `$regex = [regex]::new(`$pattern)
+    if (-not `$regex.IsMatch(`$content)) { throw "Cannot find StartMatchmaking hook in `$raidHook" }
+    `$hookBackup = Join-Path `$backupRoot 'data\maps\r0m0\cinematriggers.xml'
+    New-Item -ItemType Directory -Path (Split-Path -Parent `$hookBackup) -Force | Out-Null
+    Copy-Item -LiteralPath `$raidHook -Destination `$hookBackup -Force
+    `$insertion = "`r`n`t`t`t`$marker`r`n`t`t`t`$diagnostic`r`n`t`t`tEFA_MP.BeginRaid()"
+    if (`$content.Contains(`$marker)) {
+        [IO.File]::WriteAllText(`$raidHook, `$content.Replace(`$marker, "`$marker`r`n`t`t`t`$diagnostic"), `$encoding)
+    }
+    else {
+        [IO.File]::WriteAllText(`$raidHook, `$regex.Replace(`$content, '`$1' + `$insertion, 1), `$encoding)
+    }
+}
+`$server = Join-Path `$root 'data\scripts\server.lua'
+`$efa = Join-Path `$root 'data\scripts\efa.lua'
+`$serverBytes = [IO.File]::ReadAllBytes(`$server)
+`$efaBytes = [IO.File]::ReadAllBytes(`$efa)
+if ([Text.Encoding]::ASCII.GetString(`$serverBytes).Contains('IfLoadSave()') -and -not [Text.Encoding]::ASCII.GetString(`$efaBytes).Contains('function IfLoadSave')) {
+    `$knownGood = Get-ChildItem -LiteralPath (Join-Path `$root 'backups\efa-mp-harness') -Recurse -Filter server.lua -ErrorAction SilentlyContinue |
+        Where-Object { -not [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes(`$_.FullName)).Contains('IfLoadSave()') } |
+        Sort-Object LastWriteTime | Select-Object -First 1
+    if (`$null -eq `$knownGood) { throw "Cannot restore compatible server.lua for `$root" }
+    Copy-Item -LiteralPath `$knownGood.FullName -Destination `$server -Force
+}
+`$marker = 'EXECUTE_SCRIPT "data\\scripts\\efa_multiplayer.lua"'
+`$serverBytes = [IO.File]::ReadAllBytes(`$server)
+if (-not [Text.Encoding]::ASCII.GetString(`$serverBytes).Contains(`$marker)) {
+    `$serverBackup = Join-Path `$backupRoot 'data\scripts\server.lua'
+    New-Item -ItemType Directory -Path (Split-Path -Parent `$serverBackup) -Force | Out-Null
+    Copy-Item -LiteralPath `$server -Destination `$serverBackup -Force
+    `$suffix = [Text.Encoding]::ASCII.GetBytes("`r`n-- Kraken multiplayer lifecycle adapter`r`n`$marker`r`n")
+    `$stream = [IO.File]::Open(`$server, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { `$stream.Write(`$suffix, 0, `$suffix.Length) }
+    finally { `$stream.Dispose() }
 }
 Remove-Item -LiteralPath `$stage -Recurse -Force
 Remove-Item -LiteralPath `$archive -Force
