@@ -9,6 +9,24 @@ using namespace std::chrono_literals;
 
 int main()
 {
+    // Regression: on separate LAN computers both can bind UDP/27016.  A reply
+    // from an existing host must therefore force the second peer to be client.
+    const kraken::net::Endpoint existing_host{"192.168.2.118", 27015};
+    const auto second_peer = kraken::net::select_lan_session(existing_host, true);
+    if (second_peer.role != kraken::net::LanSessionRole::Client ||
+        !second_peer.host || second_peer.host->host != existing_host.host ||
+        second_peer.host->port != existing_host.port) {
+        std::cerr << "existing LAN host was not preferred over local UDP bind\n";
+        return 10;
+    }
+    if (kraken::net::select_lan_session(std::nullopt, true).role !=
+            kraken::net::LanSessionRole::Host ||
+        kraken::net::select_lan_session(std::nullopt, false).role !=
+            kraken::net::LanSessionRole::None) {
+        std::cerr << "LAN host election fallback is invalid\n";
+        return 11;
+    }
+
     constexpr std::uint16_t discovery_port = 28916;
     constexpr std::uint16_t game_port = 28915;
     kraken::net::LanDiscovery host;

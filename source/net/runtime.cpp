@@ -228,17 +228,20 @@ void register_lua_api()
     const hta::m3d::eScriptError spawn_error = script_server->registerGlobalFunction(&lua_spawn_host_loot,
         "MP_SpawnHostLoot", "int", "int chestPrototypeId, int itemPrototypeId, int amount",
         "Host-only: spawn a chest-backed loot record");
-    (void)script_server->registerGlobalFunction(&lua_begin_session,
+    const hta::m3d::eScriptError begin_error = script_server->registerGlobalFunction(&lua_begin_session,
         "MP_BeginSession", "bool", "", "Enter the multiplayer session from a local shelter");
-    (void)script_server->registerGlobalFunction(&lua_configure_session,
+    const hta::m3d::eScriptError configure_error = script_server->registerGlobalFunction(&lua_configure_session,
         "MP_ConfigureSession", "bool", "bool host, string address, int port, int maxPeers",
         "Configure the LAN listen server or client before starting a session");
-    (void)script_server->registerGlobalFunction(&lua_end_session,
+    const hta::m3d::eScriptError end_error = script_server->registerGlobalFunction(&lua_end_session,
         "MP_EndSession", "bool", "", "Leave the multiplayer session and return to a local shelter");
-    (void)script_server->registerGlobalFunction(&lua_is_session_active,
+    const hta::m3d::eScriptError active_error = script_server->registerGlobalFunction(&lua_is_session_active,
         "MP_IsSessionActive", "bool", "", "Whether the multiplayer session is active");
-    LOG_INFO("Lua loot API registered request=%u spawn=%u",
-             static_cast<unsigned>(request_error), static_cast<unsigned>(spawn_error));
+    LOG_INFO("Lua multiplayer API registered weapon=%u loot_request=%u loot_spawn=%u begin=%u configure=%u end=%u active=%u",
+             static_cast<unsigned>(error), static_cast<unsigned>(request_error),
+             static_cast<unsigned>(spawn_error), static_cast<unsigned>(begin_error),
+             static_cast<unsigned>(configure_error), static_cast<unsigned>(end_error),
+             static_cast<unsigned>(active_error));
 }
 
 struct EffectiveConfig {
@@ -1274,24 +1277,29 @@ bool BeginSession()
         return false;
     EffectiveConfig effective = *g_lifecycle_config;
     if (effective.auto_lan) {
-        if (g_state.lan_discovery.become_host(kLanDiscoveryPort,
-                                              effective.port)) {
+        // Binding a UDP port elects a host only within one operating system.
+        // Different LAN machines can all bind 27016, so discover an existing
+        // host first; only an unanswered broadcast creates a new listen server.
+        const std::optional<Endpoint> endpoint = LanDiscovery::discover(
+            kLanDiscoveryPort, kLanDiscoveryTimeout);
+        const LanSessionSelection discovered = select_lan_session(endpoint, false);
+        if (discovered.role == LanSessionRole::Client) {
+            effective.host = false;
+            effective.address = discovered.host->host;
+            effective.port = discovered.host->port;
+            LOG_INFO("LAN discovery found host=%s:%u",
+                     effective.address.c_str(), effective.port);
+        } else if (select_lan_session(std::nullopt,
+                                      g_state.lan_discovery.become_host(kLanDiscoveryPort,
+                                                                        effective.port)).role ==
+                   LanSessionRole::Host) {
             effective.host = true;
             LOG_INFO("LAN discovery elected this peer as host port=%u",
                      effective.port);
         }
         else {
-            const std::optional<Endpoint> endpoint = LanDiscovery::discover(
-                kLanDiscoveryPort, kLanDiscoveryTimeout);
-            if (!endpoint) {
-                LOG_ERROR("LAN discovery found no host; start a raid on another LAN peer first");
-                return false;
-            }
-            effective.host = false;
-            effective.address = endpoint->host;
-            effective.port = endpoint->port;
-            LOG_INFO("LAN discovery found host=%s:%u",
-                     effective.address.c_str(), effective.port);
+            LOG_ERROR("LAN discovery could not find or host a LAN session");
+            return false;
         }
     }
     g_lifecycle_config->host = effective.host;
