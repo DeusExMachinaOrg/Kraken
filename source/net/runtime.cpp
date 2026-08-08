@@ -27,6 +27,7 @@
 #include "hta/ai/ObjContainer.hpp"
 #include "hta/ai/Vehicle.hpp"
 #include "hta/m3d/Kernel.hpp"
+#include "hta/m3d/Object.hpp"
 #include "hta/m3d/ScriptServer.hpp"
 
 #include <algorithm>
@@ -52,6 +53,10 @@ namespace {
 
 constexpr uintptr_t kServerUpdateCallSite = 0x005C809D;
 constexpr uintptr_t kServerUpdateAddress = 0x005F4090;
+// ai::InfoCone::GetInfoObjId assumes that SceneGraph never returns a null
+// collision item.  An asynchronously queued ObjContainer removal can violate
+// that assumption for one frame; guard the exact virtual call in the game.
+constexpr uintptr_t kInfoConeIsKindOfCallSite = 0x007EC55C;
 
 using Clock = std::chrono::steady_clock;
 using ServerUpdateFn = void(__fastcall*)(void*, void*, float);
@@ -121,12 +126,39 @@ struct RuntimeState {
     ObjId host_vehicle_obj_id = kInvalidObjId;
     bool is_host = false;
     bool hook_installed = false;
+    bool engine_safety_hooks_installed = false;
     bool network_pause_was_cleared = false;
 };
 
 RuntimeState g_state;
 ServerUpdateFn g_server_update =
     reinterpret_cast<ServerUpdateFn>(kServerUpdateAddress);
+
+bool __fastcall info_cone_is_kind_of(hta::m3d::Object* object, void*,
+                                     hta::m3d::Class* class_object)
+{
+    if (object == nullptr) {
+        LOG_ERROR("InfoCone ignored a null scene-graph object");
+        return false;
+    }
+    return object->IsKindOf(class_object);
+}
+
+bool install_engine_safety_hooks()
+{
+    if (g_state.engine_safety_hooks_installed)
+        return true;
+    try {
+        routines::ChangeCall(reinterpret_cast<void*>(kInfoConeIsKindOfCallSite),
+                             &info_cone_is_kind_of);
+        g_state.engine_safety_hooks_installed = true;
+        return true;
+    }
+    catch (const std::exception& error) {
+        LOG_ERROR("failed to install InfoCone null guard: %s", error.what());
+        return false;
+    }
+}
 
 int __fastcall lua_submit_local_weapon_command(hta::m3d::sArgStack& args)
 {
@@ -393,10 +425,23 @@ void schedule_entity_removal(NetId entity_id)
 {
     ObjId object_id = kInvalidObjId;
     if (g_state.entities.lookup_obj_id(entity_id, object_id)) {
+        // ObjContainer removal is asynchronous.  Removing a live network
+        // vehicle from the pre-CServerUpdate packet pump leaves a stale item
+        // in InfoCone's scene-graph cell and can crash either peer.  The raid
+        // map owns cleanup at session/map end; retire the vehicle in place.
         if (hta::ai::CServer* const server = hta::ai::CServer::Instance();
-            server != nullptr && server->m_pObjects != nullptr)
-            server->m_pObjects->AddObjIdToRemove(object_id);
+            server != nullptr && server->m_pObjects != nullptr) {
+            if (hta::ai::Obj* const object = server->m_pObjects->GetEntityByObjId(object_id)) {
+                hta::ai::Vehicle* const vehicle = reinterpret_cast<hta::ai::Vehicle*>(object);
+                vehicle->SetThrottle(0.0f, false);
+                vehicle->m_steerRadians = 0.0f;
+                vehicle->SetBrake(1.0f);
+                vehicle->m_bHandBrake = true;
+            }
+        }
         (void)g_state.entities.unbind_net_id(entity_id);
+        LOG_INFO("retired network entity=%u objId=%d; deferred map cleanup", entity_id,
+                 object_id);
     }
     std::erase_if(g_state.remote_entities,
                   [entity_id](const RemoteEntity& remote) {
@@ -807,6 +852,26 @@ void apply_host_inputs()
     }
 }
 
+bool apply_authoritative_remote_input(hta::ai::Vehicle* const vehicle)
+{
+    if (!g_state.is_host || vehicle == nullptr)
+        return false;
+    for (const PeerController& controller : g_state.controllers) {
+        if (!controller.has_input || controller.vehicle_obj_id != vehicle->GetId())
+            continue;
+        // Vehicle::_KeepThrottle runs after controller polling.  Applying the
+        // network command here prevents the unowned clone's native controller
+        // from zeroing throttle/brake between packets.
+        vehicle->m_throttle = controller.input.throttle;
+        vehicle->m_steerRadians = controller.input.steer;
+        vehicle->m_brake = controller.input.brake;
+        vehicle->m_bHandBrake = controller.input.handbrake;
+        vehicle->m_bAutoBrake = false;
+        return true;
+    }
+    return false;
+}
+
 void apply_host_weapons()
 {
     if (!g_state.is_host)
@@ -1138,12 +1203,19 @@ void __fastcall server_update_hook(void* server, void*, float elapsed_time)
 
 } // namespace
 
+bool ApplyAuthoritativeRemoteInput(hta::ai::Vehicle* const vehicle)
+{
+    return apply_authoritative_remote_input(vehicle);
+}
+
 void Apply(const Config* config)
 {
     if (!config)
         return;
     const EffectiveConfig effective = effective_config(*config);
     g_lifecycle_config = effective;
+    if (!install_engine_safety_hooks())
+        return;
     if (g_state.session)
         return;
 

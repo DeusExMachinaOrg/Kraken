@@ -13,6 +13,7 @@
 #include "hta/Shared.hpp"
 
 #include "fix/cardan.hpp"
+#include "net/runtime.hpp"
 
 namespace kraken::fix::cardan {
     void SetChassisAnimationStopped(hta::ai::Vehicle* vehicle, bool stopped) {
@@ -39,6 +40,11 @@ namespace kraken::fix::cardan {
         // Original function code from IDA
         // with modifications to fix Cardan animation issue
         // -------------------------------------------------
+        // Multiplayer writes remote input at this late engine seam.  The
+        // ordinary player controller runs earlier and otherwise clears values
+        // on a vehicle that has no local driver.
+        (void)kraken::net::runtime::ApplyAuthoritativeRemoteInput(vehicle);
+
         int v3; // ecx
         int v4; // eax
         int v5; // eax
