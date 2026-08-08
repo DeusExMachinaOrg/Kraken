@@ -1076,6 +1076,12 @@ void apply_local_correction()
     vehicle->SetPositionSelf(hta::CVector(current.x + (target_pos.x-current.x)*alpha,
                                            current.y + (target_pos.y-current.y)*alpha,
                                            current.z + (target_pos.z-current.z)*alpha));
+    // Position-only correction made the locally controlled client vehicle
+    // slide sideways: its host-authoritative heading was never consumed.
+    // SLerp keeps the visual/drivetrain rotation continuous across 20 Hz
+    // snapshots and avoids the sign discontinuity of raw quaternion lerp.
+    vehicle->SetRotationSelf(hta::Quaternion::SLerp(
+        vehicle->GetRotation(), to_engine_quaternion(authoritative.rotation), alpha));
     const hta::CVector velocity = vehicle->GetLinearVelocity();
     const hta::CVector target_velocity = to_engine_vector(authoritative.linear_velocity);
     vehicle->SetLinearVelocity(hta::CVector(velocity.x + (target_velocity.x-velocity.x)*alpha,
