@@ -6,6 +6,7 @@
 #include "ext/logger.hpp"
 #include "net/entity_registry.hpp"
 #include "net/session.hpp"
+#include "net/snapshot_interpolation.hpp"
 #include "net/transport.hpp"
 #include "net/vehicle_snapshot.hpp"
 #include "routines.hpp"
@@ -13,6 +14,8 @@
 #include "hta/CVector.hpp"
 #include "hta/Quaternion.hpp"
 #include "hta/ai/Player.hpp"
+#include "hta/ai/CServer.hpp"
+#include "hta/ai/ObjContainer.hpp"
 #include "hta/ai/Vehicle.hpp"
 
 #include <algorithm>
@@ -22,6 +25,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -34,6 +38,15 @@ constexpr uintptr_t kServerUpdateAddress = 0x005F4090;
 using Clock = std::chrono::steady_clock;
 using ServerUpdateFn = void(__fastcall*)(void*, void*, float);
 
+constexpr std::uint64_t kInterpolationDelayMs = 100;
+
+struct RemoteEntity {
+    NetId entity_id = kInvalidNetId;
+    SnapshotInterpolationBuffer snapshots;
+    std::uint32_t last_sequence = 0;
+    bool has_sequence = false;
+};
+
 struct RuntimeState {
     EnetTransport transport;
     std::unique_ptr<Session> session;
@@ -43,6 +56,7 @@ struct RuntimeState {
     std::uint32_t next_snapshot_sequence = 1;
     std::uint32_t server_tick = 0;
     EntityRegistry entities;
+    std::vector<RemoteEntity> remote_entities;
     ObjId host_vehicle_obj_id = kInvalidObjId;
     bool is_host = false;
     bool hook_installed = false;
@@ -101,6 +115,68 @@ EffectiveConfig effective_config(const Config& config)
     return result;
 }
 
+SnapshotTimestampMs now_ms()
+{
+    return static_cast<SnapshotTimestampMs>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            Clock::now().time_since_epoch()).count());
+}
+
+bool sequence_is_newer(std::uint32_t candidate, std::uint32_t current)
+{
+    return static_cast<std::int32_t>(candidate - current) > 0;
+}
+
+RemoteEntity* find_or_add_remote(NetId entity_id)
+{
+    const auto found = std::find_if(
+        g_state.remote_entities.begin(), g_state.remote_entities.end(),
+        [entity_id](const RemoteEntity& remote) {
+            return remote.entity_id == entity_id;
+        });
+    if (found != g_state.remote_entities.end())
+        return &*found;
+    if (g_state.remote_entities.size() >= 16)
+        return nullptr;
+
+    g_state.remote_entities.push_back(RemoteEntity{entity_id});
+    return &g_state.remote_entities.back();
+}
+
+void receive_remote_snapshot(const SessionEvent& event)
+{
+    if (g_state.is_host)
+        return;
+
+    VehicleSnapshot snapshot{};
+    const VehicleSnapshotCodecError decoded =
+        decode_vehicle_snapshot(event.payload, snapshot);
+    if (!vehicle_snapshot_codec_succeeded(decoded)) {
+        LOG_ERROR("peer=%u bad vehicle snapshot code=%u", event.peer,
+                  static_cast<unsigned>(decoded));
+        return;
+    }
+
+    RemoteEntity* const remote = find_or_add_remote(snapshot.entity_id);
+    if (remote == nullptr) {
+        LOG_ERROR("too many remote entities; drop entity=%u", snapshot.entity_id);
+        return;
+    }
+    if (remote->has_sequence &&
+        !sequence_is_newer(snapshot.sequence, remote->last_sequence))
+        return;
+
+    const SnapshotInterpolationStatus pushed =
+        remote->snapshots.push(now_ms(), snapshot);
+    if (!snapshot_interpolation_succeeded(pushed)) {
+        LOG_ERROR("drop snapshot entity=%u interpolation code=%u",
+                  snapshot.entity_id, static_cast<unsigned>(pushed));
+        return;
+    }
+    remote->last_sequence = snapshot.sequence;
+    remote->has_sequence = true;
+}
+
 void handle_event(SessionEvent&& event)
 {
     switch (event.type) {
@@ -122,6 +198,8 @@ void handle_event(SessionEvent&& event)
         break;
 
     case SessionEventType::Message:
+        if (event.message_type == MessageType::Snapshot)
+            receive_remote_snapshot(event);
         LOG_DEBUG("peer=%u message=%u bytes=%u channel=%u", event.peer,
                   static_cast<unsigned>(event.message_type),
                   static_cast<unsigned>(event.payload.size()),
@@ -132,6 +210,88 @@ void handle_event(SessionEvent&& event)
         LOG_ERROR("peer=%u protocol error=%u", event.peer,
                   static_cast<unsigned>(event.protocol_error));
         break;
+    }
+}
+
+hta::CVector to_engine_vector(const VehicleVector3& value)
+{
+    return {value.x, value.y, value.z};
+}
+
+hta::Quaternion to_engine_quaternion(const VehicleQuaternion& value)
+{
+    return {value.x, value.y, value.z, value.w};
+}
+
+hta::ai::Vehicle* ensure_remote_vehicle(RemoteEntity& remote,
+                                        const VehicleSnapshot& snapshot)
+{
+    ObjId object_id = kInvalidObjId;
+    if (g_state.entities.lookup_obj_id(remote.entity_id, object_id)) {
+        hta::ai::CServer* const server = hta::ai::CServer::Instance();
+        hta::ai::Obj* const object = server && server->m_pObjects
+            ? server->m_pObjects->GetEntityByObjId(object_id) : nullptr;
+        if (object != nullptr)
+            return reinterpret_cast<hta::ai::Vehicle*>(object);
+        (void)g_state.entities.unbind_net_id(remote.entity_id);
+    }
+
+    hta::ai::CServer* const server = hta::ai::CServer::Instance();
+    hta::ai::Player* const player = hta::ai::Player::Instance();
+    hta::ai::Vehicle* const local_vehicle = player ? player->GetVehicle() : nullptr;
+    if (server == nullptr || server->m_pObjects == nullptr ||
+        local_vehicle == nullptr)
+        return nullptr;
+
+    char name[48]{};
+    std::snprintf(name, sizeof(name), "kraken_net_%u", snapshot.entity_id);
+    const ObjId created_id = server->m_pObjects->CreateNewObject(
+        local_vehicle->GetPrototypeId(), name, -1, -1);
+    if (created_id < 0) {
+        LOG_ERROR("cannot spawn ghost entity=%u prototype=%d", snapshot.entity_id,
+                  local_vehicle->GetPrototypeId());
+        return nullptr;
+    }
+    hta::ai::Obj* const object = server->m_pObjects->GetEntityByObjId(created_id);
+    if (object == nullptr) {
+        LOG_ERROR("spawned ghost entity=%u missing objId=%d", snapshot.entity_id,
+                  created_id);
+        return nullptr;
+    }
+    const EntityRegistryBindResult bound =
+        g_state.entities.bind(remote.entity_id, created_id);
+    if (bound != EntityRegistryBindResult::Inserted &&
+        bound != EntityRegistryBindResult::AlreadyBound) {
+        LOG_ERROR("cannot bind ghost entity=%u objId=%d code=%u", snapshot.entity_id,
+                  created_id, static_cast<unsigned>(bound));
+        return nullptr;
+    }
+    LOG_INFO("ghost spawned entity=%u objId=%d prototype=%d", snapshot.entity_id,
+             created_id, local_vehicle->GetPrototypeId());
+    return reinterpret_cast<hta::ai::Vehicle*>(object);
+}
+
+void apply_remote_snapshots()
+{
+    if (g_state.is_host || g_state.remote_entities.empty())
+        return;
+
+    const SnapshotTimestampMs current = now_ms();
+    const SnapshotTimestampMs target = current > kInterpolationDelayMs
+        ? current - kInterpolationDelayMs : 0;
+    for (RemoteEntity& remote : g_state.remote_entities) {
+        VehicleSnapshot sampled{};
+        if (!snapshot_interpolation_succeeded(
+                remote.snapshots.sample(target, sampled)))
+            continue;
+        hta::ai::Vehicle* const ghost = ensure_remote_vehicle(remote, sampled);
+        if (ghost == nullptr)
+            continue;
+
+        ghost->SetPositionSelf(to_engine_vector(sampled.position));
+        ghost->SetRotationSelf(to_engine_quaternion(sampled.rotation));
+        ghost->SetLinearVelocity(to_engine_vector(sampled.linear_velocity));
+        ghost->SetAngularVelocity(to_engine_vector(sampled.angular_velocity));
     }
 }
 
@@ -240,6 +400,7 @@ void __fastcall server_update_hook(void* server, void*, float elapsed_time)
     pump();
     g_server_update(server, nullptr, elapsed_time);
     ++g_state.server_tick;
+    apply_remote_snapshots();
     // The ODE frame is complete here; capture only through Vehicle/PhysicObj API.
     capture_and_broadcast_host_snapshot();
 }
@@ -310,6 +471,7 @@ void Apply(const Config* config)
     g_state.next_snapshot_sequence = 1;
     g_state.server_tick = 0;
     g_state.entities.clear();
+    g_state.remote_entities.clear();
     g_state.host_vehicle_obj_id = kInvalidObjId;
     g_state.is_host = effective.host;
     LOG_INFO("network started role=%s endpoint=%s:%u max_peers=%u",

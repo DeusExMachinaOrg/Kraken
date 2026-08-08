@@ -18,7 +18,7 @@ int main(int argc, char** argv)
 
     if (argc < 2 || (std::string(argv[1]) != "host" &&
                      std::string(argv[1]) != "client")) {
-        std::cerr << "usage: kraken_net_peer_test <host|client> [port] [address]\n";
+        std::cerr << "usage: kraken_net_peer_test <host|client> [port] [address] [--scripted-snapshots]\n";
         return 64;
     }
 
@@ -27,6 +27,8 @@ int main(int argc, char** argv)
         ? static_cast<std::uint16_t>(std::strtoul(argv[2], nullptr, 10))
         : kDefaultPort;
     const std::string address = argc >= 4 ? argv[3] : "127.0.0.1";
+    const bool scripted_snapshots = argc >= 5 &&
+        std::string(argv[4]) == "--scripted-snapshots";
 
     EnetTransport transport;
     SessionConfig config{};
@@ -50,6 +52,8 @@ int main(int argc, char** argv)
     unsigned rtt_samples = 0;
     unsigned snapshot_samples = 0;
     auto next_ping = std::chrono::steady_clock::now();
+    auto next_snapshot = std::chrono::steady_clock::now();
+    std::uint32_t snapshot_sequence = 1;
     const auto deadline = std::chrono::steady_clock::now() + 20s;
     std::array<SessionEvent, 32> events{};
 
@@ -110,6 +114,23 @@ int main(int argc, char** argv)
             next_ping = now + 1s;
             for (PeerId peer : peers)
                 (void)session.ping(peer);
+        }
+        if (is_host && scripted_snapshots && connected && now >= next_snapshot) {
+            next_snapshot = now + 50ms;
+            VehicleSnapshot snapshot{};
+            snapshot.entity_id = 42;
+            snapshot.sequence = snapshot_sequence;
+            snapshot.server_tick = snapshot_sequence++;
+            snapshot.position = {50.0f + 0.05f * snapshot.sequence, 0.0f, 50.0f};
+            snapshot.rotation = {0.0f, 0.0f, 0.0f, 1.0f};
+            snapshot.linear_velocity = {1.0f, 0.0f, 0.0f};
+            std::array<Byte, kVehicleSnapshotWireSize> payload{};
+            if (encode_vehicle_snapshot(snapshot, payload) !=
+                VehicleSnapshotCodecError::None)
+                return 7;
+            for (PeerId peer : peers)
+                (void)session.send(peer, MessageType::Snapshot,
+                                   Channel::Unreliable, payload);
         }
         if (received_rtt && rtt_samples >= 10)
             break;
