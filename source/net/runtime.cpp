@@ -26,6 +26,7 @@
 #include "hta/ai/GeomRepository.hpp"
 #include "hta/ai/ObjContainer.hpp"
 #include "hta/ai/Vehicle.hpp"
+#include "hta/ai/VehiclePart.hpp"
 #include "hta/m3d/Kernel.hpp"
 #include "hta/m3d/Object.hpp"
 #include "hta/m3d/ScriptServer.hpp"
@@ -49,6 +50,8 @@ LootId SpawnHostLoot(std::int32_t chest_prototype_id, std::int32_t resource_id,
 bool BeginSession();
 bool EndSession();
 bool IsSessionActive();
+bool submit_native_weapon_intent(::hta::ai::Vehicle* vehicle, bool trigger_held,
+                                 ObjId target_obj_id);
 namespace {
 
 constexpr uintptr_t kServerUpdateCallSite = 0x005C809D;
@@ -57,9 +60,14 @@ constexpr uintptr_t kServerUpdateAddress = 0x005F4090;
 // collision item.  An asynchronously queued ObjContainer removal can violate
 // that assumption for one frame; guard the exact virtual call in the game.
 constexpr uintptr_t kInfoConeIsKindOfCallSite = 0x007EC55C;
+// Lua's Vehicle:FireFromWeaponCustom2 binding.  Hooking this call site keeps
+// ordinary AI and the host player's native firing path untouched.
+constexpr uintptr_t kFireFromWeaponCustom2CallSite = 0x005DF598;
 
 using Clock = std::chrono::steady_clock;
 using ServerUpdateFn = void(__fastcall*)(void*, void*, float);
+using FireFromWeaponCustom2Fn = void(__thiscall*)(hta::ai::Vehicle*, bool,
+                                                   std::int32_t);
 
 constexpr std::uint64_t kInterpolationDelayMs = 100;
 constexpr std::uint32_t kMaxFutureCommandTicks = 600;
@@ -133,6 +141,24 @@ struct RuntimeState {
 RuntimeState g_state;
 ServerUpdateFn g_server_update =
     reinterpret_cast<ServerUpdateFn>(kServerUpdateAddress);
+FireFromWeaponCustom2Fn g_fire_from_weapon_custom2 =
+    reinterpret_cast<FireFromWeaponCustom2Fn>(0x005DCBF0);
+
+void __fastcall fire_from_weapon_custom2_hook(hta::ai::Vehicle* vehicle, void*,
+                                               bool trigger_held,
+                                               std::int32_t target_obj_id)
+{
+    hta::ai::Player* const player = hta::ai::Player::Instance();
+    const bool local_client_vehicle = !g_state.is_host && g_state.session &&
+        g_state.session->running() && player != nullptr &&
+        player->GetVehicle() == vehicle;
+    if (!local_client_vehicle ||
+        !submit_native_weapon_intent(vehicle, trigger_held, target_obj_id)) {
+        // Host fire, AI fire, and non-network/local-map fire retain the exact
+        // original engine behavior.
+        g_fire_from_weapon_custom2(vehicle, trigger_held, target_obj_id);
+    }
+}
 
 bool __fastcall info_cone_is_kind_of(hta::m3d::Object* object, void*,
                                      hta::m3d::Class* class_object)
@@ -151,11 +177,14 @@ bool install_engine_safety_hooks()
     try {
         routines::ChangeCall(reinterpret_cast<void*>(kInfoConeIsKindOfCallSite),
                              &info_cone_is_kind_of);
+        routines::ChangeCall(
+            reinterpret_cast<void*>(kFireFromWeaponCustom2CallSite),
+            &fire_from_weapon_custom2_hook);
         g_state.engine_safety_hooks_installed = true;
         return true;
     }
     catch (const std::exception& error) {
-        LOG_ERROR("failed to install InfoCone null guard: %s", error.what());
+        LOG_ERROR("failed to install multiplayer safety hooks: %s", error.what());
         return false;
     }
 }
@@ -803,6 +832,37 @@ hta::ai::Vehicle* find_vehicle(NetId entity_id)
     return object ? reinterpret_cast<hta::ai::Vehicle*>(object) : nullptr;
 }
 
+float health_fraction(const hta::ai::Vehicle& vehicle)
+{
+    const float maximum = vehicle.GetMaxHealth();
+    if (maximum <= 0.001f)
+        return 1.0f;
+    return (std::clamp)(vehicle.GetHealth() / maximum, 0.0f, 1.0f);
+}
+
+void apply_health_fraction(hta::ai::Vehicle& vehicle, float fraction)
+{
+    const float maximum = vehicle.GetMaxHealth();
+    if (maximum > 0.001f)
+        vehicle.Health().m_value.set(maximum * fraction);
+}
+
+void copy_host_loadout(const hta::ai::Vehicle& source, hta::ai::Vehicle& target)
+{
+    // EFA randomizes parts after a vehicle is created.  CreateNewObject alone
+    // therefore gives a remote player only the chassis prototype. Copying the
+    // host's equipped part prototypes ensures the authoritative clone has a
+    // real weapon inventory for its first combat frame.
+    for (const auto& entry : source.m_vehicleParts) {
+        const hta::ai::VehiclePart* const part = entry.second;
+        if (part == nullptr)
+            continue;
+        const hta::ai::PrototypeInfo* const info = part->GetPrototypeInfo();
+        if (info != nullptr && !info->m_prototypeName.empty())
+            (void)target.SetNewPart(entry.first, info->m_prototypeName);
+    }
+}
+
 hta::ai::Vehicle* ensure_host_vehicle(PeerController& controller)
 {
     if (hta::ai::Vehicle* const existing = find_vehicle(controller.entity_id))
@@ -823,6 +883,7 @@ hta::ai::Vehicle* ensure_host_vehicle(PeerController& controller)
                        EntityRegistryBindResult::Inserted)
         return nullptr;
     hta::ai::Vehicle* const vehicle = reinterpret_cast<hta::ai::Vehicle*>(object);
+    copy_host_loadout(*local, *vehicle);
     hta::CVector position = local->GetPosition();
     position.x += 8.0f * static_cast<float>(controller.entity_id);
     vehicle->SetPositionSelf(position);
@@ -887,10 +948,22 @@ void apply_host_weapons()
         // This is the original Vehicle -> Gun/CompoundGun route.  Its shells,
         // collision callbacks and InflictDamage are therefore evaluated only
         // in the host's ODE simulation.
-        const bool applied = vehicle->FireFromWeaponByGunId(
-            command.gun_id, command.trigger_held);
-        LOG_DEBUG("weapon host entity=%u gun=%d trigger=%u applied=%u",
+        bool applied = false;
+        if (command.target_entity_id != 0) {
+            hta::ai::Vehicle* const target = find_vehicle(command.target_entity_id);
+            if (target != nullptr) {
+                vehicle->FireFromWeaponCustom2(command.trigger_held, target->GetId());
+                applied = true;
+            }
+        }
+        else {
+            // Compatibility for the explicit Lua mod API.
+            applied = vehicle->FireFromWeaponByGunId(command.gun_id,
+                                                       command.trigger_held);
+        }
+        LOG_DEBUG("weapon host entity=%u gun=%d target=%u trigger=%u applied=%u",
                   command.entity_id, command.gun_id,
+                  command.target_entity_id,
                   command.trigger_held ? 1u : 0u, applied ? 1u : 0u);
     }
 }
@@ -974,6 +1047,13 @@ void apply_remote_snapshots()
         ghost->SetRotationSelf(to_engine_quaternion(sampled.rotation));
         ghost->SetLinearVelocity(to_engine_vector(sampled.linear_velocity));
         ghost->SetAngularVelocity(to_engine_vector(sampled.angular_velocity));
+        apply_health_fraction(*ghost, sampled.health_fraction);
+        if (remote.has_weapon && remote.weapon.target_entity_id != 0) {
+            if (hta::ai::Vehicle* const target =
+                    find_vehicle(remote.weapon.target_entity_id)) {
+                ghost->WeaponLookAtPoint(target->GetPosition(), 0.0f);
+            }
+        }
     }
 }
 
@@ -1000,7 +1080,8 @@ void apply_local_correction()
     const hta::CVector target_velocity = to_engine_vector(authoritative.linear_velocity);
     vehicle->SetLinearVelocity(hta::CVector(velocity.x + (target_velocity.x-velocity.x)*alpha,
                                              velocity.y + (target_velocity.y-velocity.y)*alpha,
-                                             velocity.z + (target_velocity.z-velocity.z)*alpha));
+                                           velocity.z + (target_velocity.z-velocity.z)*alpha));
+    apply_health_fraction(*vehicle, authoritative.health_fraction);
 }
 
 void pump()
@@ -1111,6 +1192,7 @@ void capture_and_broadcast_host_snapshot()
     snapshot.rotation = to_snapshot_quaternion(vehicle->GetRotation());
     snapshot.linear_velocity = to_snapshot_vector(vehicle->GetLinearVelocity());
     snapshot.angular_velocity = to_snapshot_vector(vehicle->GetAngularVelocity());
+    snapshot.health_fraction = health_fraction(*vehicle);
 
     std::array<Byte, kVehicleSnapshotWireSize> payload{};
     const VehicleSnapshotCodecError encoded =
@@ -1145,6 +1227,7 @@ void capture_and_broadcast_host_snapshot()
         remote.rotation = to_snapshot_quaternion(remote_vehicle->GetRotation());
         remote.linear_velocity = to_snapshot_vector(remote_vehicle->GetLinearVelocity());
         remote.angular_velocity = to_snapshot_vector(remote_vehicle->GetAngularVelocity());
+        remote.health_fraction = health_fraction(*remote_vehicle);
         std::array<Byte, kVehicleSnapshotWireSize> remote_payload{};
         if (!vehicle_snapshot_codec_succeeded(
                 encode_vehicle_snapshot(remote, remote_payload)))
@@ -1447,6 +1530,37 @@ bool SubmitLocalWeaponCommand(int gun_id, bool trigger_held)
     return static_cast<bool>(g_state.session->send(
         g_state.peers.front(), MessageType::WeaponCommand, Channel::Reliable,
         payload));
+}
+
+bool submit_native_weapon_intent(hta::ai::Vehicle* const vehicle,
+                                 bool trigger_held, const ObjId target_obj_id)
+{
+    if (vehicle == nullptr || g_state.is_host || !g_state.session ||
+        g_state.local_entity_id == kInvalidNetId || g_state.peers.empty())
+        return false;
+
+    NetId target_entity_id = kInvalidNetId;
+    if (!g_state.entities.lookup_net_id(target_obj_id, target_entity_id) ||
+        target_entity_id == kInvalidNetId) {
+        // A client may only ask the host to fire at an entity that the host
+        // owns. This is deliberately not a generic objId tunnel.
+        LOG_DEBUG("drop native weapon intent target_obj=%d is not a network entity",
+                  target_obj_id);
+        return true;
+    }
+    WeaponCommand command{};
+    command.entity_id = g_state.local_entity_id;
+    command.sequence = g_state.next_weapon_sequence++;
+    command.client_tick = g_state.server_tick;
+    command.gun_id = 0;
+    command.trigger_held = trigger_held;
+    command.target_entity_id = target_entity_id;
+    std::array<Byte, kWeaponCommandWireSize> payload{};
+    if (encode_weapon_command(command, payload) != WeaponCommandCodecError::None)
+        return true;
+    (void)g_state.session->send(g_state.peers.front(), MessageType::WeaponCommand,
+                                Channel::Reliable, payload);
+    return true;
 }
 
 bool RequestLocalLoot(LootId loot_id, LootTransactionId transaction_id,

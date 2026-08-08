@@ -12,9 +12,9 @@ namespace kraken::net {
 // below.  It does not depend on compiler ABI, host endianness, or the layout of
 // any engine/physics type.
 inline constexpr std::uint32_t kVehicleSnapshotWireMagic = 0x31534B56u;
-inline constexpr std::uint16_t kVehicleSnapshotWireVersion = 1;
+inline constexpr std::uint16_t kVehicleSnapshotWireVersion = 2;
 inline constexpr std::uint16_t kVehicleSnapshotWireFlags = 0;
-inline constexpr std::size_t kVehicleSnapshotWireSize = 72;
+inline constexpr std::size_t kVehicleSnapshotWireSize = 76;
 
 inline constexpr float kVehicleSnapshotMaxPositionComponent = 1'000'000.0f;
 inline constexpr float kVehicleSnapshotMaxLinearVelocityComponent = 100'000.0f;
@@ -44,6 +44,9 @@ struct VehicleSnapshot {
     VehicleQuaternion rotation{};
     VehicleVector3 linear_velocity{};
     VehicleVector3 angular_velocity{};
+    // Host-authoritative health, normalized to handle differing max values
+    // between local EFA vehicle configurations.
+    float health_fraction = 1.0f;
 };
 
 enum class VehicleSnapshotCodecError : std::uint8_t {
@@ -57,6 +60,7 @@ enum class VehicleSnapshotCodecError : std::uint8_t {
     NonFiniteValue,
     ValueOutOfBounds,
     InvalidQuaternion,
+    InvalidHealthFraction,
 };
 
 [[nodiscard]] constexpr bool vehicle_snapshot_codec_succeeded(

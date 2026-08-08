@@ -58,6 +58,7 @@ WeaponCommandCodecError encode_weapon_command(const WeaponCommand& command,
     put_u32(data + 12, command.sequence);
     put_u32(data + 16, command.client_tick);
     put_u32(data + 20, static_cast<std::uint32_t>(command.gun_id));
+    put_u32(data + 24, command.target_entity_id);
     // trigger is carried by the reserved flag word's low bit to preserve a
     // fixed, explicitly little-endian command layout.
     data[6] = static_cast<Byte>(command.trigger_held ? 1 : 0);
@@ -82,6 +83,7 @@ WeaponCommandCodecError decode_weapon_command(ByteView input,
     decoded.sequence = get_u32(data + 12);
     decoded.client_tick = get_u32(data + 16);
     decoded.gun_id = static_cast<std::int32_t>(get_u32(data + 20));
+    decoded.target_entity_id = get_u32(data + 24);
     decoded.trigger_held = data[6] == static_cast<Byte>(1);
     const WeaponCommandCodecError validation = validate(decoded);
     if (!weapon_command_codec_succeeded(validation))

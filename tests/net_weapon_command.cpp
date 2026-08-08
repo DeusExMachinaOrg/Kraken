@@ -6,14 +6,14 @@
 int main()
 {
     using namespace kraken::net;
-    WeaponCommand original{42, 7, 99, 3, true};
+    WeaponCommand original{42, 7, 99, 3, true, 17};
     WeaponCommand decoded{};
     std::array<Byte, kWeaponCommandWireSize> wire{};
     if (encode_weapon_command(original, wire) != WeaponCommandCodecError::None ||
         decode_weapon_command(wire, decoded) != WeaponCommandCodecError::None ||
         decoded.entity_id != original.entity_id ||
         decoded.sequence != original.sequence || decoded.gun_id != original.gun_id ||
-        !decoded.trigger_held)
+        !decoded.trigger_held || decoded.target_entity_id != original.target_entity_id)
         return 1;
 
     std::array<Byte, kWeaponCommandWireSize - 1> short_wire{};

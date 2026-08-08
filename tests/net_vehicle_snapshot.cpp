@@ -40,7 +40,8 @@ bool same(const VehicleSnapshot& left, const VehicleSnapshot& right)
            same(left.linear_velocity.z, right.linear_velocity.z) &&
            same(left.angular_velocity.x, right.angular_velocity.x) &&
            same(left.angular_velocity.y, right.angular_velocity.y) &&
-           same(left.angular_velocity.z, right.angular_velocity.z);
+           same(left.angular_velocity.z, right.angular_velocity.z) &&
+           same(left.health_fraction, right.health_fraction);
 }
 
 void put_u32_le(Byte* destination, std::uint32_t value)
@@ -65,6 +66,7 @@ int main()
         {0.0f, 0.70710677f, 0.0f, 0.70710677f},
         {-12.0f, 34.5f, 0.25f},
         {1.0f, -2.0f, 3.5f},
+        0.75f,
     };
 
     std::array<Byte, kVehicleSnapshotWireSize> wire{};
@@ -139,6 +141,12 @@ int main()
     passed &= check(encode_vehicle_snapshot(out_of_bounds, wire) ==
                         VehicleSnapshotCodecError::ValueOutOfBounds,
                     "out-of-bounds position is rejected");
+
+    VehicleSnapshot invalid_health = expected;
+    invalid_health.health_fraction = 1.01f;
+    passed &= check(encode_vehicle_snapshot(invalid_health, wire) ==
+                        VehicleSnapshotCodecError::InvalidHealthFraction,
+                    "invalid health fraction is rejected");
 
     return passed ? 0 : 1;
 }

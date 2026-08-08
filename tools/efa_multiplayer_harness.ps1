@@ -193,6 +193,36 @@ Write-Output ('remote_target=' + `$root)
     Invoke-RemotePowerShell $scriptText | Write-Host
 }
 
+function Stop-LocalGame {
+    $processes = @(Get-Process -Name 'hta' -ErrorAction SilentlyContinue)
+    if ($processes.Count -eq 0) { return }
+    $processes | Stop-Process -Force
+    $deadline = (Get-Date).AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 200
+        $processes = @(Get-Process -Name 'hta' -ErrorAction SilentlyContinue)
+    } while ($processes.Count -ne 0 -and (Get-Date) -lt $deadline)
+    if ($processes.Count -ne 0) { throw 'Local hta.exe did not exit before deployment' }
+    Write-Host 'Stopped local hta.exe before deployment'
+}
+
+function Stop-RemoteGame {
+    $scriptText = @"
+`$processes = @(Get-Process -Name 'hta' -ErrorAction SilentlyContinue)
+if (`$processes.Count -ne 0) {
+    `$processes | Stop-Process -Force
+    `$deadline = (Get-Date).AddSeconds(10)
+    do {
+        Start-Sleep -Milliseconds 200
+        `$processes = @(Get-Process -Name 'hta' -ErrorAction SilentlyContinue)
+    } while (`$processes.Count -ne 0 -and (Get-Date) -lt `$deadline)
+    if (`$processes.Count -ne 0) { Write-Error 'Remote hta.exe did not exit before deployment'; exit 5 }
+    Write-Output 'stopped_remote_hta=1'
+}
+"@
+    Invoke-RemotePowerShell $scriptText | Write-Host
+}
+
 function Deploy-LocalOverlay {
     Test-LocalTarget
     $backupRoot = Join-Path $LocalGameRoot "backups\efa-mp-harness\$script:RunId"
@@ -399,10 +429,10 @@ switch ($Action) {
     'Package' { New-ComModPackage }
     'ProvisionRemote' { Provision-RemoteTarget }
     'Preflight' { Test-LocalTarget; Test-RemoteTarget }
-    'Deploy' { New-Overlay; Test-LocalTarget; Test-RemoteTarget; Deploy-LocalOverlay; Deploy-RemoteOverlay }
+    'Deploy' { Stop-LocalGame; Stop-RemoteGame; New-Overlay; Test-LocalTarget; Test-RemoteTarget; Deploy-LocalOverlay; Deploy-RemoteOverlay }
     'Smoke' { Invoke-Smoke }
     'Collect' { Collect-Logs }
-    'All' { New-ComModPackage; New-Overlay; Test-LocalTarget; Test-RemoteTarget; Deploy-LocalOverlay; Deploy-RemoteOverlay; Invoke-Smoke; Collect-Logs }
+    'All' { Stop-LocalGame; Stop-RemoteGame; New-ComModPackage; New-Overlay; Test-LocalTarget; Test-RemoteTarget; Deploy-LocalOverlay; Deploy-RemoteOverlay; Invoke-Smoke; Collect-Logs }
 }
 
 Write-Host "Artifacts: $script:RunRoot"

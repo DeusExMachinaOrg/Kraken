@@ -17,6 +17,7 @@ constexpr std::size_t kPositionOffset = 20;
 constexpr std::size_t kRotationOffset = 32;
 constexpr std::size_t kLinearVelocityOffset = 48;
 constexpr std::size_t kAngularVelocityOffset = 60;
+constexpr std::size_t kHealthFractionOffset = 72;
 
 void put_u16(Byte* destination, std::uint16_t value) noexcept
 {
@@ -144,6 +145,10 @@ void put_quaternion(Byte* destination, const VehicleQuaternion& value) noexcept
     if (!valid_quaternion(snapshot.rotation))
         return VehicleSnapshotCodecError::InvalidQuaternion;
 
+    if (!finite(snapshot.health_fraction) || snapshot.health_fraction < 0.0f ||
+        snapshot.health_fraction > 1.0f)
+        return VehicleSnapshotCodecError::InvalidHealthFraction;
+
     return VehicleSnapshotCodecError::None;
 }
 
@@ -170,6 +175,7 @@ VehicleSnapshotCodecError encode_vehicle_snapshot(
     put_quaternion(data + kRotationOffset, snapshot.rotation);
     put_vector(data + kLinearVelocityOffset, snapshot.linear_velocity);
     put_vector(data + kAngularVelocityOffset, snapshot.angular_velocity);
+    put_f32(data + kHealthFractionOffset, snapshot.health_fraction);
     return VehicleSnapshotCodecError::None;
 }
 
@@ -195,6 +201,7 @@ VehicleSnapshotCodecError decode_vehicle_snapshot(
     decoded.rotation = get_quaternion(data + kRotationOffset);
     decoded.linear_velocity = get_vector(data + kLinearVelocityOffset);
     decoded.angular_velocity = get_vector(data + kAngularVelocityOffset);
+    decoded.health_fraction = get_f32(data + kHealthFractionOffset);
 
     const VehicleSnapshotCodecError validation = validate(decoded);
     if (!vehicle_snapshot_codec_succeeded(validation))

@@ -48,8 +48,9 @@ without replacing the rest of the map or its seasonal logic.
 # Verifies both game copies are already EFA installs; no write occurs.
 .\tools\efa_multiplayer_harness.ps1 -Action Preflight
 
-# Copies the DLL and only the EFA files affected by multiplayer. Existing files
-# are backed up under backups\efa-mp-harness\<timestamp> on each machine.
+# Closes local and remote hta.exe, then copies the DLL and only the EFA files
+# affected by multiplayer. Existing files are backed up under
+# backups\efa-mp-harness\<timestamp> on each machine.
 .\tools\efa_multiplayer_harness.ps1 -Action Deploy
 
 # Runs host locally and client remotely over the actual LAN. It verifies
