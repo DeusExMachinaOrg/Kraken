@@ -1,4 +1,5 @@
 #include "net/session.hpp"
+#include "net/input_command.hpp"
 #include "net/transport.hpp"
 #include "net/vehicle_snapshot.hpp"
 
@@ -18,7 +19,7 @@ int main(int argc, char** argv)
 
     if (argc < 2 || (std::string(argv[1]) != "host" &&
                      std::string(argv[1]) != "client")) {
-        std::cerr << "usage: kraken_net_peer_test <host|client> [port] [address] [--scripted-snapshots]\n";
+        std::cerr << "usage: kraken_net_peer_test <host|client> [port] [address] [--scripted-snapshots|--scripted-input]\n";
         return 64;
     }
 
@@ -29,6 +30,8 @@ int main(int argc, char** argv)
     const std::string address = argc >= 4 ? argv[3] : "127.0.0.1";
     const bool scripted_snapshots = argc >= 5 &&
         std::string(argv[4]) == "--scripted-snapshots";
+    const bool scripted_input = argc >= 5 &&
+        std::string(argv[4]) == "--scripted-input";
 
     EnetTransport transport;
     SessionConfig config{};
@@ -54,6 +57,9 @@ int main(int argc, char** argv)
     auto next_ping = std::chrono::steady_clock::now();
     auto next_snapshot = std::chrono::steady_clock::now();
     std::uint32_t snapshot_sequence = 1;
+    std::uint32_t input_sequence = 1;
+    PeerId server_peer = kInvalidPeer;
+    std::uint32_t local_entity = 0;
     const auto deadline = std::chrono::steady_clock::now() + 20s;
     std::array<SessionEvent, 32> events{};
 
@@ -74,6 +80,14 @@ int main(int argc, char** argv)
             case SessionEventType::PeerConnected:
                 connected = true;
                 peers.push_back(event.peer);
+                if (!is_host)
+                    server_peer = event.peer;
+                if (is_host && scripted_snapshots) {
+                    std::array<Byte, 4> assignment{};
+                    assignment[0] = static_cast<Byte>(42);
+                    (void)session.send(event.peer, MessageType::EntityAssign,
+                                       Channel::Reliable, assignment);
+                }
                 std::cout << "connected peer=" << event.peer << std::endl;
                 break;
             case SessionEventType::PeerDisconnected:
@@ -91,6 +105,13 @@ int main(int argc, char** argv)
                           << std::endl;
                 break;
             case SessionEventType::Message:
+                if (event.message_type == MessageType::EntityAssign &&
+                    event.payload.size() == 4) {
+                    local_entity = 0;
+                    for (int byte = 0; byte != 4; ++byte)
+                        local_entity |= static_cast<std::uint32_t>(static_cast<std::uint8_t>(event.payload[byte])) << (8 * byte);
+                    std::cout << "entity_assign=" << local_entity << std::endl;
+                }
                 if (event.message_type == MessageType::Snapshot) {
                     VehicleSnapshot snapshot{};
                     const VehicleSnapshotCodecError decoded =
@@ -131,6 +152,21 @@ int main(int argc, char** argv)
             for (PeerId peer : peers)
                 (void)session.send(peer, MessageType::Snapshot,
                                    Channel::Unreliable, payload);
+        }
+        if (!is_host && scripted_input && local_entity != 0 &&
+            now >= next_snapshot) {
+            next_snapshot = now + 50ms;
+            InputCommand input{};
+            input.entity_id = local_entity;
+            input.sequence = input_sequence++;
+            input.client_tick = input.sequence;
+            input.throttle = 0.35f;
+            input.steer = 0.1f;
+            std::array<Byte, kInputCommandWireSize> payload{};
+            if (encode_input_command(input, payload) != InputCommandCodecError::None)
+                return 8;
+            (void)session.send(server_peer, MessageType::Input,
+                               Channel::Unreliable, payload);
         }
         if (received_rtt && rtt_samples >= 10)
             break;

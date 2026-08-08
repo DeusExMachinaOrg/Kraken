@@ -1,0 +1,5 @@
+#include "net/input_command.hpp"
+#include <array>
+#include <iostream>
+#include <limits>
+int main(){using namespace kraken::net;InputCommand a{2,9,7,.5f,.2f,.1f,true},b{};std::array<Byte,kInputCommandWireSize>w{};if(encode_input_command(a,w)!=InputCommandCodecError::None||decode_input_command(w,b)!=InputCommandCodecError::None||b.entity_id!=2||b.sequence!=9||!b.handbrake)return 1;std::array<Byte,kInputCommandWireSize-1>s{};if(encode_input_command(a,s)!=InputCommandCodecError::OutputTooSmall||decode_input_command(s,b)!=InputCommandCodecError::InputSizeMismatch)return 2;a.throttle=std::numeric_limits<float>::quiet_NaN();if(encode_input_command(a,w)!=InputCommandCodecError::NonFiniteValue)return 3;a.throttle=2;if(encode_input_command(a,w)!=InputCommandCodecError::ValueOutOfRange)return 4;a.throttle=.5f;if(encode_input_command(a,w)!=InputCommandCodecError::None)return 5;w[0]=Byte{};if(decode_input_command(w,b)!=InputCommandCodecError::BadMagic)return 6;std::cout<<"input command tests passed\n";return 0;}

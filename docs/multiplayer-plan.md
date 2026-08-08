@@ -243,7 +243,7 @@ MP_SendEvent(name, payloadTable, target)   -- target: nil=всем, peerId, "hos
 MP_OnPeerJoined(peerId)     MP_OnPeerLeft(peerId, reason)
 MP_OnDamage(victim, attacker, amount)
 MP_OnObjectSpawned(obj)     MP_OnObjectDespawned(obj)
-MP_OnRaidStart()            MP_OnRaidEnd(reason)
+MP_OnSessionStart()         MP_OnSessionEnd(reason)
 ```
 
 `MP_Authority(key, fn)` — важный примитив: он закрывает весь класс «в EFA есть логика, которая на
@@ -265,7 +265,7 @@ MP_OnRaidStart()            MP_OnRaidEnd(reason)
 |---|---|---|
 | **M0** | Транспорт собирается и линкуется | **Завершён 2026-08-08:** ENet vendored, `kraken.dll` собран x86 `/MD`; unit/loopback и live-тесты подтверждают Hello/Welcome, десять RTT-циклов и работу сетевого pump вместе с ODE gameplay tick |
 | **M1** | Призрак | **Завершён:** client создаёт `Vehicle`-mirror через `ObjContainer::CreateNewObject`, связывает его с `netId`, буферизует до 4 snapshots и применяет Catmull-Rom без экстраполяции после ODE tick |
-| **M2** | Двусторонняя езда | Оба игрока видят друг друга корректно; столкновение машин работает (тела остаются динамическими); предсказание своей машины + мягкая коррекция |
+| **M2** | Двусторонняя езда | **Завершён:** client отправляет только input; host создаёт и симулирует peer `Vehicle` до ODE tick, рассылает authoritative snapshots; client применяет мягкую position/velocity correction к собственной машине |
 | **M3** | Бой | Стрельба реплицируется (маска + прицел), снаряды по гибридной схеме, урон считает **только хост** через `InflictDamage`, PvP-гейт открыт |
 | **M4** | Лут и инвентарь | Хост бросает лут и владеет транзакциями; подбор идемпотентен и не дублируется |
 | **M5** | Рейд-цикл EFA | Вход в рейд из убежища подключает к сессии, экстракция отключает; убежище остаётся локальным |

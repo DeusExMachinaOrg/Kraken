@@ -313,6 +313,7 @@ TransportResult Session::handle_control(PeerId peer_id,
 
     case MessageType::Input:
     case MessageType::Snapshot:
+    case MessageType::EntityAssign:
         break;
     }
     return result(TransportResultCode::ProtocolError);

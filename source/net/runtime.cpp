@@ -5,6 +5,7 @@
 #include "config.hpp"
 #include "ext/logger.hpp"
 #include "net/entity_registry.hpp"
+#include "net/input_command.hpp"
 #include "net/session.hpp"
 #include "net/snapshot_interpolation.hpp"
 #include "net/transport.hpp"
@@ -47,6 +48,15 @@ struct RemoteEntity {
     bool has_sequence = false;
 };
 
+struct PeerController {
+    PeerId peer = kInvalidPeer;
+    NetId entity_id = kInvalidNetId;
+    InputCommand input{};
+    bool has_input = false;
+    std::uint32_t last_sequence = 0;
+    ObjId vehicle_obj_id = kInvalidObjId;
+};
+
 struct RuntimeState {
     EnetTransport transport;
     std::unique_ptr<Session> session;
@@ -57,6 +67,11 @@ struct RuntimeState {
     std::uint32_t server_tick = 0;
     EntityRegistry entities;
     std::vector<RemoteEntity> remote_entities;
+    std::vector<PeerController> controllers;
+    SnapshotInterpolationBuffer local_correction;
+    NetId local_entity_id = kInvalidNetId;
+    Clock::time_point next_input{};
+    std::uint32_t next_input_sequence = 1;
     ObjId host_vehicle_obj_id = kInvalidObjId;
     bool is_host = false;
     bool hook_installed = false;
@@ -143,6 +158,56 @@ RemoteEntity* find_or_add_remote(NetId entity_id)
     return &g_state.remote_entities.back();
 }
 
+PeerController* find_controller(PeerId peer)
+{
+    const auto found = std::find_if(g_state.controllers.begin(),
+                                    g_state.controllers.end(),
+                                    [peer](const PeerController& c) { return c.peer == peer; });
+    return found == g_state.controllers.end() ? nullptr : &*found;
+}
+
+void send_entity_assignment(PeerId peer, NetId entity_id)
+{
+    std::array<Byte, 4> payload{};
+    for (int index = 0; index != 4; ++index)
+        payload[index] = static_cast<Byte>(entity_id >> (8 * index));
+    (void)g_state.session->send(peer, MessageType::EntityAssign,
+                                Channel::Reliable, payload);
+}
+
+void receive_entity_assignment(const SessionEvent& event)
+{
+    if (g_state.is_host || event.payload.size() != 4)
+        return;
+    NetId entity = 0;
+    for (int index = 0; index != 4; ++index)
+        entity |= static_cast<NetId>(static_cast<std::uint8_t>(event.payload[index])) << (8 * index);
+    if (entity == kInvalidNetId)
+        return;
+    g_state.local_entity_id = entity;
+    LOG_INFO("local entity assigned id=%u", entity);
+}
+
+void receive_input(const SessionEvent& event)
+{
+    if (!g_state.is_host)
+        return;
+    PeerController* const controller = find_controller(event.peer);
+    if (controller == nullptr)
+        return;
+    InputCommand input{};
+    const InputCommandCodecError decoded = decode_input_command(event.payload, input);
+    if (!input_command_codec_succeeded(decoded) || input.entity_id != controller->entity_id) {
+        LOG_ERROR("drop input peer=%u code=%u", event.peer, static_cast<unsigned>(decoded));
+        return;
+    }
+    if (controller->has_input && !sequence_is_newer(input.sequence, controller->last_sequence))
+        return;
+    controller->input = input;
+    controller->last_sequence = input.sequence;
+    controller->has_input = true;
+}
+
 void receive_remote_snapshot(const SessionEvent& event)
 {
     if (g_state.is_host)
@@ -154,6 +219,11 @@ void receive_remote_snapshot(const SessionEvent& event)
     if (!vehicle_snapshot_codec_succeeded(decoded)) {
         LOG_ERROR("peer=%u bad vehicle snapshot code=%u", event.peer,
                   static_cast<unsigned>(decoded));
+        return;
+    }
+
+    if (snapshot.entity_id == g_state.local_entity_id) {
+        (void)g_state.local_correction.push(now_ms(), snapshot);
         return;
     }
 
@@ -185,12 +255,18 @@ void handle_event(SessionEvent&& event)
             g_state.peers.end())
             g_state.peers.push_back(event.peer);
         LOG_INFO("peer=%u handshake complete", event.peer);
+        if (g_state.is_host) {
+            const NetId entity = event.peer + 1;
+            g_state.controllers.push_back(PeerController{event.peer, entity});
+            send_entity_assignment(event.peer, entity);
+        }
         (void)g_state.session->ping(event.peer);
         break;
 
     case SessionEventType::PeerDisconnected:
         std::erase(g_state.peers, event.peer);
         LOG_INFO("peer=%u disconnected", event.peer);
+        std::erase_if(g_state.controllers, [peer = event.peer](const PeerController& c) { return c.peer == peer; });
         break;
 
     case SessionEventType::RoundTripTime:
@@ -200,6 +276,10 @@ void handle_event(SessionEvent&& event)
     case SessionEventType::Message:
         if (event.message_type == MessageType::Snapshot)
             receive_remote_snapshot(event);
+        else if (event.message_type == MessageType::EntityAssign)
+            receive_entity_assignment(event);
+        else if (event.message_type == MessageType::Input)
+            receive_input(event);
         LOG_DEBUG("peer=%u message=%u bytes=%u channel=%u", event.peer,
                   static_cast<unsigned>(event.message_type),
                   static_cast<unsigned>(event.payload.size()),
@@ -210,6 +290,93 @@ void handle_event(SessionEvent&& event)
         LOG_ERROR("peer=%u protocol error=%u", event.peer,
                   static_cast<unsigned>(event.protocol_error));
         break;
+    }
+}
+
+void send_client_input()
+{
+    if (g_state.is_host || g_state.local_entity_id == kInvalidNetId ||
+        g_state.peers.empty())
+        return;
+    const Clock::time_point now = Clock::now();
+    if (now < g_state.next_input)
+        return;
+    g_state.next_input = now + std::chrono::milliseconds(50);
+    hta::ai::Player* const player = hta::ai::Player::Instance();
+    hta::ai::Vehicle* const vehicle = player ? player->GetVehicle() : nullptr;
+    if (vehicle == nullptr)
+        return;
+    InputCommand input{};
+    input.entity_id = g_state.local_entity_id;
+    input.sequence = g_state.next_input_sequence++;
+    input.client_tick = g_state.server_tick;
+    input.throttle = vehicle->m_throttle;
+    input.steer = vehicle->m_steerRadians;
+    input.brake = vehicle->m_brake;
+    input.handbrake = vehicle->m_bHandBrake;
+    std::array<Byte, kInputCommandWireSize> payload{};
+    if (encode_input_command(input, payload) == InputCommandCodecError::None)
+        (void)g_state.session->send(g_state.peers.front(), MessageType::Input,
+                                    Channel::Unreliable, payload);
+}
+
+hta::ai::Vehicle* find_vehicle(NetId entity_id)
+{
+    ObjId object_id = kInvalidObjId;
+    if (!g_state.entities.lookup_obj_id(entity_id, object_id))
+        return nullptr;
+    hta::ai::CServer* const server = hta::ai::CServer::Instance();
+    hta::ai::Obj* const object = server && server->m_pObjects
+        ? server->m_pObjects->GetEntityByObjId(object_id) : nullptr;
+    return object ? reinterpret_cast<hta::ai::Vehicle*>(object) : nullptr;
+}
+
+hta::ai::Vehicle* ensure_host_vehicle(PeerController& controller)
+{
+    if (hta::ai::Vehicle* const existing = find_vehicle(controller.entity_id))
+        return existing;
+    hta::ai::CServer* const server = hta::ai::CServer::Instance();
+    hta::ai::Player* const player = hta::ai::Player::Instance();
+    hta::ai::Vehicle* const local = player ? player->GetVehicle() : nullptr;
+    if (!server || !server->m_pObjects || !local)
+        return nullptr;
+    char name[48]{};
+    std::snprintf(name, sizeof(name), "kraken_player_%u", controller.entity_id);
+    const ObjId object_id = server->m_pObjects->CreateNewObject(
+        local->GetPrototypeId(), name, -1, -1);
+    if (object_id < 0)
+        return nullptr;
+    hta::ai::Obj* const object = server->m_pObjects->GetEntityByObjId(object_id);
+    if (!object || g_state.entities.bind(controller.entity_id, object_id) !=
+                       EntityRegistryBindResult::Inserted)
+        return nullptr;
+    hta::ai::Vehicle* const vehicle = reinterpret_cast<hta::ai::Vehicle*>(object);
+    hta::CVector position = local->GetPosition();
+    position.x += 8.0f * static_cast<float>(controller.entity_id);
+    vehicle->SetPositionSelf(position);
+    vehicle->SetRotationSelf(local->GetRotation());
+    vehicle->SetLinearVelocity(hta::CVector(0.0f, 0.0f, 0.0f));
+    vehicle->SetAngularVelocity(hta::CVector(0.0f, 0.0f, 0.0f));
+    controller.vehicle_obj_id = object_id;
+    LOG_INFO("host player vehicle spawned peer=%u entity=%u objId=%d",
+             controller.peer, controller.entity_id, object_id);
+    return vehicle;
+}
+
+void apply_host_inputs()
+{
+    if (!g_state.is_host)
+        return;
+    for (PeerController& controller : g_state.controllers) {
+        if (!controller.has_input)
+            continue;
+        hta::ai::Vehicle* const vehicle = ensure_host_vehicle(controller);
+        if (!vehicle)
+            continue;
+        vehicle->SetThrottle(controller.input.throttle, false);
+        vehicle->m_steerRadians = controller.input.steer;
+        vehicle->SetBrake(controller.input.brake);
+        vehicle->m_bHandBrake = controller.input.handbrake;
     }
 }
 
@@ -293,6 +460,32 @@ void apply_remote_snapshots()
         ghost->SetLinearVelocity(to_engine_vector(sampled.linear_velocity));
         ghost->SetAngularVelocity(to_engine_vector(sampled.angular_velocity));
     }
+}
+
+void apply_local_correction()
+{
+    if (g_state.is_host || g_state.local_entity_id == kInvalidNetId)
+        return;
+    VehicleSnapshot authoritative{};
+    const SnapshotTimestampMs now = now_ms();
+    const SnapshotTimestampMs target = now > kInterpolationDelayMs ? now - kInterpolationDelayMs : 0;
+    if (!snapshot_interpolation_succeeded(g_state.local_correction.sample(target, authoritative)))
+        return;
+    hta::ai::Player* const player = hta::ai::Player::Instance();
+    hta::ai::Vehicle* const vehicle = player ? player->GetVehicle() : nullptr;
+    if (!vehicle)
+        return;
+    constexpr float alpha = 0.15f;
+    const hta::CVector current = vehicle->GetPosition();
+    const hta::CVector target_pos = to_engine_vector(authoritative.position);
+    vehicle->SetPositionSelf(hta::CVector(current.x + (target_pos.x-current.x)*alpha,
+                                           current.y + (target_pos.y-current.y)*alpha,
+                                           current.z + (target_pos.z-current.z)*alpha));
+    const hta::CVector velocity = vehicle->GetLinearVelocity();
+    const hta::CVector target_velocity = to_engine_vector(authoritative.linear_velocity);
+    vehicle->SetLinearVelocity(hta::CVector(velocity.x + (target_velocity.x-velocity.x)*alpha,
+                                             velocity.y + (target_velocity.y-velocity.y)*alpha,
+                                             velocity.z + (target_velocity.z-velocity.z)*alpha));
 }
 
 void pump()
@@ -390,6 +583,29 @@ void capture_and_broadcast_host_snapshot()
             LOG_ERROR("snapshot send to peer=%u failed code=%u", peer,
                       static_cast<unsigned>(result.code));
     }
+
+    // Each client-owned vehicle is simulated only by the host, then sent to
+    // every client (including its owner) as the authoritative correction.
+    for (const PeerController& controller : g_state.controllers) {
+        hta::ai::Vehicle* const remote_vehicle = find_vehicle(controller.entity_id);
+        if (remote_vehicle == nullptr)
+            continue;
+        VehicleSnapshot remote{};
+        remote.entity_id = controller.entity_id;
+        remote.sequence = g_state.next_snapshot_sequence++;
+        remote.server_tick = g_state.server_tick;
+        remote.position = to_snapshot_vector(remote_vehicle->GetPosition());
+        remote.rotation = to_snapshot_quaternion(remote_vehicle->GetRotation());
+        remote.linear_velocity = to_snapshot_vector(remote_vehicle->GetLinearVelocity());
+        remote.angular_velocity = to_snapshot_vector(remote_vehicle->GetAngularVelocity());
+        std::array<Byte, kVehicleSnapshotWireSize> remote_payload{};
+        if (!vehicle_snapshot_codec_succeeded(
+                encode_vehicle_snapshot(remote, remote_payload)))
+            continue;
+        for (const PeerId peer : g_state.peers)
+            (void)g_state.session->send(peer, MessageType::Snapshot,
+                                        Channel::Unreliable, remote_payload);
+    }
 }
 
 // The original call is ai::CServer::Update(float): ECX=this, float on stack.
@@ -398,9 +614,12 @@ void __fastcall server_update_hook(void* server, void*, float elapsed_time)
 {
     // Receive/apply packets before native gameplay and ODE advance.
     pump();
+    apply_host_inputs();
     g_server_update(server, nullptr, elapsed_time);
     ++g_state.server_tick;
     apply_remote_snapshots();
+    apply_local_correction();
+    send_client_input();
     // The ODE frame is complete here; capture only through Vehicle/PhysicObj API.
     capture_and_broadcast_host_snapshot();
 }
@@ -472,6 +691,10 @@ void Apply(const Config* config)
     g_state.server_tick = 0;
     g_state.entities.clear();
     g_state.remote_entities.clear();
+    g_state.controllers.clear();
+    g_state.local_entity_id = kInvalidNetId;
+    g_state.next_input = Clock::now();
+    g_state.next_input_sequence = 1;
     g_state.host_vehicle_obj_id = kInvalidObjId;
     g_state.is_host = effective.host;
     LOG_INFO("network started role=%s endpoint=%s:%u max_peers=%u",
