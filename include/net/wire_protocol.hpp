@@ -23,6 +23,8 @@ enum class MessageType : std::uint8_t {
     Disconnect = 7,
     EntityAssign = 8,
     WeaponCommand = 9,
+    LootRequest = 10,
+    LootResult = 11,
 };
 
 [[nodiscard]] constexpr bool is_valid_message_type(MessageType type) noexcept
@@ -37,6 +39,8 @@ enum class MessageType : std::uint8_t {
     case MessageType::Disconnect:
     case MessageType::EntityAssign:
     case MessageType::WeaponCommand:
+    case MessageType::LootRequest:
+    case MessageType::LootResult:
         return true;
     }
     return false;

@@ -315,6 +315,8 @@ TransportResult Session::handle_control(PeerId peer_id,
     case MessageType::Snapshot:
     case MessageType::EntityAssign:
     case MessageType::WeaponCommand:
+    case MessageType::LootRequest:
+    case MessageType::LootResult:
         break;
     }
     return result(TransportResultCode::ProtocolError);

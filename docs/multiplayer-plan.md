@@ -268,7 +268,7 @@ MP_OnSessionStart()         MP_OnSessionEnd(reason)
 | **M1** | Призрак | **Завершён:** client создаёт `Vehicle`-mirror через `ObjContainer::CreateNewObject`, связывает его с `netId`, буферизует до 4 snapshots и применяет Catmull-Rom без экстраполяции после ODE tick |
 | **M2** | Двусторонняя езда | **Завершён:** client отправляет только input; host создаёт и симулирует peer `Vehicle` до ODE tick, рассылает authoritative snapshots; client применяет мягкую position/velocity correction к собственной машине |
 | **M3** | Бой | **Завершён 2026-08-08:** команда `WeaponCommand` (владелец/sequence/tick/gun/trigger) валидируется на host. Только host вызывает исходный `Vehicle::FireFromWeaponByGunId`, поэтому снаряды, ODE-коллизии и `InflictDamage` вычисляются в единственном authoritative-мире; clients получают только event для визуального слоя |
-| **M4** | Лут и инвентарь | Хост бросает лут и владеет транзакциями; подбор идемпотентен и не дублируется |
+| **M4** | Лут и инвентарь | **Завершён 2026-08-08:** host создаёт chest-backed loot через `MP_SpawnHostLoot`; `MP_RequestLoot` передаёт reliable idempotent transaction. Host проверяет owner, дистанцию, вместимость `GeomRepository`, затем добавляет resource в инвентарь и снимает его из chest; повтор того же transactionId возвращает cached result |
 | **M5** | Рейд-цикл EFA | Вход в рейд из убежища подключает к сессии, экстракция отключает; убежище остаётся локальным |
 | **M6** | Закалка | Lag compensation, interest management по инстансам, реконнект, NAT (см. §8) |
 

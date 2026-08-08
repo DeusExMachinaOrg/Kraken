@@ -52,6 +52,7 @@ add_library(kraken SHARED
     source/net/enet_transport.cpp
     source/net/entity_registry.cpp
     source/net/input_command.cpp
+    source/net/loot_transaction.cpp
     source/net/weapon_command.cpp
     source/net/session.cpp
     source/net/snapshot_interpolation.cpp
@@ -135,6 +136,7 @@ if(BUILD_TESTING)
         source/net/enet_transport.cpp
         source/net/session.cpp
         source/net/input_command.cpp
+        source/net/loot_transaction.cpp
         source/net/weapon_command.cpp
         source/net/vehicle_snapshot.cpp
     )
@@ -204,4 +206,14 @@ if(BUILD_TESTING)
     set_property(TARGET kraken_net_weapon_command_test PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     add_test(NAME kraken_net_weapon_command COMMAND kraken_net_weapon_command_test)
+
+    add_executable(kraken_net_loot_transaction_test
+        tests/net_loot_transaction.cpp
+        source/net/loot_transaction.cpp
+    )
+    target_compile_features(kraken_net_loot_transaction_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_loot_transaction_test PRIVATE include)
+    set_property(TARGET kraken_net_loot_transaction_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_loot_transaction COMMAND kraken_net_loot_transaction_test)
 endif()

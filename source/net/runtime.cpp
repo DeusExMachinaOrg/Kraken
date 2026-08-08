@@ -7,6 +7,7 @@
 #include "ext/logger.hpp"
 #include "net/entity_registry.hpp"
 #include "net/input_command.hpp"
+#include "net/loot_transaction.hpp"
 #include "net/session.hpp"
 #include "net/snapshot_interpolation.hpp"
 #include "net/transport.hpp"
@@ -18,6 +19,8 @@
 #include "hta/Quaternion.hpp"
 #include "hta/ai/Player.hpp"
 #include "hta/ai/CServer.hpp"
+#include "hta/ai/Chest.hpp"
+#include "hta/ai/GeomRepository.hpp"
 #include "hta/ai/ObjContainer.hpp"
 #include "hta/ai/Vehicle.hpp"
 #include "hta/m3d/Kernel.hpp"
@@ -35,6 +38,10 @@
 #include <vector>
 
 namespace kraken::net::runtime {
+bool RequestLocalLoot(LootId loot_id, LootTransactionId transaction_id,
+                      std::uint32_t amount);
+LootId SpawnHostLoot(std::int32_t chest_prototype_id, std::int32_t resource_id,
+                     std::uint32_t amount);
 namespace {
 
 constexpr uintptr_t kServerUpdateCallSite = 0x005C809D;
@@ -66,6 +73,19 @@ struct PeerController {
     std::uint32_t last_weapon_sequence = 0;
 };
 
+struct LootRecord {
+    LootId loot_id = 0;
+    ObjId chest_obj_id = kInvalidObjId;
+    std::int32_t resource_id = -1;
+    std::uint32_t remaining_amount = 0;
+};
+
+struct LootReceipt {
+    PeerId peer = kInvalidPeer;
+    LootTransactionId transaction_id = 0;
+    LootResult result{};
+};
+
 struct RuntimeState {
     EnetTransport transport;
     std::unique_ptr<Session> session;
@@ -82,6 +102,9 @@ struct RuntimeState {
     Clock::time_point next_input{};
     std::uint32_t next_input_sequence = 1;
     std::uint32_t next_weapon_sequence = 1;
+    LootId next_loot_id = 1;
+    std::vector<LootRecord> loot_records;
+    std::vector<LootReceipt> loot_receipts;
     ObjId host_vehicle_obj_id = kInvalidObjId;
     bool is_host = false;
     bool hook_installed = false;
@@ -104,6 +127,36 @@ int __fastcall lua_submit_local_weapon_command(hta::m3d::sArgStack& args)
     return 0;
 }
 
+int __fastcall lua_request_loot(hta::m3d::sArgStack& args)
+{
+    bool accepted = false;
+    if (args.m_numInArgs == 3 &&
+        args.m_InArgs[0].GetType() == hta::m3d::sArg::ARGTYPE_INT &&
+        args.m_InArgs[1].GetType() == hta::m3d::sArg::ARGTYPE_INT &&
+        args.m_InArgs[2].GetType() == hta::m3d::sArg::ARGTYPE_INT)
+        accepted = RequestLocalLoot(static_cast<LootId>(args.m_InArgs[0].GetI()),
+                                    static_cast<LootTransactionId>(args.m_InArgs[1].GetI()),
+                                    static_cast<std::uint32_t>(args.m_InArgs[2].GetI()));
+    if (hta::m3d::sArg* const output = args.newOut()) output->SetB(accepted);
+    return 0;
+}
+
+int __fastcall lua_spawn_host_loot(hta::m3d::sArgStack& args)
+{
+    LootId loot_id = 0;
+    if (args.m_numInArgs == 3 &&
+        args.m_InArgs[0].GetType() == hta::m3d::sArg::ARGTYPE_INT &&
+        args.m_InArgs[1].GetType() == hta::m3d::sArg::ARGTYPE_INT &&
+        args.m_InArgs[2].GetType() == hta::m3d::sArg::ARGTYPE_INT)
+        loot_id = SpawnHostLoot(args.m_InArgs[0].GetI(), args.m_InArgs[1].GetI(),
+                                static_cast<std::uint32_t>(args.m_InArgs[2].GetI()));
+    if (hta::m3d::sArg* const output = args.newOut()) {
+        output->m_type = hta::m3d::sArg::ARGTYPE_INT;
+        output->m_i = static_cast<std::int32_t>(loot_id);
+    }
+    return 0;
+}
+
 void register_lua_api()
 {
     hta::m3d::Kernel* const kernel = hta::m3d::Kernel::Instance();
@@ -116,6 +169,14 @@ void register_lua_api()
         "int gunId, bool trigger", "Submit weapon intent to the session host");
     LOG_INFO("Lua API MP_SubmitWeaponCommand registered code=%u",
              static_cast<unsigned>(error));
+    const hta::m3d::eScriptError request_error = script_server->registerGlobalFunction(&lua_request_loot,
+        "MP_RequestLoot", "bool", "int lootId, int transactionId, int amount",
+        "Request an idempotent loot pickup from the session host");
+    const hta::m3d::eScriptError spawn_error = script_server->registerGlobalFunction(&lua_spawn_host_loot,
+        "MP_SpawnHostLoot", "int", "int chestPrototypeId, int resourceId, int amount",
+        "Host-only: spawn a chest-backed loot record");
+    LOG_INFO("Lua loot API registered request=%u spawn=%u",
+             static_cast<unsigned>(request_error), static_cast<unsigned>(spawn_error));
 }
 
 struct EffectiveConfig {
@@ -201,6 +262,31 @@ PeerController* find_controller(PeerId peer)
                                     g_state.controllers.end(),
                                     [peer](const PeerController& c) { return c.peer == peer; });
     return found == g_state.controllers.end() ? nullptr : &*found;
+}
+
+hta::ai::Vehicle* find_vehicle(NetId entity_id);
+
+LootRecord* find_loot(LootId loot_id)
+{
+    const auto found = std::find_if(g_state.loot_records.begin(),
+                                    g_state.loot_records.end(),
+        [loot_id](const LootRecord& record) { return record.loot_id == loot_id; });
+    return found == g_state.loot_records.end() ? nullptr : &*found;
+}
+
+void send_loot_result(PeerId peer, const LootResult& result)
+{
+    std::array<Byte, kLootResultWireSize> payload{};
+    if (encode_loot_result(result, payload) == LootCodecError::None)
+        (void)g_state.session->send(peer, MessageType::LootResult,
+                                    Channel::Reliable, payload);
+}
+
+void remember_loot_receipt(PeerId peer, const LootResult& result)
+{
+    if (g_state.loot_receipts.size() >= 256)
+        g_state.loot_receipts.erase(g_state.loot_receipts.begin());
+    g_state.loot_receipts.push_back({peer, result.transaction_id, result});
 }
 
 void send_entity_assignment(PeerId peer, NetId entity_id)
@@ -304,6 +390,78 @@ void receive_weapon_command(const SessionEvent& event)
     relay_weapon_command(command);
 }
 
+void receive_loot_request(const SessionEvent& event)
+{
+    if (!g_state.is_host)
+        return;
+    LootRequest request{};
+    const LootCodecError decoded = decode_loot_request(event.payload, request);
+    PeerController* const controller = find_controller(event.peer);
+    if (!loot_codec_succeeded(decoded) || controller == nullptr ||
+        request.entity_id != controller->entity_id) {
+        LOG_ERROR("drop loot request peer=%u code=%u", event.peer,
+                  static_cast<unsigned>(decoded));
+        return;
+    }
+    const auto prior = std::find_if(g_state.loot_receipts.begin(),
+                                    g_state.loot_receipts.end(),
+        [&event, &request](const LootReceipt& receipt) {
+            return receipt.peer == event.peer &&
+                   receipt.transaction_id == request.transaction_id;
+        });
+    if (prior != g_state.loot_receipts.end()) {
+        send_loot_result(event.peer, prior->result);
+        return;
+    }
+    LootResult result{};
+    result.transaction_id = request.transaction_id;
+    result.loot_id = request.loot_id;
+    LootRecord* const loot = find_loot(request.loot_id);
+    if (loot == nullptr) result.code = LootResultCode::NotFound;
+    else if (loot->remaining_amount == 0) { result.resource_id=loot->resource_id; result.code=LootResultCode::Exhausted; }
+    else {
+        hta::ai::Vehicle* const vehicle = find_vehicle(controller->entity_id);
+        hta::ai::CServer* const server = hta::ai::CServer::Instance();
+        hta::ai::Chest* const chest = server && server->m_pObjects
+            ? reinterpret_cast<hta::ai::Chest*>(server->m_pObjects->GetEntityByObjId(loot->chest_obj_id))
+            : nullptr;
+        if (vehicle == nullptr || chest == nullptr || vehicle->m_repository == nullptr)
+            result.code = LootResultCode::NotFound;
+        else {
+            const hta::CVector a = vehicle->GetPosition();
+            const hta::CVector b = chest->GetPosition();
+            const float dx=a.x-b.x, dy=a.y-b.y, dz=a.z-b.z;
+            result.resource_id = loot->resource_id;
+            result.remaining_amount = loot->remaining_amount;
+            if (dx*dx + dy*dy + dz*dz > 144.0f) result.code = LootResultCode::TooFar;
+            else if (!vehicle->m_repository->CanPlaceItems(loot->resource_id, static_cast<int32_t>(request.amount))) result.code = LootResultCode::InventoryFull;
+            else {
+                const std::uint32_t granted = (std::min)(request.amount, loot->remaining_amount);
+                if (!vehicle->m_repository->AddItems(loot->resource_id, static_cast<int32_t>(granted))) result.code = LootResultCode::InventoryFull;
+                else {
+                    (void)chest->GetRepository()->GiveUpThingByResourceId(loot->resource_id, static_cast<int32_t>(granted));
+                    loot->remaining_amount -= granted;
+                    result.granted_amount = granted;
+                    result.remaining_amount = loot->remaining_amount;
+                    result.code = LootResultCode::Granted;
+                }
+            }
+        }
+    }
+    remember_loot_receipt(event.peer, result);
+    send_loot_result(event.peer, result);
+}
+
+void receive_loot_result(const SessionEvent& event)
+{
+    if (g_state.is_host) return;
+    LootResult result{};
+    if (decode_loot_result(event.payload, result) != LootCodecError::None) return;
+    LOG_INFO("loot result txn=%u loot=%u code=%u granted=%u remaining=%u",
+             result.transaction_id, result.loot_id, static_cast<unsigned>(result.code),
+             result.granted_amount, result.remaining_amount);
+}
+
 void receive_remote_snapshot(const SessionEvent& event)
 {
     if (g_state.is_host)
@@ -378,6 +536,10 @@ void handle_event(SessionEvent&& event)
             receive_input(event);
         else if (event.message_type == MessageType::WeaponCommand)
             receive_weapon_command(event);
+        else if (event.message_type == MessageType::LootRequest)
+            receive_loot_request(event);
+        else if (event.message_type == MessageType::LootResult)
+            receive_loot_result(event);
         LOG_DEBUG("peer=%u message=%u bytes=%u channel=%u", event.peer,
                   static_cast<unsigned>(event.message_type),
                   static_cast<unsigned>(event.payload.size()),
@@ -844,6 +1006,50 @@ bool SubmitLocalWeaponCommand(int gun_id, bool trigger_held)
     return static_cast<bool>(g_state.session->send(
         g_state.peers.front(), MessageType::WeaponCommand, Channel::Reliable,
         payload));
+}
+
+bool RequestLocalLoot(LootId loot_id, LootTransactionId transaction_id,
+                      std::uint32_t amount)
+{
+    if (g_state.is_host || !g_state.session ||
+        g_state.local_entity_id == kInvalidNetId || g_state.peers.empty())
+        return false;
+    LootRequest request{g_state.local_entity_id, loot_id, transaction_id, amount};
+    std::array<Byte, kLootRequestWireSize> payload{};
+    if (encode_loot_request(request, payload) != LootCodecError::None)
+        return false;
+    return static_cast<bool>(g_state.session->send(g_state.peers.front(),
+        MessageType::LootRequest, Channel::Reliable, payload));
+}
+
+LootId SpawnHostLoot(std::int32_t chest_prototype_id, std::int32_t resource_id,
+                     std::uint32_t amount)
+{
+    if (!g_state.is_host || amount == 0 || chest_prototype_id < 0 || resource_id < 0)
+        return 0;
+    hta::ai::CServer* const server = hta::ai::CServer::Instance();
+    hta::ai::Player* const player = hta::ai::Player::Instance();
+    hta::ai::Vehicle* const vehicle = player ? player->GetVehicle() : nullptr;
+    if (server == nullptr || server->m_pObjects == nullptr || vehicle == nullptr)
+        return 0;
+    const LootId loot_id = g_state.next_loot_id++;
+    char name[48]{};
+    std::snprintf(name, sizeof(name), "kraken_loot_%u", loot_id);
+    const ObjId object_id = server->m_pObjects->CreateNewObject(
+        chest_prototype_id, name, -1, -1);
+    if (object_id < 0) return 0;
+    hta::ai::Obj* const object = server->m_pObjects->GetEntityByObjId(object_id);
+    hta::ai::Chest* const chest = object ? reinterpret_cast<hta::ai::Chest*>(object) : nullptr;
+    if (chest == nullptr || chest->GetRepository() == nullptr ||
+        !chest->GetRepository()->AddItems(resource_id, static_cast<int32_t>(amount)))
+        return 0;
+    hta::CVector position = vehicle->GetPosition();
+    position.x += 4.0f;
+    chest->SetPositionSelf(position);
+    g_state.loot_records.push_back({loot_id, object_id, resource_id, amount});
+    LOG_INFO("loot spawned id=%u objId=%d resource=%d amount=%u", loot_id,
+             object_id, resource_id, amount);
+    return loot_id;
 }
 
 } // namespace kraken::net::runtime
