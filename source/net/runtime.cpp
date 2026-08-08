@@ -170,6 +170,27 @@ int __fastcall lua_begin_session(hta::m3d::sArgStack& args)
     return 0;
 }
 
+int __fastcall lua_configure_session(hta::m3d::sArgStack& args)
+{
+    bool accepted = false;
+    if (args.m_numInArgs == 4 &&
+        args.m_InArgs[0].GetType() == hta::m3d::sArg::ARGTYPE_BOOL &&
+        args.m_InArgs[1].GetType() == hta::m3d::sArg::ARGTYPE_STRING &&
+        args.m_InArgs[2].GetType() == hta::m3d::sArg::ARGTYPE_INT &&
+        args.m_InArgs[3].GetType() == hta::m3d::sArg::ARGTYPE_INT) {
+        const int port = args.m_InArgs[2].GetI();
+        const int max_peers = args.m_InArgs[3].GetI();
+        const char* const address = args.m_InArgs[1].GetS();
+        if (port >= 1024 && port <= 65535 && max_peers >= 2 &&
+            max_peers <= 16 && address != nullptr)
+            accepted = ConfigureSession(args.m_InArgs[0].GetB(), address,
+                                        static_cast<unsigned short>(port),
+                                        static_cast<unsigned int>(max_peers));
+    }
+    if (hta::m3d::sArg* const output = args.newOut()) output->SetB(accepted);
+    return 0;
+}
+
 int __fastcall lua_end_session(hta::m3d::sArgStack& args)
 {
     if (hta::m3d::sArg* const output = args.newOut()) output->SetB(args.m_numInArgs == 0 && EndSession());
@@ -202,6 +223,9 @@ void register_lua_api()
         "Host-only: spawn a chest-backed loot record");
     (void)script_server->registerGlobalFunction(&lua_begin_session,
         "MP_BeginSession", "bool", "", "Enter the multiplayer session from a local shelter");
+    (void)script_server->registerGlobalFunction(&lua_configure_session,
+        "MP_ConfigureSession", "bool", "bool host, string address, int port, int maxPeers",
+        "Configure the LAN listen server or client before starting a session");
     (void)script_server->registerGlobalFunction(&lua_end_session,
         "MP_EndSession", "bool", "", "Leave the multiplayer session and return to a local shelter");
     (void)script_server->registerGlobalFunction(&lua_is_session_active,
@@ -1234,6 +1258,24 @@ bool BeginSession()
     g_state.next_snapshot = Clock::now();
     LOG_INFO("session began role=%s endpoint=%s:%u", effective.host ? "host" : "client",
              effective.host ? "0.0.0.0" : effective.address.c_str(), effective.port);
+    return true;
+}
+
+bool ConfigureSession(bool host, const char* address, unsigned short port,
+                      unsigned int max_peers)
+{
+    if (!g_lifecycle_config || IsSessionActive() || address == nullptr ||
+        address[0] == '\0' || port < 1024 || max_peers < 2 || max_peers > 16)
+        return false;
+    constexpr std::size_t kMaxLanAddressLength = 255;
+    if (std::char_traits<char>::length(address) > kMaxLanAddressLength)
+        return false;
+    g_lifecycle_config->host = host;
+    g_lifecycle_config->address = address;
+    g_lifecycle_config->port = port;
+    g_lifecycle_config->max_peers = max_peers;
+    LOG_INFO("LAN session configured role=%s endpoint=%s:%u max_peers=%u",
+             host ? "host" : "client", address, port, max_peers);
     return true;
 }
 

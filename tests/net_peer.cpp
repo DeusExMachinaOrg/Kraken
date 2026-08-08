@@ -20,7 +20,7 @@ int main(int argc, char** argv)
 
     if (argc < 2 || (std::string(argv[1]) != "host" &&
                      std::string(argv[1]) != "client")) {
-        std::cerr << "usage: kraken_net_peer_test <host|client> [port] [address] [--scripted-snapshots|--scripted-input|--scripted-weapon|--scripted-despawn]\n";
+        std::cerr << "usage: kraken_net_peer_test <host|client> [port] [address] [--scripted-snapshots] [--scripted-input] [--scripted-weapon] [--scripted-despawn]\n";
         return 64;
     }
 
@@ -29,14 +29,17 @@ int main(int argc, char** argv)
         ? static_cast<std::uint16_t>(std::strtoul(argv[2], nullptr, 10))
         : kDefaultPort;
     const std::string address = argc >= 4 ? argv[3] : "127.0.0.1";
-    const bool scripted_snapshots = argc >= 5 &&
-        std::string(argv[4]) == "--scripted-snapshots";
-    const bool scripted_input = argc >= 5 &&
-        std::string(argv[4]) == "--scripted-input";
-    const bool scripted_weapon = argc >= 5 &&
-        std::string(argv[4]) == "--scripted-weapon";
-    const bool scripted_despawn = argc >= 5 &&
-        std::string(argv[4]) == "--scripted-despawn";
+    bool scripted_snapshots = false;
+    bool scripted_input = false;
+    bool scripted_weapon = false;
+    bool scripted_despawn = false;
+    for (int index = 4; index < argc; ++index) {
+        const std::string flag(argv[index]);
+        scripted_snapshots |= flag == "--scripted-snapshots";
+        scripted_input |= flag == "--scripted-input";
+        scripted_weapon |= flag == "--scripted-weapon";
+        scripted_despawn |= flag == "--scripted-despawn";
+    }
 
     EnetTransport transport;
     SessionConfig config{};
@@ -66,6 +69,11 @@ int main(int argc, char** argv)
     bool sent_weapon = false;
     bool sent_despawn = false;
     bool received_despawn = false;
+    bool received_snapshot = false;
+    bool received_weapon = false;
+    bool host_received_input = false;
+    bool host_received_weapon = false;
+    std::chrono::steady_clock::time_point despawn_at{};
     PeerId server_peer = kInvalidPeer;
     std::uint32_t local_entity = 0;
     const auto deadline = std::chrono::steady_clock::now() + 20s;
@@ -90,12 +98,15 @@ int main(int argc, char** argv)
                 peers.push_back(event.peer);
                 if (!is_host)
                     server_peer = event.peer;
-                if (is_host && (scripted_snapshots || scripted_despawn)) {
+                if (is_host && (scripted_snapshots || scripted_input ||
+                                scripted_weapon || scripted_despawn)) {
                     std::array<Byte, 4> assignment{};
                     assignment[0] = static_cast<Byte>(42);
                     (void)session.send(event.peer, MessageType::EntityAssign,
                                        Channel::Reliable, assignment);
                 }
+                if (is_host && scripted_despawn)
+                    despawn_at = std::chrono::steady_clock::now() + 200ms;
                 std::cout << "connected peer=" << event.peer << std::endl;
                 break;
             case SessionEventType::PeerDisconnected:
@@ -130,6 +141,7 @@ int main(int argc, char** argv)
                         return 6;
                     }
                     ++snapshot_samples;
+                    received_snapshot = true;
                     std::cout << "snapshot entity=" << snapshot.entity_id
                               << " sequence=" << snapshot.sequence
                               << " tick=" << snapshot.server_tick << std::endl;
@@ -139,9 +151,27 @@ int main(int argc, char** argv)
                     if (decode_weapon_command(event.payload, command) !=
                         WeaponCommandCodecError::None)
                         return 9;
+                    if (is_host) {
+                        host_received_weapon = command.entity_id == 42;
+                        for (PeerId peer : peers)
+                            (void)session.send(peer, MessageType::WeaponCommand,
+                                               Channel::Reliable, event.payload);
+                    }
+                    else {
+                        received_weapon = command.entity_id == 42;
+                    }
                     std::cout << "weapon entity=" << command.entity_id
                               << " gun=" << command.gun_id
                               << " trigger=" << command.trigger_held << std::endl;
+                }
+                if (event.message_type == MessageType::Input) {
+                    InputCommand command{};
+                    if (decode_input_command(event.payload, command) !=
+                        InputCommandCodecError::None)
+                        return 12;
+                    host_received_input = command.entity_id == 42;
+                    std::cout << "input entity=" << command.entity_id
+                              << " sequence=" << command.sequence << std::endl;
                 }
                 if (event.message_type == MessageType::EntityDespawn &&
                     event.payload.size() == 4) {
@@ -161,7 +191,8 @@ int main(int argc, char** argv)
             for (PeerId peer : peers)
                 (void)session.ping(peer);
         }
-        if (is_host && scripted_snapshots && connected && now >= next_snapshot) {
+        if (is_host && scripted_snapshots && connected &&
+            (!scripted_despawn || !sent_despawn) && now >= next_snapshot) {
             next_snapshot = now + 50ms;
             VehicleSnapshot snapshot{};
             snapshot.entity_id = 42;
@@ -179,7 +210,7 @@ int main(int argc, char** argv)
                                    Channel::Unreliable, payload);
         }
         if (is_host && scripted_despawn && connected && !sent_despawn &&
-            now >= next_snapshot + 200ms) {
+            now >= despawn_at) {
             std::array<Byte, 4> payload{};
             payload[0] = static_cast<Byte>(42);
             for (PeerId peer : peers)
@@ -217,8 +248,13 @@ int main(int argc, char** argv)
                                Channel::Reliable, payload);
             sent_weapon = true;
         }
-        if (received_rtt && rtt_samples >= 10 &&
-            (!scripted_despawn || is_host || received_despawn))
+        const bool scripted_messages_received = is_host
+            ? (!scripted_input || host_received_input) &&
+              (!scripted_weapon || host_received_weapon)
+            : (!scripted_snapshots || received_snapshot) &&
+              (!scripted_weapon || received_weapon) &&
+              (!scripted_despawn || received_despawn);
+        if (received_rtt && rtt_samples >= 10 && scripted_messages_received)
             break;
         std::this_thread::sleep_for(1ms);
     }
@@ -235,6 +271,19 @@ int main(int argc, char** argv)
     if (scripted_despawn && !is_host && !received_despawn) {
         std::cerr << "timeout waiting for entity despawn\n";
         return 11;
+    }
+    if (scripted_snapshots && !is_host && !received_snapshot) {
+        std::cerr << "timeout waiting for snapshot\n";
+        return 13;
+    }
+    if (scripted_weapon && (!is_host && !received_weapon ||
+                             is_host && !host_received_weapon)) {
+        std::cerr << "timeout waiting for weapon command\n";
+        return 14;
+    }
+    if (scripted_input && is_host && !host_received_input) {
+        std::cerr << "timeout waiting for input command\n";
+        return 15;
     }
     return 0;
 }
