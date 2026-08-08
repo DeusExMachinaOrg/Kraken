@@ -135,6 +135,7 @@ struct RuntimeState {
     bool hook_installed = false;
     bool engine_safety_hooks_installed = false;
     bool network_pause_was_cleared = false;
+    bool spawn_together = true;
 };
 
 RuntimeState g_state;
@@ -310,6 +311,7 @@ struct EffectiveConfig {
     std::string address = "127.0.0.1";
     std::uint16_t port = kDefaultPort;
     std::uint32_t max_peers = 16;
+    bool spawn_together = true;
     bool autostart = true;
     bool auto_lan = true;
 };
@@ -354,6 +356,8 @@ EffectiveConfig effective_config(const Config& config)
         "KRAKEN_MP_PORT", config.multiplayer_port.value, 1024, 65535));
     result.max_peers = environment_uint("KRAKEN_MP_MAX_PEERS",
                                         config.multiplayer_max_peers.value, 2, 16);
+    result.spawn_together = environment_uint("KRAKEN_MP_SPAWN_TOGETHER",
+        config.multiplayer_spawn_together.value, 0, 1) != 0;
     result.autostart = environment_uint("KRAKEN_MP_AUTOSTART", 1, 0, 1) != 0;
     result.auto_lan = environment_uint("KRAKEN_MP_AUTO_LAN", 1, 0, 1) != 0;
     return result;
@@ -722,6 +726,8 @@ void receive_remote_snapshot(const SessionEvent& event)
     remote->has_sequence = true;
 }
 
+hta::ai::Vehicle* ensure_host_vehicle(PeerController& controller);
+
 void handle_event(SessionEvent&& event)
 {
     switch (event.type) {
@@ -735,6 +741,11 @@ void handle_event(SessionEvent&& event)
             const NetId entity = event.peer + 1;
             g_state.controllers.push_back(PeerController{event.peer, entity});
             send_entity_assignment(event.peer, entity);
+            // Do not wait for the first input packet: otherwise the host has
+            // no visible vehicle until the client happens to drive.
+            if (ensure_host_vehicle(g_state.controllers.back()) == nullptr)
+                LOG_ERROR("cannot spawn player vehicle peer=%u entity=%u",
+                          event.peer, entity);
         }
         (void)g_state.session->ping(event.peer);
         break;
@@ -867,7 +878,14 @@ hta::ai::Vehicle* ensure_host_vehicle(PeerController& controller)
         return nullptr;
     hta::ai::Vehicle* const vehicle = reinterpret_cast<hta::ai::Vehicle*>(object);
     hta::CVector position = local->GetPosition();
-    position.x += 8.0f * static_cast<float>(controller.entity_id);
+    if (!g_state.spawn_together) {
+        position.x += 8.0f * static_cast<float>(controller.entity_id);
+    }
+    else {
+        // A shared logical spawn point with deterministic separation. Exact
+        // overlap would start two ODE bodies inside one another.
+        position.x += 3.5f * static_cast<float>(controller.entity_id - 1);
+    }
     vehicle->SetPositionSelf(position);
     vehicle->SetRotationSelf(local->GetRotation());
     vehicle->SetLinearVelocity(hta::CVector(0.0f, 0.0f, 0.0f));
@@ -1303,6 +1321,7 @@ void Apply(const Config* config)
             return;
         }
         g_state.is_host = effective.host;
+        g_state.spawn_together = effective.spawn_together;
         ::kraken::runtime::OnLoad(&register_lua_api);
         LOG_INFO("network API ready (autostart=%u enabled=%u)",
                  effective.autostart ? 1u : 0u, effective.enabled ? 1u : 0u);
@@ -1375,6 +1394,7 @@ void Apply(const Config* config)
     g_state.next_weapon_sequence = 1;
     g_state.host_vehicle_obj_id = kInvalidObjId;
     g_state.is_host = effective.host;
+    g_state.spawn_together = effective.spawn_together;
     ::kraken::runtime::OnLoad(&register_lua_api);
     LOG_INFO("network started role=%s endpoint=%s:%u max_peers=%u",
              effective.host ? "host" : "client",
@@ -1471,6 +1491,7 @@ bool BeginSession()
         }
     }
     g_state.is_host = effective.host;
+    g_state.spawn_together = effective.spawn_together;
     g_state.next_ping = Clock::now() + std::chrono::seconds(1);
     g_state.next_reconnect = Clock::now() + std::chrono::seconds(1);
     g_state.reconnect_backoff = std::chrono::seconds(1);

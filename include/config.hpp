@@ -78,6 +78,7 @@ namespace kraken {
         ConfigValue<std::string>              multiplayer_address;
         ConfigValue<uint32_t>                 multiplayer_port;
         ConfigValue<uint32_t>                 multiplayer_max_peers;
+        ConfigValue<uint32_t>                 multiplayer_spawn_together;
 
         // Schwarz
         ConfigValue<bool>                     complex_schwarz;

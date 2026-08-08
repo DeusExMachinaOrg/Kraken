@@ -49,6 +49,7 @@ namespace kraken {
         this->multiplayer_address               = { "multiplayer", "address",                       std::string("127.0.0.1")          };
         this->multiplayer_port                  = { "multiplayer", "port",                          27015, true,  1024,  65535       };
         this->multiplayer_max_peers             = { "multiplayer", "max_peers",                     16,    true,  2,     16          };
+        this->multiplayer_spawn_together        = { "multiplayer", "spawn_together",                1,     true,  0,     1           };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -115,6 +116,7 @@ namespace kraken {
         this->LoadValue(&this->multiplayer_address);
         this->LoadValue(&this->multiplayer_port);
         this->LoadValue(&this->multiplayer_max_peers);
+        this->LoadValue(&this->multiplayer_spawn_together);
     };
 
     void Config::Dump() {
@@ -159,6 +161,7 @@ namespace kraken {
         this->DumpValue(&this->multiplayer_address);
         this->DumpValue(&this->multiplayer_port);
         this->DumpValue(&this->multiplayer_max_peers);
+        this->DumpValue(&this->multiplayer_spawn_together);
     };
 
     template<typename T>
