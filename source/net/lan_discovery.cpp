@@ -93,38 +93,61 @@ std::vector<sockaddr_in> discovery_targets(const std::uint16_t port,
     // gameplay fans out to the limited broadcast plus every adapter's directed
     // broadcast address.  On Windows the former is commonly routed to the
     // wrong NIC when a VPN, Hyper-V or a virtual LAN adapter exists.
-    if (requested_target != "255.255.255.255")
-        return {ipv4_address(requested_target, port)};
-
-    std::vector<sockaddr_in> targets;
-    append_target(targets, ipv4_address(requested_target, port));
-
+    std::vector<LanIpv4Adapter> adapters;
     ULONG bytes = 0;
-    if (GetAdaptersInfo(nullptr, &bytes) != ERROR_BUFFER_OVERFLOW || bytes == 0)
-        return targets;
-    std::vector<std::byte> buffer(bytes);
-    auto* adapters = reinterpret_cast<PIP_ADAPTER_INFO>(buffer.data());
-    if (GetAdaptersInfo(adapters, &bytes) != NO_ERROR)
-        return targets;
-    for (PIP_ADAPTER_INFO adapter = adapters; adapter != nullptr; adapter = adapter->Next) {
-        if (adapter->Type == MIB_IF_TYPE_LOOPBACK)
-            continue;
-        for (IP_ADDR_STRING* item = &adapter->IpAddressList; item != nullptr; item = item->Next) {
-            const sockaddr_in address = ipv4_address(item->IpAddress.String, port);
-            const sockaddr_in mask = ipv4_address(item->IpMask.String, port);
-            if (address.sin_addr.s_addr == INADDR_NONE || mask.sin_addr.s_addr == INADDR_NONE ||
-                address.sin_addr.s_addr == htonl(INADDR_ANY))
-                continue;
-            sockaddr_in broadcast = address;
-            broadcast.sin_addr.s_addr = (address.sin_addr.s_addr & mask.sin_addr.s_addr) |
-                                        ~mask.sin_addr.s_addr;
-            append_target(targets, broadcast);
+    if (requested_target == "255.255.255.255" &&
+        GetAdaptersInfo(nullptr, &bytes) == ERROR_BUFFER_OVERFLOW && bytes != 0) {
+        std::vector<std::byte> buffer(bytes);
+        auto* adapter_list = reinterpret_cast<PIP_ADAPTER_INFO>(buffer.data());
+        if (GetAdaptersInfo(adapter_list, &bytes) == NO_ERROR) {
+            for (PIP_ADAPTER_INFO adapter = adapter_list; adapter != nullptr; adapter = adapter->Next) {
+                if (adapter->Type == MIB_IF_TYPE_LOOPBACK)
+                    continue;
+                for (IP_ADDR_STRING* item = &adapter->IpAddressList; item != nullptr; item = item->Next)
+                    adapters.push_back({item->IpAddress.String, item->IpMask.String});
+            }
         }
     }
+
+    const std::vector<Endpoint> endpoint_targets =
+        make_lan_discovery_targets(port, requested_target, adapters);
+    std::vector<sockaddr_in> targets;
+    for (const Endpoint& endpoint : endpoint_targets)
+        append_target(targets, ipv4_address(endpoint.host, endpoint.port));
     return targets;
 }
 
 } // namespace
+
+std::vector<Endpoint> make_lan_discovery_targets(
+    const std::uint16_t port, const std::string_view requested_target,
+    const std::vector<LanIpv4Adapter>& adapters)
+{
+    if (requested_target != "255.255.255.255")
+        return {{std::string(requested_target), port}};
+
+    std::vector<Endpoint> targets{{"255.255.255.255", port}};
+    for (const LanIpv4Adapter& adapter : adapters) {
+        in_addr address{};
+        in_addr mask{};
+        if (InetPtonA(AF_INET, adapter.address.c_str(), &address) != 1 ||
+            InetPtonA(AF_INET, adapter.netmask.c_str(), &mask) != 1 ||
+            address.s_addr == htonl(INADDR_ANY))
+            continue;
+        in_addr broadcast{};
+        broadcast.s_addr = (address.s_addr & mask.s_addr) | ~mask.s_addr;
+        char text[INET_ADDRSTRLEN]{};
+        if (InetNtopA(AF_INET, &broadcast, text, sizeof(text)) == nullptr)
+            continue;
+        const auto duplicate = std::find_if(targets.begin(), targets.end(),
+            [&text, port](const Endpoint& endpoint) {
+                return endpoint.port == port && endpoint.host == text;
+            });
+        if (duplicate == targets.end())
+            targets.push_back({text, port});
+    }
+    return targets;
+}
 
 LanDiscovery::~LanDiscovery()
 {

@@ -1,14 +1,51 @@
 #include "net/lan_discovery.hpp"
 
+#include <winsock2.h>
+
 #include <atomic>
 #include <chrono>
 #include <iostream>
 #include <thread>
+#include <vector>
 
 using namespace std::chrono_literals;
 
 int main()
 {
+    WSADATA winsock{};
+    if (WSAStartup(MAKEWORD(2, 2), &winsock) != 0) {
+        std::cerr << "could not initialize Winsock for LAN target test\n";
+        return 19;
+    }
+
+    // Regression for the two-PC failure observed on 192.168.2.0/24: a global
+    // 255.255.255.255 packet may be routed to a VPN/virtual NIC by Windows.
+    // The production policy must also target the LAN's directed broadcast.
+    const std::vector<kraken::net::LanIpv4Adapter> adapters{
+        {"192.168.2.118", "255.255.255.0"},
+        {"10.10.0.7", "255.255.0.0"},
+    };
+    const auto targets = kraken::net::make_lan_discovery_targets(
+        27016, "255.255.255.255", adapters);
+    const auto has_target = [&targets](const char* host) {
+        for (const kraken::net::Endpoint& endpoint : targets)
+            if (endpoint.host == host && endpoint.port == 27016)
+                return true;
+        return false;
+    };
+    if (!has_target("255.255.255.255") || !has_target("192.168.2.255") ||
+        !has_target("10.10.255.255") || targets.size() != 3) {
+        std::cerr << "LAN discovery did not fan out to directed broadcasts\n";
+        return 20;
+    }
+    const auto explicit_target = kraken::net::make_lan_discovery_targets(
+        27016, "192.168.2.80", adapters);
+    if (explicit_target.size() != 1 || explicit_target.front().host != "192.168.2.80" ||
+        explicit_target.front().port != 27016) {
+        std::cerr << "explicit LAN discovery target was unexpectedly expanded\n";
+        return 21;
+    }
+
     // Regression: on separate LAN computers both can bind UDP/27016.  A reply
     // from an existing host must therefore force the second peer to be client.
     const kraken::net::Endpoint existing_host{"192.168.2.118", 27015};
@@ -51,5 +88,6 @@ int main()
         return 2;
     }
     std::cout << "LAN discovery tests passed\n";
+    WSACleanup();
     return 0;
 }
