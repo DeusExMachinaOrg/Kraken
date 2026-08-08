@@ -9,6 +9,7 @@
 #include "net/input_command.hpp"
 #include "net/lan_discovery.hpp"
 #include "net/loot_transaction.hpp"
+#include "net/pause_policy.hpp"
 #include "net/session.hpp"
 #include "net/snapshot_interpolation.hpp"
 #include "net/transport.hpp"
@@ -17,6 +18,7 @@
 #include "routines.hpp"
 
 #include "hta/CVector.hpp"
+#include "hta/CMiracle3d.hpp"
 #include "hta/Quaternion.hpp"
 #include "hta/ai/Player.hpp"
 #include "hta/ai/CServer.hpp"
@@ -119,6 +121,7 @@ struct RuntimeState {
     ObjId host_vehicle_obj_id = kInvalidObjId;
     bool is_host = false;
     bool hook_installed = false;
+    bool network_pause_was_cleared = false;
 };
 
 RuntimeState g_state;
@@ -1086,12 +1089,39 @@ void capture_and_broadcast_host_snapshot()
     }
 }
 
+void clear_network_pause_before_simulation()
+{
+    const bool session_active = g_state.session != nullptr &&
+        g_state.session->running();
+    hta::CMiracle3d* const application = hta::CMiracle3d::Instance();
+    hta::ai::CServer* const server = hta::ai::CServer::Instance();
+    const PauseSignals signals{
+        session_active,
+        application != nullptr && application->m_paused,
+        server != nullptr && server->GetPause(),
+        server != nullptr && server->m_InCinematic,
+    };
+    if (!should_clear_network_pause(signals)) {
+        g_state.network_pause_was_cleared = false;
+        return;
+    }
+    if (signals.application_paused)
+        application->UnPause();
+    if (signals.server_paused)
+        server->SetPause(false);
+    if (!g_state.network_pause_was_cleared) {
+        LOG_INFO("suppressed local pause while multiplayer session is active");
+        g_state.network_pause_was_cleared = true;
+    }
+}
+
 // The original call is ai::CServer::Update(float): ECX=this, float on stack.
 // A free __fastcall hook reserves EDX as the second dummy argument.
 void __fastcall server_update_hook(void* server, void*, float elapsed_time)
 {
     // Receive/apply packets before native gameplay and ODE advance.
     pump();
+    clear_network_pause_before_simulation();
     apply_host_inputs();
     apply_host_weapons();
     g_server_update(server, nullptr, elapsed_time);

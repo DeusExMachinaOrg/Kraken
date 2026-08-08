@@ -147,6 +147,15 @@ if(BUILD_TESTING)
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     add_test(NAME kraken_net_lan_discovery COMMAND kraken_net_lan_discovery_test)
 
+    add_executable(kraken_net_pause_policy_test
+        tests/net_pause_policy.cpp
+    )
+    target_compile_features(kraken_net_pause_policy_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_pause_policy_test PRIVATE include)
+    set_property(TARGET kraken_net_pause_policy_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_pause_policy COMMAND kraken_net_pause_policy_test)
+
     add_executable(kraken_net_peer_test
         tests/net_peer.cpp
         source/net/enet_transport.cpp
