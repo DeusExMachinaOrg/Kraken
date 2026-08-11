@@ -63,6 +63,10 @@ public:
         std::uint16_t discovery_port,
         std::chrono::milliseconds timeout,
         std::string_view target_address = "255.255.255.255") noexcept;
+    // A stable local delay used only after an unanswered discovery round.
+    // It prevents two simultaneously-started LAN peers from both becoming
+    // hosts before either one can answer a broadcast.
+    [[nodiscard]] static std::chrono::milliseconds host_election_delay() noexcept;
     void pump() noexcept;
     void stop() noexcept;
     [[nodiscard]] bool hosting() const noexcept;

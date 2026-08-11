@@ -1,6 +1,9 @@
 #ifndef KRAKEN_NET_RUNTIME_HPP
 #define KRAKEN_NET_RUNTIME_HPP
 
+#include "net/entity_registry.hpp"
+#include "net/world_loot.hpp"
+
 namespace kraken {
 class Config;
 }
@@ -25,6 +28,31 @@ bool ConfigureSession(bool host, const char* address, unsigned short port,
 bool BeginSession();
 bool EndSession();
 [[nodiscard]] bool IsSessionActive();
+[[nodiscard]] bool IsHost();
+[[nodiscard]] bool IsAuthority();
+// True while offline or on the listen-server authority.  Mods can use this
+// as a generic host guard without encoding a raid-specific topology.
+[[nodiscard]] bool IsAuthorityOrOffline();
+[[nodiscard]] NetId LocalEntityId();
+
+// Generic shared-world loot seam.  The host owns the engine repository; a
+// client only publishes a pickup intent and reads presentation records.
+[[nodiscard]] WorldLootId PublishHostWorldLoot(
+    std::int32_t container_prototype_id, std::int32_t item_prototype_id,
+    std::uint32_t amount, NetId owner_entity_id = kInvalidNetId);
+[[nodiscard]] WorldLootId PublishHostWorldLootObject(
+    std::int32_t object_id, std::int32_t item_prototype_id,
+    std::uint32_t amount, NetId owner_entity_id = kInvalidNetId);
+[[nodiscard]] bool RequestWorldLootPickup(
+    WorldLootId loot_id, WorldLootGeneration generation,
+    std::uint32_t transaction_id, std::uint32_t amount);
+[[nodiscard]] bool QueryWorldLootAuthority();
+
+// Registers a host-created vehicle for generic publication.  The returned
+// NetId is stable for the lifetime of the host object, or zero on rejection.
+// The native runtime remains the only publisher; clients never call this.
+[[nodiscard]] NetId PublishHostEntity(std::int32_t object_id,
+                                      std::int32_t kind);
 
 // Called at Vehicle::_KeepThrottle, after native controller polling and just
 // before drivetrain consumption.  Returns true only for a live remote player

@@ -34,15 +34,25 @@ bool EntityRegistry::full() const noexcept
 EntityRegistryBindResult EntityRegistry::bind(const NetId net_id,
                                               const ObjId obj_id) noexcept
 {
+    return bind(net_id, obj_id, kInitialEntityGeneration);
+}
+
+EntityRegistryBindResult EntityRegistry::bind(
+    const NetId net_id, const ObjId obj_id,
+    const EntityGeneration generation) noexcept
+{
     if (!valid_net_id(net_id) || !valid_obj_id(obj_id))
         return EntityRegistryBindResult::InvalidId;
+    if (!valid_generation(generation))
+        return EntityRegistryBindResult::InvalidGeneration;
 
     const std::size_t net_index = find_net_index(net_id);
     const std::size_t obj_index = find_obj_index(obj_id);
 
     if (net_index != m_entries.size() && obj_index != m_entries.size()) {
         return m_entries[net_index].obj_id == obj_id &&
-                       m_entries[obj_index].net_id == net_id
+                       m_entries[obj_index].net_id == net_id &&
+                       m_entries[net_index].generation == generation
                    ? EntityRegistryBindResult::AlreadyBound
                    : EntityRegistryBindResult::Collision;
     }
@@ -53,12 +63,20 @@ EntityRegistryBindResult EntityRegistry::bind(const NetId net_id,
     if (full())
         return EntityRegistryBindResult::Full;
 
-    m_entries.push_back(Entry{net_id, obj_id});
+    m_entries.push_back(Entry{net_id, obj_id, generation});
     return EntityRegistryBindResult::Inserted;
 }
 
 bool EntityRegistry::lookup_obj_id(const NetId net_id,
                                    ObjId& obj_id) const noexcept
+{
+    EntityGeneration generation = kInvalidEntityGeneration;
+    return lookup_obj_id(net_id, obj_id, generation);
+}
+
+bool EntityRegistry::lookup_obj_id(
+    const NetId net_id, ObjId& obj_id,
+    EntityGeneration& generation) const noexcept
 {
     if (!valid_net_id(net_id))
         return false;
@@ -68,11 +86,20 @@ bool EntityRegistry::lookup_obj_id(const NetId net_id,
         return false;
 
     obj_id = m_entries[index].obj_id;
+    generation = m_entries[index].generation;
     return true;
 }
 
 bool EntityRegistry::lookup_net_id(const ObjId obj_id,
                                    NetId& net_id) const noexcept
+{
+    EntityGeneration generation = kInvalidEntityGeneration;
+    return lookup_net_id(obj_id, net_id, generation);
+}
+
+bool EntityRegistry::lookup_net_id(
+    const ObjId obj_id, NetId& net_id,
+    EntityGeneration& generation) const noexcept
 {
     if (!valid_obj_id(obj_id))
         return false;
@@ -82,7 +109,31 @@ bool EntityRegistry::lookup_net_id(const ObjId obj_id,
         return false;
 
     net_id = m_entries[index].net_id;
+    generation = m_entries[index].generation;
     return true;
+}
+
+bool EntityRegistry::lookup_generation(
+    const NetId net_id, EntityGeneration& generation) const noexcept
+{
+    ObjId obj_id = kInvalidObjId;
+    return lookup_obj_id(net_id, obj_id, generation);
+}
+
+bool EntityRegistry::valid_generation(
+    const EntityGeneration generation) noexcept
+{
+    return generation != kInvalidEntityGeneration;
+}
+
+bool EntityRegistry::valid_obj_id(const ObjId obj_id) noexcept
+{
+    return obj_id != kInvalidObjId;
+}
+
+bool EntityRegistry::valid_net_id(const NetId net_id) noexcept
+{
+    return net_id != kInvalidNetId;
 }
 
 EntityRegistryUnbindResult EntityRegistry::unbind_net_id(
@@ -117,16 +168,6 @@ EntityRegistryUnbindResult EntityRegistry::unbind_obj_id(
 void EntityRegistry::clear() noexcept
 {
     m_entries.clear();
-}
-
-bool EntityRegistry::valid_net_id(const NetId net_id) noexcept
-{
-    return net_id != kInvalidNetId;
-}
-
-bool EntityRegistry::valid_obj_id(const ObjId obj_id) noexcept
-{
-    return obj_id != kInvalidObjId;
 }
 
 std::size_t EntityRegistry::find_net_index(const NetId net_id) const noexcept

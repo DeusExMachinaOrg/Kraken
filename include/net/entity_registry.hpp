@@ -15,9 +15,12 @@ using NetId = std::uint32_t;
 // INT32_MIN is reserved as the invalid/sentinel value; every other int32 value,
 // including negative values such as -1, is accepted.
 using ObjId = std::int32_t;
+using EntityGeneration = std::uint16_t;
 
 inline constexpr NetId kInvalidNetId = 0;
 inline constexpr ObjId kInvalidObjId = (std::numeric_limits<ObjId>::min)();
+inline constexpr EntityGeneration kInvalidEntityGeneration = 0;
+inline constexpr EntityGeneration kInitialEntityGeneration = 1;
 inline constexpr std::size_t kDefaultEntityRegistryCapacity = 16u * 1024u;
 
 enum class EntityRegistryBindResult : std::uint8_t {
@@ -26,6 +29,7 @@ enum class EntityRegistryBindResult : std::uint8_t {
     Collision,
     Full,
     InvalidId,
+    InvalidGeneration,
 };
 
 enum class EntityRegistryUnbindResult : std::uint8_t {
@@ -60,11 +64,21 @@ public:
 
     [[nodiscard]] EntityRegistryBindResult bind(NetId net_id,
                                                 ObjId obj_id) noexcept;
+    [[nodiscard]] EntityRegistryBindResult bind(
+        NetId net_id, ObjId obj_id, EntityGeneration generation) noexcept;
 
     [[nodiscard]] bool lookup_obj_id(NetId net_id,
                                      ObjId& obj_id) const noexcept;
+    [[nodiscard]] bool lookup_obj_id(
+        NetId net_id, ObjId& obj_id,
+        EntityGeneration& generation) const noexcept;
     [[nodiscard]] bool lookup_net_id(ObjId obj_id,
                                      NetId& net_id) const noexcept;
+    [[nodiscard]] bool lookup_net_id(
+        ObjId obj_id, NetId& net_id,
+        EntityGeneration& generation) const noexcept;
+    [[nodiscard]] bool lookup_generation(
+        NetId net_id, EntityGeneration& generation) const noexcept;
 
     [[nodiscard]] EntityRegistryUnbindResult unbind_net_id(
         NetId net_id) noexcept;
@@ -77,10 +91,13 @@ private:
     struct Entry {
         NetId net_id = kInvalidNetId;
         ObjId obj_id = kInvalidObjId;
+        EntityGeneration generation = kInvalidEntityGeneration;
     };
 
     [[nodiscard]] static bool valid_net_id(NetId net_id) noexcept;
     [[nodiscard]] static bool valid_obj_id(ObjId obj_id) noexcept;
+    [[nodiscard]] static bool valid_generation(
+        EntityGeneration generation) noexcept;
     [[nodiscard]] std::size_t find_net_index(NetId net_id) const noexcept;
     [[nodiscard]] std::size_t find_obj_index(ObjId obj_id) const noexcept;
 

@@ -179,6 +179,61 @@ void test_zero_capacity()
     CHECK(registry.size() == 0);
 }
 
+void test_generation_binding_and_lookup()
+{
+    using namespace kraken::net;
+
+    EntityRegistry registry(4);
+    EntityGeneration generation = kInvalidEntityGeneration;
+    ObjId obj_id = kInvalidObjId;
+    NetId net_id = kInvalidNetId;
+
+    CHECK(registry.bind(100, 1000, kInvalidEntityGeneration) ==
+          EntityRegistryBindResult::InvalidGeneration);
+    CHECK(registry.size() == 0);
+    CHECK(registry.bind(100, 1000, 7) == EntityRegistryBindResult::Inserted);
+    CHECK(registry.lookup_generation(100, generation));
+    CHECK(generation == 7);
+    CHECK(registry.lookup_obj_id(100, obj_id, generation));
+    CHECK(obj_id == 1000 && generation == 7);
+    CHECK(registry.lookup_net_id(1000, net_id, generation));
+    CHECK(net_id == 100 && generation == 7);
+
+    CHECK(registry.bind(100, 1000, 7) ==
+          EntityRegistryBindResult::AlreadyBound);
+    CHECK(registry.bind(100, 1000, 8) == EntityRegistryBindResult::Collision);
+    CHECK(registry.size() == 1);
+
+    CHECK(registry.unbind_net_id(100) == EntityRegistryUnbindResult::Removed);
+    CHECK(registry.bind(100, 1000, std::numeric_limits<EntityGeneration>::max()) ==
+          EntityRegistryBindResult::Inserted);
+    CHECK(registry.lookup_generation(100, generation));
+    CHECK(generation == std::numeric_limits<EntityGeneration>::max());
+}
+
+void test_reuse_exposes_only_the_current_generation()
+{
+    using namespace kraken::net;
+
+    EntityRegistry registry(2);
+    EntityGeneration generation = kInvalidEntityGeneration;
+    ObjId object_id = kInvalidObjId;
+
+    CHECK(registry.bind(77, 700, 3) == EntityRegistryBindResult::Inserted);
+    CHECK(registry.unbind_net_id(77) == EntityRegistryUnbindResult::Removed);
+    CHECK(!registry.lookup_obj_id(77, object_id, generation));
+    CHECK(generation == kInvalidEntityGeneration);
+
+    CHECK(registry.bind(77, 701, 4) == EntityRegistryBindResult::Inserted);
+    CHECK(registry.lookup_obj_id(77, object_id, generation));
+    CHECK(object_id == 701 && generation == 4);
+    // A delayed reference to the previous object/generation cannot become an
+    // idempotent bind or redirect the reused NetId.
+    CHECK(registry.bind(77, 701, 3) == EntityRegistryBindResult::Collision);
+    CHECK(registry.bind(77, 700, 3) == EntityRegistryBindResult::Collision);
+    CHECK(registry.lookup_generation(77, generation) && generation == 4);
+}
+
 } // namespace
 
 int main()
@@ -190,6 +245,8 @@ int main()
     test_capacity_and_reuse();
     test_removal_is_deterministic_and_clear_is_complete();
     test_zero_capacity();
+    test_generation_binding_and_lookup();
+    test_reuse_exposes_only_the_current_generation();
 
     if (failures != 0) {
         std::cerr << failures << " registry test(s) failed\n";

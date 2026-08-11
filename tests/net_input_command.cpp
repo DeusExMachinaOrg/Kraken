@@ -7,13 +7,13 @@
 int main()
 {
     using namespace kraken::net;
-    InputCommand command{2, 9, 7, 0.5f, 0.2f, 0.1f, true, true};
+    InputCommand command{2, 9, 7, 0.5f, 0.2f, 0.1f, true, true, true};
     InputCommand decoded{};
     std::array<Byte, kInputCommandWireSize> wire{};
     if (encode_input_command(command, wire) != InputCommandCodecError::None ||
         decode_input_command(wire, decoded) != InputCommandCodecError::None ||
         decoded.entity_id != 2 || decoded.sequence != 9 ||
-        !decoded.handbrake || !decoded.request_unstuck)
+        !decoded.handbrake || !decoded.request_unstuck || !decoded.horn)
         return 1;
 
     std::array<Byte, kInputCommandWireSize - 1> short_wire{};

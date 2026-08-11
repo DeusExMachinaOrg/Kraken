@@ -112,6 +112,8 @@ TransportResult Session::send(PeerId peer, MessageType type, Channel channel,
 {
     if (!is_valid_message_type(type) || !is_valid_channel(channel))
         return result(TransportResultCode::InvalidArgument);
+    if (requires_reliable_channel(type) && channel != Channel::Reliable)
+        return result(TransportResultCode::InvalidArgument);
     if (is_control_message(type))
         return result(TransportResultCode::InvalidArgument);
     return send_frame(peer, type, channel, payload, true);
@@ -233,6 +235,13 @@ TransportResult Session::handle_packet(TransportEvent&& event)
                           WireDecodeError::BadChannel});
         return result(TransportResultCode::ProtocolError);
     }
+    if (requires_reliable_channel(header.message_type) &&
+        header.channel != Channel::Reliable) {
+        emit(SessionEvent{SessionEventType::ProtocolError, event.peer,
+                          header.message_type, header.channel,
+                          WireDecodeError::BadChannel});
+        return result(TransportResultCode::ProtocolError);
+    }
 
     if (is_control_message(header.message_type)) {
         if (!payload.empty())
@@ -317,6 +326,13 @@ TransportResult Session::handle_control(PeerId peer_id,
     case MessageType::WeaponCommand:
     case MessageType::LootRequest:
     case MessageType::LootResult:
+    case MessageType::ImpactDamage:
+    case MessageType::WorldLootSpawn:
+    case MessageType::WorldLootBaseline:
+    case MessageType::WorldLootDelta:
+    case MessageType::WorldLootRemove:
+    case MessageType::WorldLootPickupRequest:
+    case MessageType::WorldLootPickupResult:
         break;
     }
     return result(TransportResultCode::ProtocolError);

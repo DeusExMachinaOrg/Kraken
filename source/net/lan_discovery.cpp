@@ -117,6 +117,33 @@ std::vector<sockaddr_in> discovery_targets(const std::uint16_t port,
     return targets;
 }
 
+std::uint8_t local_ipv4_host_octet() noexcept
+{
+    ULONG bytes = 0;
+    std::uint8_t best = 255;
+    if (GetAdaptersInfo(nullptr, &bytes) != ERROR_BUFFER_OVERFLOW || bytes == 0)
+        return best;
+    std::vector<std::byte> buffer(bytes);
+    auto* adapters = reinterpret_cast<PIP_ADAPTER_INFO>(buffer.data());
+    if (GetAdaptersInfo(adapters, &bytes) != NO_ERROR)
+        return best;
+    for (PIP_ADAPTER_INFO adapter = adapters; adapter != nullptr; adapter = adapter->Next) {
+        if (adapter->Type == MIB_IF_TYPE_LOOPBACK)
+            continue;
+        for (IP_ADDR_STRING* item = &adapter->IpAddressList; item != nullptr; item = item->Next) {
+            in_addr address{};
+            if (InetPtonA(AF_INET, item->IpAddress.String, &address) != 1)
+                continue;
+            const std::uint32_t host = ntohl(address.s_addr);
+            const std::uint8_t first = static_cast<std::uint8_t>(host >> 24);
+            const std::uint8_t last = static_cast<std::uint8_t>(host);
+            if (first != 127 && first != 169)
+                best = last < best ? last : best;
+        }
+    }
+    return best;
+}
+
 } // namespace
 
 std::vector<Endpoint> make_lan_discovery_targets(
@@ -239,6 +266,14 @@ std::optional<Endpoint> LanDiscovery::discover(
     }
     close_socket(socket);
     return std::nullopt;
+}
+
+std::chrono::milliseconds LanDiscovery::host_election_delay() noexcept
+{
+    // 10 ms keeps the extra join time short while leaving a deterministic
+    // lead for the usual /24 LAN.  The final second discovery window below
+    // covers neighbours whose last octets are close together.
+    return std::chrono::milliseconds(10u * local_ipv4_host_octet());
 }
 
 void LanDiscovery::pump() noexcept

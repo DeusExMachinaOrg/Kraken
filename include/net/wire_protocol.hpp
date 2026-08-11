@@ -26,6 +26,15 @@ enum class MessageType : std::uint8_t {
     LootRequest = 10,
     LootResult = 11,
     EntityDespawn = 12,
+    EntitySpawn = 13,
+    Loadout = 14,
+    ImpactDamage = 15,
+    WorldLootSpawn = 16,
+    WorldLootBaseline = 17,
+    WorldLootDelta = 18,
+    WorldLootRemove = 19,
+    WorldLootPickupRequest = 20,
+    WorldLootPickupResult = 21,
 };
 
 [[nodiscard]] constexpr bool is_valid_message_type(MessageType type) noexcept
@@ -43,9 +52,34 @@ enum class MessageType : std::uint8_t {
     case MessageType::LootRequest:
     case MessageType::LootResult:
     case MessageType::EntityDespawn:
+    case MessageType::EntitySpawn:
+    case MessageType::Loadout:
+    case MessageType::ImpactDamage:
+    case MessageType::WorldLootSpawn:
+    case MessageType::WorldLootBaseline:
+    case MessageType::WorldLootDelta:
+    case MessageType::WorldLootRemove:
+    case MessageType::WorldLootPickupRequest:
+    case MessageType::WorldLootPickupResult:
         return true;
     }
     return false;
+}
+
+[[nodiscard]] constexpr bool requires_reliable_channel(
+    MessageType type) noexcept
+{
+    switch (type) {
+    case MessageType::WorldLootSpawn:
+    case MessageType::WorldLootBaseline:
+    case MessageType::WorldLootDelta:
+    case MessageType::WorldLootRemove:
+    case MessageType::WorldLootPickupRequest:
+    case MessageType::WorldLootPickupResult:
+        return true;
+    default:
+        return false;
+    }
 }
 
 struct WireHeader {

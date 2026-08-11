@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.10)
 project(kraken VERSION 0.1.1 LANGUAGES CXX)
 
+# The Visual Studio generator's ZERO_CHECK invokes a nested CMake build for
+# every target.  This project contains ENet and is built through the MCP
+# harness, so regenerate explicitly through that harness instead.
+set(CMAKE_SUPPRESS_REGENERATION ON)
+
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -51,9 +56,13 @@ add_library(kraken SHARED
 
     source/net/enet_transport.cpp
     source/net/entity_registry.cpp
+    source/net/entity_protocol.cpp
+    source/net/impact_damage.cpp
+    source/net/loadout_protocol.cpp
     source/net/lan_discovery.cpp
     source/net/input_command.cpp
     source/net/loot_transaction.cpp
+    source/net/world_loot.cpp
     source/net/weapon_command.cpp
     source/net/session.cpp
     source/net/snapshot_interpolation.cpp
@@ -201,6 +210,41 @@ if(BUILD_TESTING)
     add_test(NAME kraken_net_entity_registry
         COMMAND kraken_net_entity_registry_test)
 
+    add_executable(kraken_net_impact_damage_test
+        tests/net_impact_damage.cpp
+        source/net/impact_damage.cpp
+    )
+    target_compile_features(kraken_net_impact_damage_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_impact_damage_test PRIVATE include)
+    set_property(TARGET kraken_net_impact_damage_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_impact_damage
+        COMMAND kraken_net_impact_damage_test)
+
+    add_executable(kraken_net_entity_protocol_test
+        tests/net_entity_protocol.cpp
+        source/net/entity_protocol.cpp
+        source/net/loadout_protocol.cpp
+        source/net/vehicle_snapshot.cpp
+    )
+    target_compile_features(kraken_net_entity_protocol_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_entity_protocol_test PRIVATE include)
+    set_property(TARGET kraken_net_entity_protocol_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_entity_protocol
+        COMMAND kraken_net_entity_protocol_test)
+
+    add_executable(kraken_net_loadout_protocol_test
+        tests/net_loadout_protocol.cpp
+        source/net/loadout_protocol.cpp
+    )
+    target_compile_features(kraken_net_loadout_protocol_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_loadout_protocol_test PRIVATE include)
+    set_property(TARGET kraken_net_loadout_protocol_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_loadout_protocol
+        COMMAND kraken_net_loadout_protocol_test)
+
     add_executable(kraken_net_snapshot_interpolation_test
         tests/net_snapshot_interpolation.cpp
         source/net/snapshot_interpolation.cpp
@@ -242,4 +286,23 @@ if(BUILD_TESTING)
     set_property(TARGET kraken_net_loot_transaction_test PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     add_test(NAME kraken_net_loot_transaction COMMAND kraken_net_loot_transaction_test)
+
+    add_executable(kraken_net_world_loot_test
+        tests/net_world_loot.cpp
+        source/net/world_loot.cpp
+    )
+    target_compile_features(kraken_net_world_loot_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_world_loot_test PRIVATE include)
+    set_property(TARGET kraken_net_world_loot_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_world_loot COMMAND kraken_net_world_loot_test)
+
+    add_executable(kraken_net_player_slots_test
+        tests/net_player_slots.cpp
+    )
+    target_compile_features(kraken_net_player_slots_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_player_slots_test PRIVATE include)
+    set_property(TARGET kraken_net_player_slots_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_player_slots COMMAND kraken_net_player_slots_test)
 endif()
