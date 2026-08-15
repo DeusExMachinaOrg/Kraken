@@ -13,6 +13,7 @@
 #include "fix/autobrakefix.hpp"
 #include "fix/objcontupgrade.hpp"
 #include "fix/luabinds.hpp"
+#include "fix/exports.hpp"
 #include "fix/posteffectreload.hpp"
 #include "fix/wareuse.hpp"
 #include "fix/recollectionfix.hpp"
@@ -67,6 +68,7 @@ namespace kraken {
         fix::physic::Apply();
         fix::autobrakefix::Apply();
         fix::objcontupgrade::Apply();
+        fix::exports::Apply();
         fix::luabinds::Apply(G_CONFIG);
         fix::posteffectreload::Apply(G_CONFIG);
         fix::wareuse::Apply();
