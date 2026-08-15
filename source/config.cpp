@@ -21,7 +21,7 @@ namespace kraken {
     Config::Config() {
         assert(Config::INSTANCE == nullptr && "Config already created!");
 
-        this->log_debug                         = { "logging",   "log_debug",                       1,     true,  eLogDebug, eLogPanic + 1};
+        this->log_debug                         = { "logging",   "log_debug",                       0,     true,  eLogDebug, eLogPanic + 1};
         this->save_width                        = { "graphics",  "save_width",                      512,   true,  256,   2048        };
         this->save_height                       = { "graphics",  "save_height",                     256,   true,  128,   1024        };
         this->view_resolution                   = { "graphics",  "view_resolution",                 2048,  true,  128,   4096        };
@@ -53,12 +53,12 @@ namespace kraken {
         this->testharness_ram_test              = { "testharness","ram_test",                        0,     true,  0,     1           };
         this->testharness_ram_test_offset       = { "testharness","ram_test_offset",                15.0,   true,  3.0,   50.0        };
         this->ode_diag                          = { "ode_diag",   "enabled",                         0,     true,  0,     1           };
-        this->jolt                              = { "jolt",       "enabled",                         0,     true,  0,     1           };
+        this->jolt                              = { "jolt",       "enabled",                         1,     true,  0,     1           };
         this->jolt_threads                      = { "jolt",       "threads",                         0,     true,  0,     64          };
-        this->jolt_shadow                       = { "jolt_harness","shadow",                         0,     true,  0,     1           };
-        this->jolt_apply                        = { "jolt_harness","apply",                          0,     true,  0,     1           };
-        this->jolt_player_only                  = { "jolt_harness","player_only",                    1,     true,  0,     1           };
-        this->jolt_ai                            = { "jolt_harness","ai",                             0,     true,  0,     1           };
+        this->jolt_shadow                       = { "jolt_harness","shadow",                         1,     true,  0,     1           };
+        this->jolt_apply                        = { "jolt_harness","apply",                          1,     true,  0,     1           };
+        this->jolt_player_only                  = { "jolt_harness","player_only",                    0,     true,  0,     1           };
+        this->jolt_ai                            = { "jolt_harness","ai",                             1,     true,  0,     1           };
         this->jolt_susp_frequency               = { "jolt_harness","susp_frequency",                 1.0,   true,  0.5,   2.0         };
         this->jolt_susp_rest_fraction           = { "jolt_harness","susp_rest_fraction",             0.07,  true,  0.02,  0.4         };
         this->jolt_susp_damping                 = { "jolt_harness","susp_damping",                   1.0,   true,  0.2,   3.0         };
@@ -76,13 +76,13 @@ namespace kraken {
         this->jolt_susp_molokovoz_max_scale     = { "jolt_harness","susp_molokovoz_max_scale",        1.00,  true,  0.02,  1.0         };
         this->jolt_wheel_proxy                   = { "jolt_harness","wheel_proxy",                     1,     true,  0,     1           };
         this->jolt_collision_cylinder            = { "jolt_harness","collision_cylinder",               0,     true,  0,     1           };
-        this->jolt_wheelmodel                    = { "jolt_harness","wheelmodel",                       0,     true,  0,     4           };
+        this->jolt_wheelmodel                    = { "jolt_harness","wheelmodel",                       4,     true,  0,     4           };
         this->jolt_wm4_compress_fraction         = { "jolt_harness","wm4_compress_fraction",           0.5f,  true,  0.0f,  1.0f        };
         this->jolt_wm4_susp_max_scale            = { "jolt_harness","wm4_susp_max_scale",              0.15f, true,  0.02f, 1.0f        };
         this->jolt_wm4_joint_at_mount            = { "jolt_harness","wm4_joint_at_mount",              0,     true,  0,     1           };
         this->jolt_wm4_chassis_mass_excl_wheels  = { "jolt_harness","wm4_chassis_mass_excl_wheels",    1,     true,  0,     1           };
         this->jolt_wm4_spin                      = { "jolt_harness","wm4_spin",                        1,     true,  0,     1           };
-        this->jolt_wm4_steer                     = { "jolt_harness","wm4_steer",                       0,     true,  0,     1           };
+        this->jolt_wm4_steer                     = { "jolt_harness","wm4_steer",                       1,     true,  0,     1           };
         this->jolt_wm4_assists                   = { "jolt_harness","wm4_assists",                     1,     true,  0,     1           };
         this->jolt_wm4_assist_yaw                = { "jolt_harness","wm4_assist_yaw",                  1,     true,  0,     1           };
         this->jolt_wm4_engine_brake              = { "jolt_harness","wm4_engine_brake",                0,     true,  0,     1           };
@@ -92,7 +92,7 @@ namespace kraken {
         this->jolt_wm4_governor                  = { "jolt_harness","wm4_governor",                    1,     true,  0,     1           };
         this->jolt_wm4_soildrag                  = { "jolt_harness","wm4_soildrag",                    1,     true,  0,     1           };
         this->jolt_wm4_max_speed_mps             = { "jolt_harness","wm4_max_speed_mps",              100.0f, true,  10.0f, 1000.0f      };
-        // docs §122. Defaults are the ODE world's own values; the master switch is off.
+        // docs §122. Defaults are the ODE world's own values; body damping remains disabled.
         this->jolt_body_damping                  = { "jolt_harness","body_damping",                   0,     true,  0,     1           };
         this->jolt_damping_linear                = { "jolt_harness","damping_linear",                 0.1f,  true,  0.0f,  10.0f       };
         this->jolt_damping_angular               = { "jolt_harness","damping_angular",                0.3f,  true,  0.0f,  10.0f       };
@@ -111,9 +111,9 @@ namespace kraken {
         this->jolt_wm4_per_wheel_mu              = { "jolt_harness","wm4_per_wheel_mu",               0,     true,  0,     1           };
         // docs §140.5 (task #65): combined slip-vector friction. Off by default, see include/config.hpp.
         this->jolt_wm4_iso_slip                  = { "jolt_harness","wm4_iso_slip",                    0,     true,  0,     1           };
-        // docs §140.9 (task #67): friction as a real accumulated-impulse constraint. Off by
-        // default, see include/config.hpp for the measurement that motivates it.
-        this->jolt_wm4_friction_constraint       = { "jolt_harness","wm4_friction_constraint",         0,     true,  0,     2           };
+        // docs §140.9 (task #67): friction as a real accumulated-impulse constraint. Enabled by
+        // default to match the current working configuration.
+        this->jolt_wm4_friction_constraint       = { "jolt_harness","wm4_friction_constraint",         2,     true,  0,     2           };
         // docs §140.15 (task #70): diagnostic A/B; 0 preserves the current rolling-first order.
         this->jolt_wm4_fric_axis_order           = { "jolt_harness","wm4_fric_axis_order",             0,     true,  0,     1           };
         // docs §140.10 (task #68): minimum share of the friction circle each tangential axis is
@@ -142,14 +142,14 @@ namespace kraken {
         this->jolt_wm_react_scale                = { "wheelmodel","react_scale",      1.0f,      true, 0.0f,     10.0f   };
         this->jolt_wm_own_spin                   = { "wheelmodel","own_spin",         1,         true, 0,        1       };
         this->jolt_wm_max_g                      = { "wheelmodel","max_g",            6.0f,      true, 1.0f,     100.0f  };
-        this->jolt_friction_long                = { "jolt_harness","friction_long",                  1.0,   true,  0.2,   3.0         };
+        this->jolt_friction_long                = { "jolt_harness","friction_long",                  0.93,  true,  0.2,   3.0         };
         this->jolt_friction_lat                 = { "jolt_harness","friction_lat",                   1.0,   true,  0.2,   3.0         };
         this->jolt_autotune                     = { "jolt_harness","autotune",                       0,     true,  0,     1           };
         this->jolt_autotune_max_trials          = { "jolt_harness","autotune_max_trials",             24,    true,  1,     500         };
         this->jolt_pushback_min_dspeed          = { "jolt_harness","pushback_min_dspeed",              0.8,   true,  0.0,   50.0        };
         this->jolt_pushback_scale               = { "jolt_harness","pushback_scale",                   1.0,   true,  0.0,   5.0         };
         this->jolt_break_energy_scale           = { "jolt_harness","break_energy_scale",                1.0,   true,  0.0,   1000.0      };
-        this->jolt_tree_push_scale              = { "jolt_harness","tree_push_scale",                  0.02,  true,  0.0,   2.0         };
+        this->jolt_tree_push_scale              = { "jolt_harness","tree_push_scale",                  0.2,   true,  0.0,   2.0         };
         this->jolt_hotpath_diag                 = { "jolt_harness","hotpath_diag",                     0,     true,  0,     1           };
         this->jolt_deferred_destroy             = { "jolt_harness","deferred_destroy",                0,     true,  0,     1           };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };

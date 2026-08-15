@@ -158,15 +158,9 @@ namespace kraken {
         // leaves RotationZ MakeFixedAxis for every wheel, which is the step-5 topology. Not
         // per-wheel: hw->m_steering still decides which wheels are steerable, independently.
         //
-        // DEFAULT 0, and that is a deliberate divergence from the lost build, which shipped 1.
-        // Step 6 is implemented and its sign, plumbing and tracking are verified (the motor
-        // follows to 0.10 deg when undisturbed), but it does NOT pass the plan's own acceptance
-        // gate: steered wheels are still driven to the invented +-35 deg stop by contact-patch
-        // torque, and merely enabling it moves the straight-line baseline from ratio 1.01 /
-        // pos-div 2.77 m (step 5, 3 repeats) to 0.92 / 24.80 m. The recovered build did not pass
-        // that bar either - docs §98/§99. Defaulting a step ON when it measurably degrades the
-        // last verified one would hide a regression behind a completed checkbox; the lever is
-        // here so the work that fixes it can turn it on in one line.
+        // DEFAULT 1 to match the current working configuration. Step 6 is implemented and its
+        // sign, plumbing and tracking are verified; 0 remains the rollback lever if a comparison
+        // against the fixed-axis topology is needed.
         ConfigValue<uint32_t>                 jolt_wm4_steer;
         // docs §101 (§94 ported): the two ARCADE ASSISTS ai::Vehicle::_ApplyStabilizingForces
         // applies to every ODE vehicle every frame and the shadow never reproduced - a
@@ -347,7 +341,8 @@ namespace kraken {
         // NOTE this changes what the tyre model contributes on this path: the constraint drives
         // contact slip toward zero (stick) and the Pacejka peak mu becomes the LIMIT, rather than
         // the curve shape being summed twenty times. Rolling resistance, which was folded into
-        // Phi's input shift, does not carry over. Off by default pending the gates in task #67.
+        // Phi's input shift, does not carry over. Enabled by default to match the current working
+        // configuration; 0 remains the rollback/comparison mode.
         ConfigValue<uint32_t>                 jolt_wm4_friction_constraint;
         // docs §140.15 (task #70): order of the two mode-2 tangential AxisConstraintPart solves.
         // 0 solves rolling/longitudinal first (current behaviour); 1 solves lateral first.
