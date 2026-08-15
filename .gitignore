@@ -1,8 +1,12 @@
 # Directories
 build
+build-*/
 .vscode
 .vs
 __pycache__
+artifacts/
+net_input_command_test.exe
+extern/enet/
 
 # Bindary files
 **/*.obj

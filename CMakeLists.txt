@@ -58,6 +58,7 @@ add_library(kraken SHARED
     source/entry.cpp
     source/config.cpp
     source/fix/physic.cpp
+    source/fix/breakablediag.cpp
     source/fix/autobrakefix.cpp
     source/fix/objcontupgrade.cpp
     source/fix/luabinds.cpp
@@ -82,6 +83,7 @@ add_library(kraken SHARED
     source/fix/testharness.cpp
     source/fix/jolt.cpp
     source/fix/joltshadow.cpp
+    source/fix/odediag.cpp
 
     source/ext/logger.cpp
     source/ext/impulse.cpp
