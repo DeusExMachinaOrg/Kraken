@@ -30,6 +30,11 @@
 namespace kraken::fix::testharness {
     namespace fs = std::filesystem;
 
+    // docs §140.16: the game clamps wheel steering at pi/4. Scenario input must be normalized
+    // before it reaches either engine; otherwise Jolt's direct m_curAngle write sees a value the
+    // game cannot produce while the ODE side still receives the unclamped sample.
+    constexpr float kHarnessSteeringLimit = 0.7853981633974483f;
+
     // Autonomous scripted-input + telemetry harness, driven entirely by files under
     // ./data/kraken_testharness/ so an external tool (no human, no keyboard/gamepad)
     // can script a vehicle, capture its world trajectory, and compare/tune against it.
@@ -130,7 +135,8 @@ namespace kraken::fix::testharness {
             Sample sample;
             sample.t         = std::stof(tokens[0]);
             sample.throttle  = std::stof(tokens[1]);
-            sample.steer     = std::stof(tokens[2]);
+            sample.steer     = std::clamp(std::stof(tokens[2]),
+                -kHarnessSteeringLimit, kHarnessSteeringLimit);
             sample.brake     = std::stof(tokens[3]);
             sample.handbrake = std::stoi(tokens[4]) != 0;
             state.samples.push_back(sample);

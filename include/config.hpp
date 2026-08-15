@@ -103,6 +103,17 @@ namespace kraken {
         ConfigValue<float>                    jolt_susp_rest_fraction;
         ConfigValue<float>                    jolt_susp_damping;
         ConfigValue<float>                    jolt_susp_reference_hz;
+        // Per-prototype residual suspension multipliers. ODE's CFM/ERP remain the base
+        // values; these are only the final vehicle-specific fine-tune on top of them.
+        ConfigValue<float>                    jolt_susp_ural_frequency;
+        ConfigValue<float>                    jolt_susp_ural_damping;
+        ConfigValue<float>                    jolt_susp_bug_frequency;
+        ConfigValue<float>                    jolt_susp_bug_damping;
+        ConfigValue<float>                    jolt_susp_molokovoz_frequency;
+        ConfigValue<float>                    jolt_susp_molokovoz_damping;
+        ConfigValue<float>                    jolt_susp_ural_max_scale;
+        ConfigValue<float>                    jolt_susp_bug_max_scale;
+        ConfigValue<float>                    jolt_susp_molokovoz_max_scale;
         ConfigValue<uint32_t>                  jolt_wheel_proxy;
         ConfigValue<uint32_t>                 jolt_collision_cylinder;
         ConfigValue<uint32_t>                 jolt_wheelmodel;            // docs §39: spring_wheel model on the Jolt vehicle. 0=off, 1=log-only eval, 2=apply (drive chassis, no VehicleConstraint), 4=wheel bodies (docs §58, Этап 1)
@@ -113,15 +124,10 @@ namespace kraken {
         // immediates), so 0.5 here is the value its kraken.ini carried; the effective clamp to
         // [0.05, 0.95] lives in the code that reads it, exactly as the recovered build did it.
         ConfigValue<float>                    jolt_wm4_compress_fraction;
-        // docs §46g/§46i (task #59): scales mSuspensionMaxLength down from the invented
+        // docs §46g/§46i (task #59): scales mSuspensionMaxLength from the invented
         // "0.05 + suspensionRange" ceiling (ODE has no real hard stop to derive it from - see
-        // that constant's own comment in joltshadow.cpp). Measured live against a genuinely
-        // independent jolt=0 baseline on Ural01: 1.0 -> ~0.98m real chassis-height error, 0.6 ->
-        // 0.65m, 0.15 -> 0.20m, 0.05 -> 0.11m (roughly linear, no hard floor). Exposed as a
-        // config value rather than a hardcoded constant so it can be tuned without a rebuild -
-        // closing the gap further costs real suspension travel (a near-zero value here makes
-        // the ride feel like a rigid axle), so the right number is a judgment call, not a fact
-        // to hardcode.
+        // that constant's own comment in joltshadow.cpp). Vehicle-specific calibration uses the
+        // full authored range (1.0); the global value remains a fallback for uncalibrated types.
         ConfigValue<float>                    jolt_wm4_susp_max_scale;
         // docs §75: where the SixDOF anchor sits. 0 (default, and what the recovered build
         // shipped) anchors at the WHEEL CENTRE, which is what makes the travel limits and the
@@ -312,6 +318,56 @@ namespace kraken {
         // §42.9 exactly; m_mU=1.0 for most wheels, so this is a no-op for the common case. Off by
         // default pending the A/B measurement this flag exists to make possible.
         ConfigValue<uint32_t>                 jolt_wm4_per_wheel_mu;
+        // docs §140.5 (task #65): how wheelmodel_core combines longitudinal and lateral slip.
+        // 0 (legacy) evaluates the Pacejka curve TWICE - once on the slip ratio, once on the slip
+        // ANGLE - as if the two were independent channels, then rescales the pair back onto the
+        // friction circle. At large slip angle both evaluations saturate near +-D and the rescale
+        // leaves ~0.7*D of longitudinal force whose SIGN is set by whatever noisy v_par the scrub
+        // produces. §140.2j measured the consequence on Mirotvorec01 at full steer lock: 2874 N of
+        // gross longitudinal effort across 6 wheels self-cancelling to -127 N net (96%), the
+        // shadow stopping dead while the ODE reference drove on. 1 builds ONE theoretical slip
+        // vector, evaluates Phi once on its magnitude and points the force along it, so the
+        // longitudinal share falls away as the slip goes lateral - which is what Coulomb friction
+        // actually does. Identical to the legacy form to first order at small slip angle; the two
+        // only diverge where the legacy form is wrong. Off by default pending the A/B on the
+        // §140 repro and the 23-vehicle fleet sweep.
+        ConfigValue<uint32_t>                 jolt_wm4_iso_slip;
+        // docs §140.9 (task #67): how the tyre's tangential force reaches the solver.
+        // 0 (legacy) recomputes the full Pacejka force every velocity iteration and adds a whole
+        // Ftang*dt each time, with no accumulated lambda and no decaying increment. Since
+        // SolveVelocityConstraint runs ~20x per step (measured exactly 20.00 via the §124.7
+        // counters), the delivered impulse scales with the iteration count instead of the force:
+        // §140.8 measured real per-wheel friction reaching +-4600 N on a 4032 N vehicle, and
+        // §140.8a measured travel collapsing monotonically as iterations rise (10 -> 7.1 m,
+        // 12 -> 5.0, 16 -> 1.2, 20 -> 0.8 stuck 3/3).
+        // 1 makes friction two tangential AxisConstraintParts per slot with accumulated lambda,
+        // clamped to the friction circle mu*lambda_n, exactly as Jolt's own
+        // ContactConstraintManager does contact friction. The per-iteration increment then decays
+        // to zero as it converges and the total impulse stops depending on the iteration count.
+        // NOTE this changes what the tyre model contributes on this path: the constraint drives
+        // contact slip toward zero (stick) and the Pacejka peak mu becomes the LIMIT, rather than
+        // the curve shape being summed twenty times. Rolling resistance, which was folded into
+        // Phi's input shift, does not carry over. Off by default pending the gates in task #67.
+        ConfigValue<uint32_t>                 jolt_wm4_friction_constraint;
+        // docs §140.15 (task #70): order of the two mode-2 tangential AxisConstraintPart solves.
+        // 0 solves rolling/longitudinal first (current behaviour); 1 solves lateral first.
+        // Diagnostic A/B only, off by default as a separate axis-order experiment.
+        ConfigValue<uint32_t>                 jolt_wm4_fric_axis_order;
+        // docs §140.10 (task #68): the minimum share of the friction circle each of the two
+        // tangential axes is guaranteed, expressed as a fraction of mu*lambda_n. Exists because
+        // under throttle the longitudinal axis sits at the cap and, without a floor, leaves the
+        // lateral axis nothing - the shadow then drives correctly and cannot corner (§140.9a
+        // measured powered straightness 0.85 against ODE's 0.57, while the SAME turn taken
+        // coasting matched ODE exactly).
+        // The first attempt hardcoded 0.3 and did not help, which I wrongly read as refuting
+        // starvation. The arithmetic says otherwise: at grip 2.0 a 0.3 floor caps powered lateral
+        // grip at an effective mu of 0.6, below the ODE reference's own ~1.0 per-wheel m_mU, so
+        // that value sat on the wrong side of the reference and could not distinguish the
+        // hypothesis either way. Parity needs >= 0.5 here.
+        // 1.0 removes the coupling entirely (each axis independently capped at the full budget,
+        // a box rather than a circle, admitting |F| up to sqrt(2)*budget) - useful as a
+        // diagnostic upper bound, not as a shipping value.
+        ConfigValue<float>                    jolt_wm4_fric_floor;
         // docs §105/§106: how the steer DOF holds its angle. 2 = the LITERAL port - the RotationZ
         // motor is switched OFF and the wheel's orientation is ASSIGNED each frame from the
         // commanded steer and its current spin, exactly as _TurnWheelByAngle ->

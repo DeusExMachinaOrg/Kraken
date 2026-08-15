@@ -70,11 +70,20 @@ def trigger_run(base_dir: str = BASE_DIR, token: str = None) -> str:
     return token
 
 
-def wait_for_done(token: str, base_dir: str = BASE_DIR, timeout: float = 60.0, poll: float = 0.5) -> str:
+def wait_for_done(token: str, base_dir: str = BASE_DIR, timeout: float = 60.0, poll: float = 0.5,
+                  process=None, exception_check=None) -> str:
     """Blocks until output_<token>.done appears (or timeout). Returns its content ('ok'/'no_vehicle')."""
     done_path = os.path.join(base_dir, f"output_{token}.done")
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if exception_check is not None:
+            exception_path = exception_check()
+            if exception_path is not None:
+                raise RuntimeError("new exception report appeared: %s" % exception_path)
+        if process is not None:
+            exit_code = process.poll()
+            if exit_code is not None:
+                raise RuntimeError("hta.exe exited during scenario with code %s" % exit_code)
         if os.path.exists(done_path):
             with open(done_path) as f:
                 return f.read().strip()

@@ -39,6 +39,7 @@ EXE      = os.path.join(GAME_DIR, "hta.exe")
 PDB      = os.path.join(GAME_DIR, "game.pdb")
 DLL      = os.path.join(GAME_DIR, "kraken.dll")
 LOG      = os.path.join(GAME_DIR, "kraken.log")
+EXCEPTIONS = os.path.join(GAME_DIR, "exceptions")
 DATA     = os.path.join(GAME_DIR, "data")
 INI      = os.path.join(DATA, "kraken.ini")
 PROFILES = os.path.join(DATA, "profiles")
@@ -81,6 +82,31 @@ def check_dll_current():
             "`python -c \"import gamedir; print(gamedir.deploy_dll())\"` or copy it by hand."
             % (time.strftime("%H:%M:%S", time.localtime(live_t)),
                time.strftime("%H:%M:%S", time.localtime(build_t))))
+
+
+def exception_snapshot():
+    """Return the current exception-report names and metadata for crash detection."""
+    try:
+        return {
+            entry.name: (entry.stat().st_mtime_ns, entry.stat().st_size)
+            for entry in os.scandir(EXCEPTIONS)
+            if entry.is_file()
+        }
+    except OSError:
+        return {}
+
+
+def new_exception(snapshot):
+    """Return a newly created/updated exception report, or None."""
+    current = exception_snapshot()
+    changed = [
+        name for name, metadata in current.items()
+        if name not in snapshot or metadata != snapshot[name]
+    ]
+    if not changed:
+        return None
+    changed.sort(key=lambda name: current[name], reverse=True)
+    return os.path.join(EXCEPTIONS, changed[0])
 
 
 if __name__ == "__main__":

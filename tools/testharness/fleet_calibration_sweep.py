@@ -27,7 +27,7 @@ import gamedir
 from session import Session
 from harness import Scenario, Sample
 
-SAVE = "00000009"
+SAVE = os.environ.get("FLEET_SAVE", "00000009")
 SETTLE = 3.0
 DRIVE = 8.0
 BRAKE = 3.0
@@ -44,7 +44,18 @@ RUN = {
     ("jolt_harness", "player_only"): 1, ("jolt_harness", "ai"): 0,
     ("jolt_harness", "wheelmodel"): 4, ("jolt_harness", "wm4_contact_constraint"): 1,
     ("jolt_harness", "wm4_per_wheel_mu"): 0, ("jolt_harness", "wm4_diag_interval"): 60,
+    ("jolt_harness", "wm4_friction_constraint"): int(os.environ.get("FLEET_FRICTION_MODE", "2")), ("jolt_harness", "wm4_fric_axis_order"): 0,
     ("jolt_harness", "deferred_destroy"): 0,
+    ("jolt_harness", "susp_ural_frequency"): float(os.environ.get("FLEET_URAL_FREQ", "1.0")),
+    ("jolt_harness", "susp_ural_damping"): float(os.environ.get("FLEET_URAL_DAMP", "1.0")),
+    ("jolt_harness", "susp_bug_frequency"): float(os.environ.get("FLEET_BUG_FREQ", "1.0")),
+    ("jolt_harness", "susp_bug_damping"): float(os.environ.get("FLEET_BUG_DAMP", "1.0")),
+    ("jolt_harness", "susp_molokovoz_frequency"): float(os.environ.get("FLEET_MOLO_FREQ", "1.0")),
+    ("jolt_harness", "susp_molokovoz_damping"): float(os.environ.get("FLEET_MOLO_DAMP", "1.0")),
+    ("jolt_harness", "wm4_susp_max_scale"): float(os.environ.get("FLEET_SUSP_MAX_SCALE", "0.15")),
+    ("jolt_harness", "susp_ural_max_scale"): float(os.environ.get("FLEET_URAL_SCALE", "0.15")),
+    ("jolt_harness", "susp_bug_max_scale"): float(os.environ.get("FLEET_BUG_SCALE", "0.15")),
+    ("jolt_harness", "susp_molokovoz_max_scale"): float(os.environ.get("FLEET_MOLO_SCALE", "0.15")),
     ("testharness", "enabled"): 1, ("testharness", "autoload_save"): 0,
     ("testharness", "god_mode"): 0, ("testharness", "perfmon"): 0,
 }
@@ -53,6 +64,7 @@ SAFE = {
     ("jolt_harness", "player_only"): 0, ("jolt_harness", "ai"): 1,
     ("jolt_harness", "wheelmodel"): 4, ("jolt_harness", "wm4_contact_constraint"): 1,
     ("jolt_harness", "wm4_per_wheel_mu"): 0, ("jolt_harness", "wm4_diag_interval"): 60,
+    ("jolt_harness", "wm4_friction_constraint"): 2, ("jolt_harness", "wm4_fric_axis_order"): 0,
     ("jolt_harness", "deferred_destroy"): 0,
     # docs §139.6: --tuning can override any of TUNING_KEYS for the RUN - without an explicit
     # reset here, a --tuning run left the ini contaminated with its candidate values after exit
@@ -60,6 +72,15 @@ SAFE = {
     # TUNING_KEYS-capable knob back to the project's own established baseline, whether or not
     # this particular invocation happened to touch it.
     ("jolt_harness", "susp_frequency"): 1.0, ("jolt_harness", "susp_damping"): 1.0,
+    # Calibrated baseline from calibration_softness_full_range_200.json and the Ural/Molokovoz
+    # damping A/B runs. Full authored range is intentional: ODE Hinge2 has no travel stop.
+    ("jolt_harness", "susp_ural_frequency"): 2.5, ("jolt_harness", "susp_ural_damping"): 2.5,
+    ("jolt_harness", "susp_bug_frequency"): 2.0, ("jolt_harness", "susp_bug_damping"): 1.5,
+    ("jolt_harness", "susp_molokovoz_frequency"): 2.0, ("jolt_harness", "susp_molokovoz_damping"): 1.5,
+    ("jolt_harness", "wm4_susp_max_scale"): 0.15,
+    ("jolt_harness", "susp_ural_max_scale"): 1.0,
+    ("jolt_harness", "susp_bug_max_scale"): 1.0,
+    ("jolt_harness", "susp_molokovoz_max_scale"): 1.0,
     ("jolt_harness", "friction_long"): 0.93, ("jolt_harness", "friction_lat"): 1.0,
     ("jolt_harness", "chassis_inertia_ode_box"): 0,
     ("testharness", "enabled"): 0, ("testharness", "autoload_save"): 0,
@@ -95,8 +116,9 @@ SCENARIOS = {"accel_brake": scenario_straight, "accel_steer_brake": scenario_ste
 
 ts_re = re.compile(r"(\d\d:\d\d:\d\d\.\d\d\d)")
 div_re = re.compile(
-    r"Shadow divergence \(player\): pos=([\-\d.]+)m vel=([\-\d.]+)m/s angle=([\-\d.]+)deg "
-    r"\(jolt com=\[([\-\d. ]+)\] ode com=\[([\-\d. ]+)\]\)")
+    r"Shadow divergence \(player\):\s+pos=([\-\d.]+)m\s+vel=([\-\d.]+)m/s\s+"
+    r"angle=([\-\d.]+)deg.*?\(jolt com=\[([\-\d. ]+)\]\s+"
+    r"ode com=\[([\-\d. ]+)\]\)")
 
 
 def secs(ts):
@@ -117,9 +139,14 @@ def analyze(lines, trigger_epoch):
     """Same metric as wm_cfg.py's analyze(), adapted to work off an already-sliced line list
     (Session.log_since()) instead of re-scanning the whole file by wall-clock cutoff."""
     div = []
-    for line in lines:
+    for index, line in enumerate(lines):
+        # The game logger wraps long messages at the console width.  In particular the
+        # divergence header and its pos/vel/com payload can occupy 2-3 physical lines.
+        # Parse a small block starting at the header instead of requiring one physical line.
+        if "Shadow divergence (player)" not in line:
+            continue
         tm = ts_re.search(line)
-        d = div_re.search(line)
+        d = div_re.search(" ".join(lines[index:index + 4]))
         if not tm or not d:
             continue
         jc = [float(x) for x in d.group(4).split()]
@@ -146,6 +173,58 @@ def analyze(lines, trigger_epoch):
         "angle_div_last": ang[-1],
         "max_pos_div": max(pos),
         "max_angle_div": max(ang),
+        "suspension": analyze_suspension(lines),
+    }
+
+
+def analyze_suspension(lines):
+    """Compare the diagnostic ODE wheel displacement with the Jolt wheel-body z.
+
+    docs §28 reports ODE compression as a signed displacement, while docs §122.15 reports
+    wheel-body z relative to the rest position (compression is therefore -z).  Both records
+    are emitted from the same diagnostic pass, but their timestamps can differ by a few ms.
+    Keep this metric separate from the chassis trajectory divergence: it measures suspension
+    softness directly and is not polluted by drivetrain/contact yaw divergence.
+    """
+    ode = []
+    jolt = []
+    ode_re = re.compile(
+        r"(\d\d:\d\d:\d\d\.\d\d\d).*?REAL ODE wheel state \(player\) "
+        r"wheel=(\d+) displacement=([\-\d.]+)")
+    jolt_re = re.compile(
+        r"(\d\d:\d\d:\d\d\.\d\d\d).*?droop \(player\) w=(\d+) z=([\-\d.]+)m "
+        r"\[droop<=([+\-\d.]+) compress>=([+\-\d.]+)\]")
+    for index, line in enumerate(lines):
+        block = " ".join(lines[index:index + 3])
+        m = ode_re.search(block)
+        if m:
+            ode.append((secs(m.group(1)), int(m.group(2)), float(m.group(3))))
+        m = jolt_re.search(block)
+        if m:
+            jolt.append((secs(m.group(1)), int(m.group(2)), -float(m.group(3)),
+                         abs(float(m.group(3)) - float(m.group(5)))))
+    if not ode or not jolt:
+        return {"error": "no paired suspension diagnostics"}
+
+    pairs = []
+    for jt, jw, jc, limit_distance in jolt:
+        candidates = [(abs(ot - jt), oc) for ot, ow, oc in ode
+                      if ow == jw and abs(ot - jt) <= 0.25]
+        if not candidates:
+            continue
+        _, oc = min(candidates, key=lambda x: x[0])
+        pairs.append((oc, jc, jc - oc, limit_distance))
+    if not pairs:
+        return {"error": "no paired suspension diagnostics"}
+    errors = [p[2] for p in pairs]
+    return {
+        "samples": len(pairs),
+        "ode_mean_compression_m": sum(p[0] for p in pairs) / len(pairs),
+        "jolt_mean_compression_m": sum(p[1] for p in pairs) / len(pairs),
+        "mean_bias_jolt_minus_ode_m": sum(errors) / len(errors),
+        "rmse_m": (sum(e * e for e in errors) / len(errors)) ** 0.5,
+        "max_abs_error_m": max(abs(e) for e in errors),
+        "at_travel_limit_fraction": sum(1 for p in pairs if p[3] < 0.002) / len(pairs),
     }
 
 

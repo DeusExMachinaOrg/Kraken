@@ -59,6 +59,12 @@ namespace kraken::fix::wheelmodel {
         float rollingResist = 0.02f;   // Crr: rolling-resistance coefficient (dimensionless,
                                         // typical tyre range ~0.01-0.04) - see §42 in
                                         // GeneralizedContactForce for how this folds into Phi().
+        // docs §140.5 (task #65): combine longitudinal and lateral slip into ONE slip VECTOR and
+        // evaluate Phi once on its magnitude, instead of evaluating Phi twice independently and
+        // rescaling the pair onto the friction circle afterwards. Off by default - it is a real
+        // force change, so it ships behind a flag and an A/B like everything else here. The
+        // physics argument is in GeneralizedContactForce at the branch itself.
+        bool  isoSlip     = false;
     };
 
     // Pacejka magic formula Φ(ξ) = D·sin(C·atan(Bξ − E(Bξ − atan Bξ))).
@@ -149,6 +155,14 @@ namespace kraken::fix::wheelmodel {
         // commanded to the SAME angle) push AGAINST each other at full lock, which is the
         // standing explanation for the shadow stopping dead there while ODE drives on.
         float dbg_f_par = 0.0f, dbg_f_lat = 0.0f;
+        // docs §140.6: the same two numbers as a WORLD-SPACE vector (t*f_par + l*f_lat, pre-weight).
+        // dbg_f_par/dbg_f_lat are scalars in each wheel's OWN tangent frame, and on a vehicle with
+        // steered axles those frames differ by the steer angle - so summing the scalars across
+        // wheels, as §140.2j did, adds numbers that do not live in the same basis and produces a
+        // "cancellation" figure that is partly just the 45-degree frame difference. Only a vector
+        // can be summed, or projected onto the chassis axes to ask the question that actually
+        // matters: how much forward push does this wheel hand the chassis.
+        vec3  dbg_Ffric;
     };
 
     inline WMForce GeneralizedContactForce(
@@ -216,10 +230,51 @@ namespace kraken::fix::wheelmodel {
             const float kappaRR = P.rollingResist / fmaxf(P.mu * P.C * P.B, 1e-6f);
 
             const float D = P.mu * F_n; // unweighted (see header note)
-            float f_par = Phi(kappa - kappaRR * travelSign, D, P);
-            float f_lat = Phi(alpha, D, P);
+            const float sPar = kappa - kappaRR * travelSign;
 
-            // friction circle
+            float f_par, f_lat;
+            if (P.isoSlip) {
+                // docs §140.5 (task #65): COMBINED-SLIP form. The two axes are not independent
+                // physical channels - they are two components of ONE Coulomb friction force that
+                // must oppose ONE sliding direction. Build the theoretical slip VECTOR
+                // s = (-v_par/v_ref, -v_lat/v_ref), evaluate Phi ONCE on |s|, and point the
+                // result along -ŝ. Note s.y = -v_lat/v_ref = tan(alpha), so at small angles this
+                // is identical to the old Phi(alpha) to first order; the two forms only diverge
+                // where alpha is large - which is exactly where the old one is wrong.
+                //
+                // Why the old independent-then-rescale form fails (measured, §140.2j): when a
+                // wheel is dragged sideways through a tight arc, |alpha| -> pi/2 and BOTH curves
+                // saturate near +-D. The circle then rescales the pair to D/sqrt(2) each, so the
+                // tyre invents a longitudinal force of 0.7*D whose SIGN is set by whatever small,
+                // noisy v_par the scrub happens to produce. On Mirotvorec01 at full lock that put
+                // the front axle at +40..+47 N against the rear axle's -67..-192 N: 2874 N of
+                // gross longitudinal effort self-cancelling down to -127 N net (96%), which is
+                // why the 411 kg vehicle got 0.3 m/s^2 out of ~9 available and stopped dead while
+                // the ODE reference drove on. Under the vector form that same wheel gets
+                // f_par = Phi(|s|)*s.x/|s|, and s.x/|s| -> 0 as the slip goes lateral: the tyre
+                // RELEASES the longitudinal share instead of fabricating it.
+                //
+                // This is a fleet-wide model correction, not a Mirotvorec workaround - the
+                // topology only made it loud (two steered axles at different fore-aft stations
+                // commanded to the SAME angle maximise the scrub). Flag-gated all the same.
+                const float sLat = -v_lat / v_ref;
+                const float sMag = sqrtf(sPar * sPar + sLat * sLat);
+                if (sMag > 1e-6f) {
+                    const float f = Phi(sMag, D, P);
+                    f_par = f * (sPar / sMag);
+                    f_lat = f * (sLat / sMag);
+                } else {
+                    f_par = 0.0f;
+                    f_lat = 0.0f;
+                }
+            } else {
+                f_par = Phi(sPar, D, P);
+                f_lat = Phi(alpha, D, P);
+            }
+
+            // friction circle. Under isoSlip this is already satisfied by construction
+            // (|F| = |Phi(|s|)| <= D) and stays only as a cheap backstop; under the legacy form
+            // it is load-bearing.
             const float mag = sqrtf(f_par * f_par + f_lat * f_lat);
             if (mag > D && mag > 1e-6f) {
                 const float sc = D / mag;
@@ -261,6 +316,7 @@ namespace kraken::fix::wheelmodel {
             // docs §140.2i: captured HERE, after every clamp and the stick blend above, so these
             // are the forces that actually reach Fvec on the next line - not a pre-clamp value.
             out.dbg_f_par = f_par; out.dbg_f_lat = f_lat;
+            out.dbg_Ffric = t * f_par + l * f_lat;   // docs §140.6, see the field's comment
 
             Fvec = Fvec + t * f_par + l * f_lat;
             out.fpar_w = f_par * w;

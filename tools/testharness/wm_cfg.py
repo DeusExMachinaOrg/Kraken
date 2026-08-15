@@ -45,6 +45,8 @@ SETTLE = 3.0
 # mechanism run_vehicle_cycle.py uses) after the initial dust settles, so every test - past
 # comparisons aside - is unambiguously against the SAME prototype from here on.
 PIN_VEHICLE = os.environ.get("WM_VEHICLE", "Molokovoz01")
+GAME_PROCESS = None
+EXCEPTION_BASELINE = {}
 
 
 def kill():
@@ -164,12 +166,21 @@ def verify_vehicle_or_retry(name, fingerprint, max_attempts=3):
 
 def launch_and_wait(timeout=75.0):
     """Launch; wait for a fresh 'built (player)' line. Returns build line or None."""
+    global GAME_PROCESS, EXCEPTION_BASELINE
     # mark current log end so we only look at THIS launch (log truncates on launch anyway)
-    subprocess.Popen([EXE], cwd=WORKDIR, close_fds=True)
+    EXCEPTION_BASELINE = gamedir.exception_snapshot()
+    process = subprocess.Popen([EXE], cwd=WORKDIR, close_fds=True)
+    GAME_PROCESS = process
     deadline = time.time() + timeout
     built = None
     while time.time() < deadline:
         time.sleep(3.0)
+        exception_path = gamedir.new_exception(EXCEPTION_BASELINE)
+        if exception_path is not None:
+            raise RuntimeError("new exception report appeared: %s" % exception_path)
+        exit_code = process.poll()
+        if exit_code is not None:
+            raise RuntimeError("hta.exe exited during launch with code %s" % exit_code)
         try:
             with open(LOG, encoding="utf-8", errors="replace") as f:
                 for line in f:
@@ -450,7 +461,10 @@ def main():
     # scenarios run a stop phase plus a long hold after the drive, and the old fixed formula left
     # one second of slack, which silently truncated the very window being measured.
     scenario_end = max(s.t for s in scen.samples)
-    status = harness.wait_for_done(token, base_dir=BASE_DIR, timeout=scenario_end+8.0)
+    status = harness.wait_for_done(
+        token, base_dir=BASE_DIR, timeout=scenario_end+8.0,
+        process=GAME_PROCESS,
+        exception_check=lambda: gamedir.new_exception(EXCEPTION_BASELINE))
     time.sleep(1.0)
     # kill() in a finally: the deferred contact check RAISES on failure, and an abort that leaves
     # hta.exe idling and still logging has already cost this project one misdiagnosis (see below).

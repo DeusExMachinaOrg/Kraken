@@ -63,6 +63,17 @@ namespace kraken {
         this->jolt_susp_rest_fraction           = { "jolt_harness","susp_rest_fraction",             0.07,  true,  0.02,  0.4         };
         this->jolt_susp_damping                 = { "jolt_harness","susp_damping",                   1.0,   true,  0.2,   3.0         };
         this->jolt_susp_reference_hz            = { "jolt_harness","susp_reference_hz",               60.0,  true,  20.0,  144.0       };
+        this->jolt_susp_ural_frequency          = { "jolt_harness","susp_ural_frequency",             2.50,  true,  0.5,   4.0         };
+        this->jolt_susp_ural_damping            = { "jolt_harness","susp_ural_damping",               2.50,  true,  0.2,   3.0         };
+        this->jolt_susp_bug_frequency           = { "jolt_harness","susp_bug_frequency",              2.00,  true,  0.5,   2.0         };
+        this->jolt_susp_bug_damping             = { "jolt_harness","susp_bug_damping",                1.50,  true,  0.2,   3.0         };
+        this->jolt_susp_molokovoz_frequency     = { "jolt_harness","susp_molokovoz_frequency",        2.00,  true,  0.5,   2.0         };
+        this->jolt_susp_molokovoz_damping       = { "jolt_harness","susp_molokovoz_damping",          1.50,  true,  0.2,   3.0         };
+        // Target vehicles use the full authored ODE suspension range; the global .15 fallback
+        // remains for prototypes that have not yet received a vehicle-specific calibration.
+        this->jolt_susp_ural_max_scale          = { "jolt_harness","susp_ural_max_scale",             1.00,  true,  0.02,  1.0         };
+        this->jolt_susp_bug_max_scale           = { "jolt_harness","susp_bug_max_scale",              1.00,  true,  0.02,  1.0         };
+        this->jolt_susp_molokovoz_max_scale     = { "jolt_harness","susp_molokovoz_max_scale",        1.00,  true,  0.02,  1.0         };
         this->jolt_wheel_proxy                   = { "jolt_harness","wheel_proxy",                     1,     true,  0,     1           };
         this->jolt_collision_cylinder            = { "jolt_harness","collision_cylinder",               0,     true,  0,     1           };
         this->jolt_wheelmodel                    = { "jolt_harness","wheelmodel",                       0,     true,  0,     4           };
@@ -98,6 +109,17 @@ namespace kraken {
         // docs §139: real per-wheel m_mU into wheelmodel_core's live grip (wheelmodel=4 only).
         // Off by default, see include/config.hpp for the full rationale.
         this->jolt_wm4_per_wheel_mu              = { "jolt_harness","wm4_per_wheel_mu",               0,     true,  0,     1           };
+        // docs §140.5 (task #65): combined slip-vector friction. Off by default, see include/config.hpp.
+        this->jolt_wm4_iso_slip                  = { "jolt_harness","wm4_iso_slip",                    0,     true,  0,     1           };
+        // docs §140.9 (task #67): friction as a real accumulated-impulse constraint. Off by
+        // default, see include/config.hpp for the measurement that motivates it.
+        this->jolt_wm4_friction_constraint       = { "jolt_harness","wm4_friction_constraint",         0,     true,  0,     2           };
+        // docs §140.15 (task #70): diagnostic A/B; 0 preserves the current rolling-first order.
+        this->jolt_wm4_fric_axis_order           = { "jolt_harness","wm4_fric_axis_order",             0,     true,  0,     1           };
+        // docs §140.10 (task #68): minimum share of the friction circle each tangential axis is
+        // guaranteed, so a saturated partner cannot starve the other. Config-driven because the
+        // first hardcoded value (0.3) was too low to even test the hypothesis - see config.hpp.
+        this->jolt_wm4_fric_floor                = { "jolt_harness","wm4_fric_floor",                  0.3f,  true,  0.0f,  1.0f        };
         this->jolt_wm4_steer_kinematic           = { "jolt_harness","wm4_steer_kinematic",             2,     true,  0,     2           };
         this->jolt_wm4_steer_hz                  = { "jolt_harness","wm4_steer_hz",                    20.0f, true,  1.0f,  500.0f      };
         this->jolt_wm4_steer_damping             = { "jolt_harness","wm4_steer_damping",               1.0f,  true,  0.05f, 10.0f       };
@@ -210,6 +232,15 @@ namespace kraken {
         this->LoadValue(&this->jolt_susp_rest_fraction);
         this->LoadValue(&this->jolt_susp_damping);
         this->LoadValue(&this->jolt_susp_reference_hz);
+        this->LoadValue(&this->jolt_susp_ural_frequency);
+        this->LoadValue(&this->jolt_susp_ural_damping);
+        this->LoadValue(&this->jolt_susp_bug_frequency);
+        this->LoadValue(&this->jolt_susp_bug_damping);
+        this->LoadValue(&this->jolt_susp_molokovoz_frequency);
+        this->LoadValue(&this->jolt_susp_molokovoz_damping);
+        this->LoadValue(&this->jolt_susp_ural_max_scale);
+        this->LoadValue(&this->jolt_susp_bug_max_scale);
+        this->LoadValue(&this->jolt_susp_molokovoz_max_scale);
         this->LoadValue(&this->jolt_wheel_proxy);
         this->LoadValue(&this->jolt_collision_cylinder);
         this->LoadValue(&this->jolt_wheelmodel);
@@ -232,6 +263,10 @@ namespace kraken {
         this->LoadValue(&this->jolt_chassis_inertia_ode_box);
         this->LoadValue(&this->jolt_wm4_contact_constraint);
         this->LoadValue(&this->jolt_wm4_per_wheel_mu);
+        this->LoadValue(&this->jolt_wm4_iso_slip);
+        this->LoadValue(&this->jolt_wm4_friction_constraint);
+        this->LoadValue(&this->jolt_wm4_fric_axis_order);
+        this->LoadValue(&this->jolt_wm4_fric_floor);
         this->LoadValue(&this->jolt_wm4_steer_kinematic);
         this->LoadValue(&this->jolt_wm4_steer_hz);
         this->LoadValue(&this->jolt_wm4_steer_damping);
@@ -324,6 +359,15 @@ namespace kraken {
         this->DumpValue(&this->jolt_susp_rest_fraction);
         this->DumpValue(&this->jolt_susp_damping);
         this->DumpValue(&this->jolt_susp_reference_hz);
+        this->DumpValue(&this->jolt_susp_ural_frequency);
+        this->DumpValue(&this->jolt_susp_ural_damping);
+        this->DumpValue(&this->jolt_susp_bug_frequency);
+        this->DumpValue(&this->jolt_susp_bug_damping);
+        this->DumpValue(&this->jolt_susp_molokovoz_frequency);
+        this->DumpValue(&this->jolt_susp_molokovoz_damping);
+        this->DumpValue(&this->jolt_susp_ural_max_scale);
+        this->DumpValue(&this->jolt_susp_bug_max_scale);
+        this->DumpValue(&this->jolt_susp_molokovoz_max_scale);
         this->DumpValue(&this->jolt_wheel_proxy);
         this->DumpValue(&this->jolt_collision_cylinder);
         this->DumpValue(&this->jolt_wheelmodel);
@@ -346,6 +390,10 @@ namespace kraken {
         this->DumpValue(&this->jolt_chassis_inertia_ode_box);
         this->DumpValue(&this->jolt_wm4_contact_constraint);
         this->DumpValue(&this->jolt_wm4_per_wheel_mu);
+        this->DumpValue(&this->jolt_wm4_iso_slip);
+        this->DumpValue(&this->jolt_wm4_friction_constraint);
+        this->DumpValue(&this->jolt_wm4_fric_axis_order);
+        this->DumpValue(&this->jolt_wm4_fric_floor);
         this->DumpValue(&this->jolt_wm4_steer_kinematic);
         this->DumpValue(&this->jolt_wm4_steer_hz);
         this->DumpValue(&this->jolt_wm4_steer_damping);

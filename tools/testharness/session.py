@@ -84,6 +84,10 @@ class Session:
         self.base_dir = base_dir or gamedir.BASE_DIR
         self.started = False
         self._pin_nonce = 0
+        self._process = None
+        self.last_exit_code = None
+        self.last_exception = None
+        self._exception_baseline = {}
 
     # -- lifecycle ---------------------------------------------------------------------------
     def _kill(self):
@@ -94,6 +98,33 @@ class Session:
         # "game did not reach the menu" 120 s later. That failure ended a 12-launch measurement on
         # its second point.
         time.sleep(6.0)
+
+    def _terminate_owned_process(self):
+        """Stop only the process started by this Session after an immediate failure."""
+        process = self._process
+        self._process = None
+        if process is None or process.poll() is not None:
+            return
+        process.kill()
+        try:
+            process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def _raise_if_failed(self, context):
+        exception_path = gamedir.new_exception(self._exception_baseline)
+        if exception_path is not None:
+            self.last_exception = exception_path
+            self._terminate_owned_process()
+            raise RuntimeError("new exception report appeared during %s: %s" %
+                               (context, exception_path))
+        if self._process is not None:
+            exit_code = self._process.poll()
+            if exit_code is not None:
+                self.last_exit_code = exit_code
+                self._process = None
+                raise RuntimeError("hta.exe exited during %s with code %s" %
+                                   (context, exit_code))
 
     def _log(self):
         try:
@@ -121,13 +152,27 @@ class Session:
         for attempt in range(attempts):
             self._kill()
             self._clear_dropbox()
-            subprocess.Popen([gamedir.EXE], cwd=gamedir.WORKDIR, close_fds=True)
+            self.last_exit_code = None
+            self.last_exception = None
+            self._exception_baseline = gamedir.exception_snapshot()
+            self._process = subprocess.Popen([gamedir.EXE], cwd=gamedir.WORKDIR, close_fds=True)
             # Wait only for the game to reach the menu - the placeholder shadow (mass=100, chassis
             # 6.00x1.00x3.00) is the signal that it is alive and ticking.
             deadline = time.time() + wait
             ok = False
             while time.time() < deadline:
                 time.sleep(3.0)
+                exception_path = gamedir.new_exception(self._exception_baseline)
+                if exception_path is not None:
+                    self.last_exception = exception_path
+                    self._terminate_owned_process()
+                    raise RuntimeError("new exception report appeared: %s" % exception_path)
+                exit_code = self._process.poll()
+                if exit_code is not None:
+                    self.last_exit_code = exit_code
+                    self._process = None
+                    print("  (hta.exe exited during launch with code %s)" % exit_code, flush=True)
+                    break
                 if any("built (player)" in l for l in self._log()):
                     ok = True
                     break
@@ -153,6 +198,7 @@ class Session:
 
     def stop(self):
         self._kill()
+        self._process = None
         self.started = False
 
     # -- in-session control ------------------------------------------------------------------
@@ -170,11 +216,16 @@ class Session:
             self._pin_nonce += 1
             with open(os.path.join(self.base_dir, "switch_vehicle.txt"), "w") as f:
                 f.write("%s#%d\n" % (name, self._pin_nonce))
-            time.sleep(8.0)
+            deadline = time.time() + 8.0
             last = None
-            for line in self._log():
-                if "built (player)" in line:
-                    last = line
+            while time.time() < deadline:
+                self._raise_if_failed("vehicle switch")
+                for line in self._log():
+                    if "built (player)" in line:
+                        last = line
+                if last and (fp is None or all(t in last for t in fp)):
+                    return last
+                time.sleep(0.5)
             if last and (fp is None or all(t in last for t in fp)):
                 return last
             time.sleep(4.0)   # a switch right after a save load can take a moment to rebuild
@@ -194,6 +245,7 @@ class Session:
             f.write("%s#%d\n" % (save, self._pin_nonce))
         deadline = time.time() + wait
         while time.time() < deadline:
+            self._raise_if_failed("save load")
             time.sleep(2.0)
             tail = self._log()[before:]
             if any("load_save: LoadSavedGame returned" in l for l in tail):
@@ -225,6 +277,16 @@ class Session:
         last_size, last_change = -1, time.time()
         status = None
         while time.time() < hard_deadline:
+            exception_path = gamedir.new_exception(self._exception_baseline)
+            if exception_path is not None:
+                self.last_exception = exception_path
+                self._terminate_owned_process()
+                return [], "crashed"
+            if self._process is not None:
+                exit_code = self._process.poll()
+                if exit_code is not None:
+                    self.last_exit_code = exit_code
+                    return [], "crashed"
             if os.path.exists(done_path):
                 with open(done_path) as f:
                     status = f.read().strip()
@@ -245,6 +307,10 @@ class Session:
         """Is the process there AND still answering? A wedged game keeps its PID, so a liveness
         check on the process table alone reports healthy while every scenario times out - which is
         how one run lost eight consecutive data points to a 'still alive' hang."""
+        if self._process is not None:
+            if self._process.poll() is not None:
+                return False
+            return True
         out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq hta.exe"],
                              capture_output=True, text=True)
         if "hta.exe" not in (out.stdout or ""):
