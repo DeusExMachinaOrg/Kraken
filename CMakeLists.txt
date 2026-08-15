@@ -21,6 +21,7 @@ add_library(kraken SHARED
     source/fix/autobrakefix.cpp
     source/fix/objcontupgrade.cpp
     source/fix/luabinds.cpp
+    source/fix/exports.cpp
     source/fix/posteffectreload.cpp
     source/fix/fileserver.cpp
     source/fix/luabinds.cpp
@@ -42,6 +43,7 @@ add_library(kraken SHARED
     source/ext/logger.cpp
     source/ext/impulse.cpp
     source/ext/runtime.cpp
+    source/ext/scriptexports.cpp
 )
 
 # Include directories

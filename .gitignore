@@ -1,6 +1,9 @@
 # Directories
 build
+build-*/
+artifacts/
 .vscode
+.vs
 
 # Bindary files
 **/*.obj
