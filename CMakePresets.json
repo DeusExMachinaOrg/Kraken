@@ -1,0 +1,63 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "win32-base",
+      "hidden": true,
+      "generator": "Visual Studio 17 2022",
+      "architecture": "Win32",
+      "binaryDir": "${sourceDir}/out/build/${presetName}"
+    },
+    {
+      "name": "win32-debug",
+      "displayName": "Win32 Debug",
+      "inherits": "win32-base"
+    },
+    {
+      "name": "win32-release",
+      "displayName": "Win32 Release",
+      "inherits": "win32-base"
+    },
+    {
+      "name": "win32-min-size-rel",
+      "displayName": "Win32 MinSizeRel",
+      "inherits": "win32-base"
+    },
+    {
+      "name": "win32-rel-with-deb-info",
+      "displayName": "Win32 RelWithDebInfo",
+      "inherits": "win32-base"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "win32-debug",
+      "configurePreset": "win32-debug",
+      "configuration": "Debug",
+      "targets": ["kraken"]
+    },
+    {
+      "name": "win32-release",
+      "configurePreset": "win32-release",
+      "configuration": "Release",
+      "targets": ["kraken"]
+    },
+    {
+      "name": "win32-min-size-rel",
+      "configurePreset": "win32-min-size-rel",
+      "configuration": "MinSizeRel",
+      "targets": ["kraken"]
+    },
+    {
+      "name": "win32-rel-with-deb-info",
+      "configurePreset": "win32-rel-with-deb-info",
+      "configuration": "RelWithDebInfo",
+      "targets": ["kraken"]
+    }
+  ]
+}

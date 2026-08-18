@@ -57,16 +57,34 @@ add_library(kraken SHARED
     source/net/enet_transport.cpp
     source/net/entity_registry.cpp
     source/net/entity_protocol.cpp
+    source/net/combat_presentation.cpp
+    source/net/combat_runtime.cpp
+    source/net/host_world_registry.cpp
     source/net/impact_damage.cpp
     source/net/loadout_protocol.cpp
     source/net/lan_discovery.cpp
+    source/net/match_protocol.cpp
+    source/net/match_session.cpp
+    source/net/native_object_archive.cpp
+    source/net/resource_fingerprint.cpp
+    source/net/static_world_identity.cpp
     source/net/input_command.cpp
     source/net/loot_transaction.cpp
     source/net/world_loot.cpp
+    source/net/world_observer.cpp
+    source/net/world_authority.cpp
     source/net/weapon_command.cpp
+    source/net/world_replication.cpp
+    source/net/world_state_snapshot.cpp
+    source/net/quest_state_projection.cpp
     source/net/session.cpp
     source/net/snapshot_interpolation.cpp
+    source/net/vehicle_descriptor.cpp
+    source/net/vehicle_archive_validation.cpp
+    source/net/vehicle_transfer.cpp
     source/net/vehicle_snapshot.cpp
+    source/net/world_mutation_applier.cpp
+    source/net/world_mutation_protocol.cpp
     source/net/runtime.cpp
 )
 
@@ -166,6 +184,17 @@ if(BUILD_TESTING)
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     add_test(NAME kraken_net_pause_policy COMMAND kraken_net_pause_policy_test)
 
+    add_executable(kraken_net_world_authority_test
+        tests/net_world_authority.cpp
+        source/net/world_authority.cpp
+    )
+    target_compile_features(kraken_net_world_authority_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_world_authority_test PRIVATE include)
+    set_property(TARGET kraken_net_world_authority_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_world_authority
+        COMMAND kraken_net_world_authority_test)
+
     add_executable(kraken_net_peer_test
         tests/net_peer.cpp
         source/net/enet_transport.cpp
@@ -220,6 +249,33 @@ if(BUILD_TESTING)
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     add_test(NAME kraken_net_impact_damage
         COMMAND kraken_net_impact_damage_test)
+
+    add_executable(kraken_net_combat_presentation_test
+        tests/net_combat_presentation.cpp
+        source/net/combat_presentation.cpp
+    )
+    target_compile_features(kraken_net_combat_presentation_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_combat_presentation_test PRIVATE include)
+    set_property(TARGET kraken_net_combat_presentation_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_combat_presentation
+        COMMAND kraken_net_combat_presentation_test)
+
+    add_executable(kraken_net_combat_runtime_test
+        tests/net_combat_runtime.cpp
+        source/net/combat_runtime.cpp
+        source/net/combat_presentation.cpp
+        source/net/native_object_archive.cpp
+    )
+    target_compile_features(kraken_net_combat_runtime_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_combat_runtime_test PRIVATE include)
+    target_link_libraries(kraken_net_combat_runtime_test PRIVATE hta kernel32)
+    target_compile_definitions(kraken_net_combat_runtime_test PRIVATE
+        KRAKEN_RUNTIME_SOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/source/net/runtime.cpp")
+    set_property(TARGET kraken_net_combat_runtime_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_combat_runtime
+        COMMAND kraken_net_combat_runtime_test)
 
     add_executable(kraken_net_entity_protocol_test
         tests/net_entity_protocol.cpp
@@ -305,4 +361,170 @@ if(BUILD_TESTING)
     set_property(TARGET kraken_net_player_slots_test PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     add_test(NAME kraken_net_player_slots COMMAND kraken_net_player_slots_test)
+
+    add_executable(kraken_net_match_session_test
+        tests/net_match_session.cpp
+        source/net/match_session.cpp
+    )
+    target_compile_features(kraken_net_match_session_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_match_session_test PRIVATE include)
+    set_property(TARGET kraken_net_match_session_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_match_session COMMAND kraken_net_match_session_test)
+
+    add_executable(kraken_net_64_participant_test
+        tests/net_64_participant.cpp
+        source/net/entity_registry.cpp
+        source/net/match_protocol.cpp
+        source/net/match_session.cpp
+        source/net/session.cpp
+    )
+    target_compile_features(kraken_net_64_participant_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_64_participant_test PRIVATE include)
+    set_property(TARGET kraken_net_64_participant_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_64_participant
+        COMMAND kraken_net_64_participant_test)
+
+    add_executable(kraken_net_match_protocol_test
+        tests/net_match_protocol.cpp
+        source/net/match_protocol.cpp
+    )
+    target_compile_features(kraken_net_match_protocol_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_match_protocol_test PRIVATE include)
+    set_property(TARGET kraken_net_match_protocol_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_match_protocol COMMAND kraken_net_match_protocol_test)
+
+    add_executable(kraken_net_world_replication_test
+        tests/net_world_replication.cpp
+        source/net/world_replication.cpp
+    )
+    target_compile_features(kraken_net_world_replication_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_world_replication_test PRIVATE include)
+    set_property(TARGET kraken_net_world_replication_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_world_replication
+        COMMAND kraken_net_world_replication_test)
+
+    add_executable(kraken_net_world_observer_test
+        tests/net_world_observer.cpp
+        source/net/world_observer.cpp
+    )
+    target_compile_features(kraken_net_world_observer_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_world_observer_test PRIVATE include)
+    set_property(TARGET kraken_net_world_observer_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_world_observer
+        COMMAND kraken_net_world_observer_test)
+
+    add_executable(kraken_net_vehicle_descriptor_test
+        tests/net_vehicle_descriptor.cpp
+        source/net/vehicle_descriptor.cpp
+        source/net/vehicle_archive_validation.cpp
+    )
+    target_compile_features(kraken_net_vehicle_descriptor_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_vehicle_descriptor_test PRIVATE include)
+    set_property(TARGET kraken_net_vehicle_descriptor_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_vehicle_descriptor
+        COMMAND kraken_net_vehicle_descriptor_test)
+
+    add_executable(kraken_net_vehicle_transfer_test
+        tests/net_vehicle_transfer.cpp
+        source/net/vehicle_transfer.cpp
+        source/net/vehicle_descriptor.cpp
+        source/net/vehicle_archive_validation.cpp
+    )
+    target_compile_features(kraken_net_vehicle_transfer_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_vehicle_transfer_test PRIVATE include)
+    set_property(TARGET kraken_net_vehicle_transfer_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_vehicle_transfer
+        COMMAND kraken_net_vehicle_transfer_test)
+
+    add_executable(kraken_net_world_mutation_protocol_test
+        tests/net_world_mutation_protocol.cpp
+        source/net/world_mutation_protocol.cpp
+        source/net/world_observer.cpp
+    )
+    target_compile_features(kraken_net_world_mutation_protocol_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_world_mutation_protocol_test PRIVATE include)
+    set_property(TARGET kraken_net_world_mutation_protocol_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_world_mutation_protocol
+        COMMAND kraken_net_world_mutation_protocol_test)
+
+    add_executable(kraken_net_resource_fingerprint_test
+        tests/net_resource_fingerprint.cpp
+        source/net/resource_fingerprint.cpp
+    )
+    target_compile_features(kraken_net_resource_fingerprint_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_resource_fingerprint_test PRIVATE include)
+    set_property(TARGET kraken_net_resource_fingerprint_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_resource_fingerprint
+        COMMAND kraken_net_resource_fingerprint_test)
+
+    add_executable(kraken_net_static_world_identity_test
+        tests/net_static_world_identity.cpp
+        source/net/static_world_identity.cpp
+    )
+    target_compile_features(kraken_net_static_world_identity_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_static_world_identity_test PRIVATE include)
+    set_property(TARGET kraken_net_static_world_identity_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_static_world_identity
+        COMMAND kraken_net_static_world_identity_test)
+
+    add_executable(kraken_net_world_state_snapshot_test
+        tests/net_world_state_snapshot.cpp
+        source/net/world_state_snapshot.cpp
+        source/net/world_observer.cpp
+        source/net/world_replication.cpp
+    )
+    target_compile_features(kraken_net_world_state_snapshot_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_world_state_snapshot_test PRIVATE include)
+    set_property(TARGET kraken_net_world_state_snapshot_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_world_state_snapshot
+        COMMAND kraken_net_world_state_snapshot_test)
+
+    add_executable(kraken_net_quest_state_projection_test
+        tests/net_quest_state_projection.cpp
+        source/net/quest_state_projection.cpp
+        source/net/static_world_identity.cpp
+    )
+    target_compile_features(kraken_net_quest_state_projection_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_quest_state_projection_test PRIVATE include)
+    set_property(TARGET kraken_net_quest_state_projection_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_quest_state_projection
+        COMMAND kraken_net_quest_state_projection_test)
+
+    add_executable(kraken_net_world_mutation_applier_test
+        tests/net_world_mutation_applier.cpp
+        source/net/host_world_registry.cpp
+        source/net/world_mutation_applier.cpp
+        source/net/world_mutation_protocol.cpp
+        source/net/world_observer.cpp
+    )
+    target_compile_features(kraken_net_world_mutation_applier_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_world_mutation_applier_test PRIVATE include)
+    set_property(TARGET kraken_net_world_mutation_applier_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_world_mutation_applier
+        COMMAND kraken_net_world_mutation_applier_test)
+
+    add_executable(kraken_net_native_object_archive_test
+        tests/net_native_object_archive.cpp
+        source/net/native_object_archive.cpp
+    )
+    target_compile_features(kraken_net_native_object_archive_test PRIVATE cxx_std_20)
+    target_include_directories(kraken_net_native_object_archive_test PRIVATE include)
+    target_link_libraries(kraken_net_native_object_archive_test PRIVATE hta kernel32)
+    set_property(TARGET kraken_net_native_object_archive_test PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    add_test(NAME kraken_net_native_object_archive
+        COMMAND kraken_net_native_object_archive_test)
 endif()

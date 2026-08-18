@@ -2,6 +2,7 @@
 #define KRAKEN_NET_SESSION_HPP
 
 #include "net/transport.hpp"
+#include "net/session_compatibility.hpp"
 #include "net/wire_protocol.hpp"
 
 #include <cstddef>
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <deque>
 #include <span>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -43,6 +45,11 @@ struct SessionConfig {
     SessionRole role = SessionRole::Client;
     TransportConfig transport{};
     std::uint32_t max_payload = kMaxWirePayload;
+    std::string protocol_version{};
+    std::string kraken_version{};
+    std::string game_version{};
+    std::string mod_version{};
+    std::string resource_fingerprint{};
 };
 
 struct SessionEvent {
@@ -120,9 +127,14 @@ private:
 
     TransportResult handle_transport_event(TransportEvent&& event);
     TransportResult handle_packet(TransportEvent&& event);
-    TransportResult handle_control(PeerId peer, const WireHeader& header);
+    TransportResult handle_control(PeerId peer, const WireHeader& header,
+                                   ByteView payload);
     TransportResult send_frame(PeerId peer, MessageType type, Channel channel,
                                 ByteView payload, bool require_connected);
+    [[nodiscard]] SessionIdentity identity() const;
+    TransportResult reject_peer(PeerId peer, MessageType message,
+                                 Channel channel,
+                                 WireDecodeError error);
     void emit(SessionEvent event);
     void mark_failed();
     bool transition(SessionState next) noexcept;

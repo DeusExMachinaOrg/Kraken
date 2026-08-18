@@ -2,7 +2,11 @@
 #define KRAKEN_NET_RUNTIME_HPP
 
 #include "net/entity_registry.hpp"
+#include "net/match_session.hpp"
 #include "net/world_loot.hpp"
+#include "net/world_authority.hpp"
+
+#include <cstdint>
 
 namespace kraken {
 class Config;
@@ -11,6 +15,63 @@ class Config;
 namespace hta::ai { struct Vehicle; }
 
 namespace kraken::net::runtime {
+
+enum class SessionLeaveReason : std::uint8_t {
+    User = 0,
+    Death = 1,
+    Extract = 2,
+    HostTerminated = 3,
+    MapUnload = 4,
+};
+
+namespace detail {
+
+// MatchCoordinator is authoritative on the host; replicas receive the same
+// lifecycle through visible_match_state as reliable match messages arrive.
+// Forming is deliberately treated as Loading so native map/static setup is
+// never filtered before the active-world barrier opens.
+[[nodiscard]] constexpr world_authority::WorldExecutionPhase
+world_phase_for_match_state(const MatchState state) noexcept
+{
+    switch (state) {
+    case MatchState::Offline:
+        return world_authority::WorldExecutionPhase::Offline;
+    case MatchState::Forming:
+    case MatchState::Loading:
+        return world_authority::WorldExecutionPhase::Loading;
+    case MatchState::Synchronizing:
+        return world_authority::WorldExecutionPhase::Synchronizing;
+    case MatchState::Playing:
+        return world_authority::WorldExecutionPhase::Playing;
+    case MatchState::Leaving:
+        return world_authority::WorldExecutionPhase::Teardown;
+    default:
+        return world_authority::WorldExecutionPhase::Unknown;
+    }
+}
+
+[[nodiscard]] constexpr world_authority::WorldExecutionContext
+derive_world_execution_context(const bool session_active, const bool is_host,
+                               const MatchState host_state,
+                               const MatchState replica_state,
+                               const bool replay = false,
+                               const bool presentation = false) noexcept
+{
+    const world_authority::RuntimeAuthority authority = !session_active
+        ? world_authority::RuntimeAuthority::Offline
+        : (is_host ? world_authority::RuntimeAuthority::Host
+                   : world_authority::RuntimeAuthority::Replica);
+    if (presentation)
+        return {world_authority::WorldExecutionPhase::Presentation, authority};
+    if (replay)
+        return {world_authority::WorldExecutionPhase::Replay, authority};
+    if (!session_active)
+        return {world_authority::WorldExecutionPhase::Offline, authority};
+    return {world_phase_for_match_state(is_host ? host_state : replica_state),
+            authority};
+}
+
+} // namespace detail
 
 // Starts the listen-server/client bootstrap and installs the main-thread pump.
 // Does nothing when [multiplayer] enabled=0.
@@ -27,6 +88,16 @@ bool ConfigureSession(bool host, const char* address, unsigned short port,
                       unsigned int max_peers);
 bool BeginSession();
 bool EndSession();
+// Starts the generic host-authoritative match controller.  A client may call
+// this before connecting; the request is retained and its Ready is sent after
+// the transport handshake completes.
+bool StartMatchmaking(std::uint8_t required_players, const char* target_map,
+                      const char* exit_map, std::int32_t wait_timeout_seconds,
+                      bool friendly_fire);
+bool AddSpawn(float x, float y, float z, float yaw, std::int32_t belong);
+[[nodiscard]] const char* GetSessionState();
+[[nodiscard]] MatchStatus GetSessionStatus();
+bool LeaveSession(SessionLeaveReason reason = SessionLeaveReason::User);
 [[nodiscard]] bool IsSessionActive();
 [[nodiscard]] bool IsHost();
 [[nodiscard]] bool IsAuthority();

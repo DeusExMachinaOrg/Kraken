@@ -9,7 +9,9 @@
 namespace kraken::net {
 
 inline constexpr std::uint32_t kWireMagic = 0x4B524E31u; // "KRN1"
-inline constexpr std::uint8_t kWireVersion = 1;
+// The envelope version advances with the typed combat presentation schema.
+// Peers that still emit the v1 envelope are intentionally incompatible.
+inline constexpr std::uint8_t kWireVersion = 4;
 inline constexpr std::size_t kWireHeaderSize = 16;
 inline constexpr std::uint32_t kMaxWirePayload = 1024u * 1024u;
 
@@ -35,6 +37,30 @@ enum class MessageType : std::uint8_t {
     WorldLootRemove = 19,
     WorldLootPickupRequest = 20,
     WorldLootPickupResult = 21,
+    MatchReadyRequest = 22,
+    MatchReady = 23,
+    MatchReject = 24,
+    MatchRosterLock = 25,
+    MatchLoad = 26,
+    MatchSync = 27,
+    MatchPlay = 28,
+    MatchLeave = 29,
+    MatchWorldSnapshot = 30,
+    MatchWorldDelta = 31,
+    MatchVehicleDescriptor = 32,
+    MatchWorldReady = 33,
+    MatchMapReady = 34,
+    CombatWeaponTriggerState = 35,
+    CombatShotConfirmed = 36,
+    CombatImpactPresentation = 37,
+    CombatDamageResult = 38,
+    CombatDeathWreckPresentation = 39,
+    CombatHornState = 40,
+    CombatPresentationJipState = 41,
+    CombatWeaponAimState = 42,
+    CombatWreckArchiveChunk = 43,
+    MatchQuestSnapshot = 44,
+    MatchQuestDelta = 45,
 };
 
 [[nodiscard]] constexpr bool is_valid_message_type(MessageType type) noexcept
@@ -61,9 +87,42 @@ enum class MessageType : std::uint8_t {
     case MessageType::WorldLootRemove:
     case MessageType::WorldLootPickupRequest:
     case MessageType::WorldLootPickupResult:
+    case MessageType::MatchReadyRequest:
+    case MessageType::MatchReady:
+    case MessageType::MatchReject:
+    case MessageType::MatchRosterLock:
+    case MessageType::MatchLoad:
+    case MessageType::MatchSync:
+    case MessageType::MatchPlay:
+    case MessageType::MatchLeave:
+    case MessageType::MatchWorldSnapshot:
+    case MessageType::MatchWorldDelta:
+    case MessageType::MatchVehicleDescriptor:
+    case MessageType::MatchWorldReady:
+    case MessageType::MatchMapReady:
+    case MessageType::CombatWeaponTriggerState:
+    case MessageType::CombatShotConfirmed:
+    case MessageType::CombatImpactPresentation:
+    case MessageType::CombatDamageResult:
+    case MessageType::CombatDeathWreckPresentation:
+    case MessageType::CombatHornState:
+    case MessageType::CombatPresentationJipState:
+    case MessageType::CombatWeaponAimState:
+    case MessageType::CombatWreckArchiveChunk:
+    case MessageType::MatchQuestSnapshot:
+    case MessageType::MatchQuestDelta:
         return true;
     }
     return false;
+}
+
+// ENet packets without RELIABLE or UNSEQUENCED flags are unreliable and
+// sequenced within their channel.  Aim updates deliberately use that policy so
+// stale high-rate samples do not delay newer presentation state.
+[[nodiscard]] constexpr bool uses_unreliable_sequenced_channel(
+    const MessageType type) noexcept
+{
+    return type == MessageType::CombatWeaponAimState;
 }
 
 [[nodiscard]] constexpr bool requires_reliable_channel(
@@ -76,11 +135,41 @@ enum class MessageType : std::uint8_t {
     case MessageType::WorldLootRemove:
     case MessageType::WorldLootPickupRequest:
     case MessageType::WorldLootPickupResult:
+    case MessageType::MatchReadyRequest:
+    case MessageType::MatchReady:
+    case MessageType::MatchReject:
+    case MessageType::MatchRosterLock:
+    case MessageType::MatchLoad:
+    case MessageType::MatchSync:
+    case MessageType::MatchPlay:
+    case MessageType::MatchLeave:
+    case MessageType::MatchWorldSnapshot:
+    case MessageType::MatchWorldDelta:
+    case MessageType::MatchVehicleDescriptor:
+    case MessageType::MatchWorldReady:
+    case MessageType::MatchMapReady:
+    case MessageType::CombatWeaponTriggerState:
+    case MessageType::CombatShotConfirmed:
+    case MessageType::CombatImpactPresentation:
+    case MessageType::CombatDamageResult:
+    case MessageType::CombatDeathWreckPresentation:
+    case MessageType::CombatHornState:
+    case MessageType::CombatPresentationJipState:
+    case MessageType::CombatWreckArchiveChunk:
+    case MessageType::MatchQuestSnapshot:
+    case MessageType::MatchQuestDelta:
         return true;
     default:
         return false;
     }
 }
+
+static_assert(uses_unreliable_sequenced_channel(
+    MessageType::CombatWeaponAimState));
+static_assert(!requires_reliable_channel(MessageType::CombatWeaponAimState));
+static_assert(requires_reliable_channel(
+    MessageType::CombatWeaponTriggerState));
+static_assert(requires_reliable_channel(MessageType::CombatShotConfirmed));
 
 struct WireHeader {
     std::uint32_t magic = kWireMagic;

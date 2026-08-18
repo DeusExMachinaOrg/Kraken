@@ -2,11 +2,39 @@
 #define __KRAKEN_CONFIG_HPP__
 
 #include "stdafx.hpp"
+#include <cstdint>
 #include <vector>
 #include <unordered_map>
 #include "configstructs.hpp"
 
 namespace kraken {
+    inline constexpr std::uint32_t kMinMultiplayerPlayers = 1;
+    inline constexpr std::uint32_t kMaxMultiplayerPlayers = 64;
+    // A listen host needs maxPlayers - 1 remote slots. Keep a bounded
+    // two-slot floor for the existing session contract and one slot of
+    // allowance at larger player counts.
+    inline constexpr std::uint32_t kMinMultiplayerPeerCapacity = 2;
+
+    [[nodiscard]] constexpr std::uint32_t clamp_multiplayer_max_players(
+        const std::uint32_t value) noexcept
+    {
+        if (value < kMinMultiplayerPlayers)
+            return kMinMultiplayerPlayers;
+        if (value > kMaxMultiplayerPlayers)
+            return kMaxMultiplayerPlayers;
+        return value;
+    }
+
+    [[nodiscard]] constexpr std::uint32_t multiplayer_host_peer_capacity(
+        const std::uint32_t max_players) noexcept
+    {
+        if (max_players == 0)
+            return 0;
+        return max_players < kMinMultiplayerPeerCapacity
+                   ? kMinMultiplayerPeerCapacity
+                   : max_players;
+    }
+
     typedef std::vector<configstructs::WareUnits> WareUnitsList;
 
     template <typename T>
@@ -77,7 +105,12 @@ namespace kraken {
         ConfigValue<uint32_t>                 multiplayer_host;
         ConfigValue<std::string>              multiplayer_address;
         ConfigValue<uint32_t>                 multiplayer_port;
+        // Legacy/internal transport capacity. maxPlayers is authoritative;
+        // loading a smaller legacy value must never reduce the session limit.
         ConfigValue<uint32_t>                 multiplayer_max_peers;
+        ConfigValue<uint32_t>                 multiplayer_max_players;
+        ConfigValue<std::string>              multiplayer_join_policy;
+        ConfigValue<bool>                     multiplayer_auto_host_coop;
         ConfigValue<uint32_t>                 multiplayer_spawn_together;
 
         // Schwarz

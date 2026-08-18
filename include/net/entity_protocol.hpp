@@ -12,7 +12,7 @@ namespace kraken::net {
 
 // Stable identity for every host-authored object. Engine ObjId is deliberately
 // excluded: it is allocated independently on every process.
-enum class EntityKind : std::uint8_t { PlayerVehicle = 1, NpcVehicle = 2, WorldObject = 3, LootContainer = 4 };
+enum class EntityKind : std::uint8_t { PlayerVehicle = 1, NpcVehicle = 2, WorldObject = 3, LootContainer = 4, Wreck = 5 };
 inline constexpr std::size_t kEntitySpawnWireSize = 68;
 inline constexpr std::size_t kEntityDespawnWireSize = 16;
 inline constexpr std::uint32_t kEntitySpawnWireMagic = 0x31505345u; // ESP1
@@ -38,6 +38,6 @@ enum class EntityCodecError : std::uint8_t { None, OutputTooSmall, InputSizeMism
 [[nodiscard]] EntityCodecError decode_entity_spawn(ByteView, EntitySpawn&) noexcept;
 [[nodiscard]] EntityCodecError encode_entity_despawn(const EntityDespawn&, MutableByteView) noexcept;
 [[nodiscard]] EntityCodecError decode_entity_despawn(ByteView, EntityDespawn&) noexcept;
-[[nodiscard]] constexpr bool is_valid_entity_kind(EntityKind kind) noexcept { return kind >= EntityKind::PlayerVehicle && kind <= EntityKind::LootContainer; }
+[[nodiscard]] constexpr bool is_valid_entity_kind(EntityKind kind) noexcept { return kind >= EntityKind::PlayerVehicle && kind <= EntityKind::Wreck; }
 } // namespace kraken::net
 #endif

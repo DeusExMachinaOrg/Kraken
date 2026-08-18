@@ -10,15 +10,15 @@
 
 namespace kraken::net {
 
-inline constexpr std::size_t kPlayerSlotCount = 4;
+inline constexpr std::size_t kPlayerSlotCount = 64;
 using PlayerSlotIndex = std::uint8_t;
 
 inline constexpr PlayerSlotIndex kInvalidPlayerSlot =
     static_cast<PlayerSlotIndex>(kPlayerSlotCount);
 
-// The map is the authority for the four physical slots. Entity IDs 1..4 are
-// deliberately mapped to those slots so every peer reaches the same proxy
-// without depending on connection/event arrival order.
+// Entity IDs 1..kPlayerSlotCount are deliberately mapped to those slots so
+// every peer reaches the same slot without depending on connection/event
+// arrival order. Slot allocation itself does not depend on map object names.
 [[nodiscard]] constexpr PlayerSlotIndex player_slot_for_entity(
     const NetId entity_id) noexcept
 {
@@ -47,7 +47,7 @@ struct PlayerSlotLease {
         left.owner_entity_id == right.owner_entity_id;
 }
 
-// Small, allocation-free state machine for map-owned player proxies.
+// Small, allocation-free state machine for network-owned player slots.
 // Reservation is idempotent for the same owner, binding is a separate
 // transition, and release advances the generation before the slot is reused.
 class PlayerSlotAllocator final {

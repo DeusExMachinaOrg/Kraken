@@ -20,6 +20,42 @@ bool is_control_message(MessageType type)
            type == MessageType::Disconnect;
 }
 
+SessionIdentity identity_from_config(const SessionConfig& config)
+{
+    return {config.protocol_version, config.kraken_version,
+            config.game_version, config.mod_version,
+            config.resource_fingerprint};
+}
+
+SessionCompatibilityCodecError encode_identity(
+    const SessionIdentity& identity, std::vector<Byte>& payload)
+{
+    payload.resize(session_identity_wire_size(identity));
+    std::size_t bytes_written = 0;
+    const SessionCompatibilityCodecError error = encode_session_identity(
+        identity, MutableByteView{payload}, bytes_written);
+    if (error == SessionCompatibilityCodecError::None)
+        payload.resize(bytes_written);
+    else
+        payload.clear();
+    return error;
+}
+
+WireDecodeError compatibility_error_to_wire_error(
+    SessionCompatibilityCodecError error)
+{
+    switch (error) {
+    case SessionCompatibilityCodecError::BadVersion:
+        return WireDecodeError::BadVersion;
+    case SessionCompatibilityCodecError::FieldTooLarge:
+        return WireDecodeError::PayloadTooLarge;
+    case SessionCompatibilityCodecError::None:
+        return WireDecodeError::None;
+    default:
+        return WireDecodeError::BadPayloadSize;
+    }
+}
+
 } // namespace
 
 Session::Session(ITransport& transport, SessionConfig config)
@@ -38,6 +74,8 @@ TransportResult Session::start()
         return result(TransportResultCode::InvalidArgument);
     if (m_state != SessionState::Idle && m_state != SessionState::Closed)
         return result(TransportResultCode::AlreadyRunning);
+    if (!is_valid_session_identity(identity()))
+        return result(TransportResultCode::InvalidArgument);
 
     if (m_state == SessionState::Closed)
         m_state = SessionState::Idle;
@@ -184,8 +222,19 @@ TransportResult Session::handle_transport_event(TransportEvent&& event)
             m_default_peer = event.peer;
             if (!transition(SessionState::Handshaking))
                 return result(TransportResultCode::ProtocolError);
-            return send_frame(event.peer, MessageType::Hello,
-                              Channel::Reliable, {}, false);
+            std::vector<Byte> payload;
+            if (const SessionCompatibilityCodecError error =
+                    encode_identity(identity(), payload);
+                error != SessionCompatibilityCodecError::None) {
+                (void)m_transport->disconnect(event.peer);
+                return result(TransportResultCode::InvalidArgument);
+            }
+            const TransportResult sent = send_frame(
+                event.peer, MessageType::Hello, Channel::Reliable, payload,
+                false);
+            if (!sent)
+                (void)m_transport->disconnect(event.peer);
+            return sent;
         }
         return {};
     }
@@ -226,6 +275,9 @@ TransportResult Session::handle_packet(TransportEvent&& event)
     if (error != WireDecodeError::None) {
         emit(SessionEvent{SessionEventType::ProtocolError, event.peer,
                           MessageType::Disconnect, event.channel, error});
+        if (header.message_type == MessageType::Hello ||
+            header.message_type == MessageType::Welcome)
+            (void)m_transport->disconnect(event.peer);
         return result(TransportResultCode::ProtocolError);
     }
     if (header.channel != event.channel ||
@@ -233,6 +285,9 @@ TransportResult Session::handle_packet(TransportEvent&& event)
         emit(SessionEvent{SessionEventType::ProtocolError, event.peer,
                           header.message_type, header.channel,
                           WireDecodeError::BadChannel});
+        if (header.message_type == MessageType::Hello ||
+            header.message_type == MessageType::Welcome)
+            (void)m_transport->disconnect(event.peer);
         return result(TransportResultCode::ProtocolError);
     }
     if (requires_reliable_channel(header.message_type) &&
@@ -244,9 +299,14 @@ TransportResult Session::handle_packet(TransportEvent&& event)
     }
 
     if (is_control_message(header.message_type)) {
-        if (!payload.empty())
+        const bool identity_message =
+            header.message_type == MessageType::Hello ||
+            header.message_type == MessageType::Welcome;
+        if (!identity_message && !payload.empty()) {
+            (void)m_transport->disconnect(event.peer);
             return result(TransportResultCode::ProtocolError);
-        return handle_control(event.peer, header);
+        }
+        return handle_control(event.peer, header, payload);
     }
     if (peer->state != SessionState::Connected)
         return result(TransportResultCode::ProtocolError);
@@ -259,37 +319,77 @@ TransportResult Session::handle_packet(TransportEvent&& event)
 }
 
 TransportResult Session::handle_control(PeerId peer_id,
-                                         const WireHeader& header)
+                                         const WireHeader& header,
+                                         ByteView payload)
 {
     PeerState* peer = find_peer(peer_id);
     if (!peer)
         return result(TransportResultCode::ProtocolError);
 
     switch (header.message_type) {
-    case MessageType::Hello:
+    case MessageType::Hello: {
         if (m_config.role != SessionRole::Server ||
             peer->state != SessionState::Handshaking ||
             header.channel != Channel::Reliable)
-            return result(TransportResultCode::ProtocolError);
+            return reject_peer(peer_id, MessageType::Hello, header.channel,
+                               WireDecodeError::BadChannel);
+
+        {
+            SessionIdentity received{};
+            const SessionCompatibilityCodecError decoded =
+                decode_session_identity(payload, received);
+            if (decoded != SessionCompatibilityCodecError::None)
+                return reject_peer(
+                    peer_id, MessageType::Hello, header.channel,
+                    compatibility_error_to_wire_error(decoded));
+            if (received != identity())
+                return reject_peer(peer_id, MessageType::Hello,
+                                   header.channel, WireDecodeError::BadVersion);
+        }
+
+        std::vector<Byte> welcome_payload;
+        if (const SessionCompatibilityCodecError error =
+                encode_identity(identity(), welcome_payload);
+            error != SessionCompatibilityCodecError::None)
+            return reject_peer(peer_id, MessageType::Welcome,
+                               header.channel,
+                               compatibility_error_to_wire_error(error));
         if (const TransportResult sent =
                 send_frame(peer_id, MessageType::Welcome, Channel::Reliable,
-                           {}, false);
-            !sent)
+                           welcome_payload, false);
+            !sent) {
+            (void)m_transport->disconnect(peer_id);
             return sent;
+        }
         peer->state = SessionState::Connected;
         emit(SessionEvent{SessionEventType::PeerConnected, peer_id});
         return {};
+    }
 
-    case MessageType::Welcome:
+    case MessageType::Welcome: {
         if (m_config.role != SessionRole::Client ||
             peer->state != SessionState::Handshaking ||
             header.channel != Channel::Reliable)
-            return result(TransportResultCode::ProtocolError);
+            return reject_peer(peer_id, MessageType::Welcome,
+                               header.channel, WireDecodeError::BadChannel);
+        {
+            SessionIdentity received{};
+            const SessionCompatibilityCodecError decoded =
+                decode_session_identity(payload, received);
+            if (decoded != SessionCompatibilityCodecError::None)
+                return reject_peer(
+                    peer_id, MessageType::Welcome, header.channel,
+                    compatibility_error_to_wire_error(decoded));
+            if (received != identity())
+                return reject_peer(peer_id, MessageType::Welcome,
+                                   header.channel, WireDecodeError::BadVersion);
+        }
         peer->state = SessionState::Connected;
         if (!transition(SessionState::Connected))
             return result(TransportResultCode::ProtocolError);
         emit(SessionEvent{SessionEventType::PeerConnected, peer_id});
         return {};
+    }
 
     case MessageType::Ping:
         if (peer->state != SessionState::Connected ||
@@ -335,6 +435,22 @@ TransportResult Session::handle_control(PeerId peer_id,
     case MessageType::WorldLootPickupResult:
         break;
     }
+    return result(TransportResultCode::ProtocolError);
+}
+
+SessionIdentity Session::identity() const
+{
+    return identity_from_config(m_config);
+}
+
+TransportResult Session::reject_peer(PeerId peer, MessageType message,
+                                      Channel channel,
+                                      WireDecodeError error)
+{
+    emit(SessionEvent{SessionEventType::ProtocolError, peer, message, channel,
+                      error});
+    if (m_transport)
+        (void)m_transport->disconnect(peer);
     return result(TransportResultCode::ProtocolError);
 }
 

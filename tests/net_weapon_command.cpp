@@ -41,12 +41,16 @@ kraken::net::WeaponCommand valid_command()
 {
     using namespace kraken::net;
     WeaponCommand command{};
+    command.session_epoch = 7;
     command.entity_id = 42;
+    command.entity_generation = 3;
     command.sequence = 0xF0E0D0C0u;
     command.client_tick = 99;
+    command.gun = {0x1122334455667788ull, 0x8877665544332211ull};
     command.gun_id = 3;
     command.trigger_held = true;
     command.target_entity_id = 17;
+    command.target_generation = 4;
     command.shot_id = 0x10203040u;
     command.aim_point = {12.5f, -34.25f, 56.75f};
     command.has_aim_point = true;
@@ -61,11 +65,15 @@ bool same_command(const kraken::net::WeaponCommand& expected,
                   const kraken::net::WeaponCommand& actual)
 {
     return actual.entity_id == expected.entity_id &&
+           actual.session_epoch == expected.session_epoch &&
+           actual.entity_generation == expected.entity_generation &&
            actual.sequence == expected.sequence &&
            actual.client_tick == expected.client_tick &&
-           actual.gun_id == expected.gun_id &&
+           actual.gun.attachment_id == expected.gun.attachment_id &&
+           actual.gun.path_hash == expected.gun.path_hash &&
            actual.trigger_held == expected.trigger_held &&
            actual.target_entity_id == expected.target_entity_id &&
+           actual.target_generation == expected.target_generation &&
            actual.shot_id == expected.shot_id &&
            actual.aim_point.x == expected.aim_point.x &&
            actual.aim_point.y == expected.aim_point.y &&
@@ -150,6 +158,7 @@ bool target_release_free_aim_semantics()
     retained_target = 17;
     release.target_entity_id = capture_current_native_target(
         kInvalidObjId, kInvalidObjId, retained_target);
+    release.target_generation = kInvalidEntityGeneration;
     if (release.target_entity_id != kInvalidNetId ||
         retained_target != kInvalidNetId ||
         encode_weapon_command(release, wire) != WeaponCommandCodecError::None ||
@@ -201,7 +210,7 @@ bool target_capture_lifetime_semantics()
            !current_bound_vehicle_pointer(nullptr, &current_object, 42);
 }
 
-bool target_capture_abi_source_guard()
+std::string read_runtime_source()
 {
     const std::filesystem::path test_path(__FILE__);
     const std::array<std::filesystem::path, 3> candidates{
@@ -219,11 +228,128 @@ bool target_capture_abi_source_guard()
             break;
         }
     }
+    return source;
+}
+
+bool target_capture_abi_source_guard()
+{
+    const std::string source = read_runtime_source();
     return !source.empty() &&
            source.find("kVehicleGetSeenObjIdAddress") != std::string::npos &&
            source.find("mov eax, vehicle") != std::string::npos &&
            source.find("mov edx, 00550A50h") != std::string::npos &&
            source.find("vehicle.GetSeenObjId()") == std::string::npos;
+}
+
+std::string extract_function(const std::string& source,
+                             const std::string& signature)
+{
+    std::size_t begin = source.find(signature);
+    while (begin != std::string::npos) {
+        const std::size_t open = source.find('{', begin);
+        const std::size_t declaration = source.find(';', begin);
+        if (open == std::string::npos)
+            return {};
+        if (declaration != std::string::npos && declaration < open) {
+            begin = source.find(signature, begin + signature.size());
+            continue;
+        }
+        std::size_t depth = 0;
+        for (std::size_t index = open; index != source.size(); ++index) {
+            if (source[index] == '{')
+                ++depth;
+            else if (source[index] == '}' && --depth == 0)
+                return source.substr(begin, index - begin + 1);
+        }
+        return {};
+    }
+    return {};
+}
+
+std::size_t count_occurrences(const std::string& source,
+                              const std::string& value)
+{
+    std::size_t count = 0;
+    for (std::size_t offset = source.find(value); offset != std::string::npos;
+         offset = source.find(value, offset + value.size()))
+        ++count;
+    return count;
+}
+
+bool typed_weapon_authority_source_guard()
+{
+    const std::string source = read_runtime_source();
+    const std::string fire_hook = extract_function(
+        source, "bool __fastcall gun_do_fire_hook");
+    const std::string damage_hook = extract_function(
+        source, "void __fastcall vehicle_inflict_damage_hook");
+    const std::string fire_helper = extract_function(
+        source, "bool call_original_gun_do_fire");
+    const std::string damage_helper = extract_function(
+        source, "bool call_original_vehicle_inflict_damage");
+    if (source.empty() || fire_hook.empty() || damage_hook.empty() ||
+        fire_helper.empty() || damage_helper.empty())
+        return false;
+    const std::size_t fire_denial = fire_hook.find(
+        "if (active_client_replica())");
+    const std::size_t death_scope = fire_hook.find(
+        "if (g_presenting_authoritative_death)");
+    const std::size_t damage_denial = damage_hook.find(
+        "if (active_client_replica())");
+    const std::size_t damage_original_lookup = damage_hook.find(
+        "const VehicleInflictDamageFn original");
+    const std::size_t fire_blocked = fire_helper.find(
+        "++g_state.client_blocked_fire_attempt_count;");
+    const std::size_t fire_denied_return = fire_helper.find("return false;");
+    const std::size_t fire_original = fire_helper.find("g_gun_do_fire(gun);");
+    const std::size_t fire_actual = fire_helper.find(
+        "++g_state.client_original_fire_call_count;");
+    const std::size_t damage_blocked = damage_helper.find(
+        "++g_state.client_blocked_damage_attempt_count;");
+    const std::size_t damage_denied_return = damage_helper.find("return false;");
+    const std::size_t damage_original = damage_helper.find(
+        "original(vehicle, info);");
+    const std::size_t damage_actual = damage_helper.find(
+        "++g_state.client_original_damage_call_count;");
+    const std::size_t shot_flags = source.find("gun->m_bWasShot = true;");
+    const std::size_t just_shot_flag = source.find("gun->m_bJustShot = true;");
+    const std::size_t firing_action = source.find(
+        "gun->_UpdateNodeFiringAction();", shot_flags);
+    return fire_denial != std::string::npos &&
+           death_scope != std::string::npos && fire_denial < death_scope &&
+           damage_denial != std::string::npos &&
+           damage_original_lookup != std::string::npos &&
+           damage_denial < damage_original_lookup &&
+           fire_hook.find("g_gun_do_fire(gun)") == std::string::npos &&
+           fire_hook.find("call_original_gun_do_fire(gun)") !=
+               std::string::npos &&
+           fire_blocked < fire_denied_return &&
+           fire_denied_return < fire_original && fire_original < fire_actual &&
+           damage_blocked < damage_denied_return &&
+           damage_denied_return < damage_original &&
+           damage_original < damage_actual &&
+           count_occurrences(source, "g_gun_do_fire(gun);") == 1 &&
+           count_occurrences(source, "original(vehicle, info);") == 1 &&
+           source.find("original(&target, info);") == std::string::npos &&
+           source.find("vehicle_inflict_damage_original(vehicle, info)") ==
+               std::string::npos &&
+           source.find("g_presenting_authoritative_impact") ==
+               std::string::npos &&
+           source.find("g_suppress_client_weapon_damage") == std::string::npos &&
+           source.find("g_presenting_confirmed_network_fire") ==
+               std::string::npos &&
+           source.find("client_projectile=0") == std::string::npos &&
+           source.find("client_damage=0") == std::string::npos &&
+           source.find("client_blocked_fire=%llu client_projectile=%llu") !=
+               std::string::npos &&
+           source.find("client_blocked_damage=%llu client_damage=%llu") !=
+               std::string::npos &&
+           source.find("KRAKEN_COMBAT_AUTOTEST FAIL authority_violation=1") !=
+               std::string::npos &&
+           shot_flags != std::string::npos &&
+           just_shot_flag != std::string::npos &&
+           firing_action != std::string::npos && shot_flags < just_shot_flag &&
+           just_shot_flag < firing_action;
 }
 
 } // namespace
@@ -241,24 +367,47 @@ int main()
     if (!check(target_capture_abi_source_guard(),
                "seen-target accessor uses the EAX ABI bridge"))
         return 1;
+    if (!check(typed_weapon_authority_source_guard(),
+               "replica denial, actual counters, and safe shot flags stay ordered"))
+        return 1;
 
     const WeaponCommand expected = valid_command();
     WeaponCommand decoded{};
     std::array<Byte, kWeaponCommandWireSize> wire{};
     if (!check(encode_weapon_command(expected, wire) ==
                    WeaponCommandCodecError::None,
-               "valid WPN6 command encodes"))
+               "valid WPN7 command encodes"))
         return 1;
     if (!check(decode_weapon_command(wire, decoded) ==
                    WeaponCommandCodecError::None,
-               "valid WPN6 command decodes"))
+               "valid WPN7 command decodes"))
         return 2;
     if (!check(same_command(expected, decoded),
                "sequence, shot_id, trigger, target, and aim round-trip"))
         return 3;
 
+    WeaponCommand invalid_identity = expected;
+    invalid_identity.entity_generation = kInvalidEntityGeneration;
+    if (!check(encode_weapon_command(invalid_identity, wire) ==
+                   WeaponCommandCodecError::InvalidEntityGeneration,
+               "missing shooter generation is rejected"))
+        return 4;
+    invalid_identity = expected;
+    invalid_identity.gun = {};
+    if (!check(encode_weapon_command(invalid_identity, wire) ==
+                   WeaponCommandCodecError::InvalidAttachment,
+               "missing stable gun identity is rejected"))
+        return 5;
+    invalid_identity = expected;
+    invalid_identity.target_generation = kInvalidEntityGeneration;
+    if (!check(encode_weapon_command(invalid_identity, wire) ==
+                   WeaponCommandCodecError::InvalidTargetGeneration,
+               "missing target generation is rejected"))
+        return 6;
+
     WeaponCommand targetless = expected;
     targetless.target_entity_id = 0;
+    targetless.target_generation = kInvalidEntityGeneration;
     targetless.shot_id = 0x50607080u;
     targetless.aim_point = {-1000.0f, 0.5f, 250000.0f};
     if (!check(encode_weapon_command(targetless, wire) ==
@@ -284,7 +433,7 @@ int main()
                    WeaponCommandCodecError::None,
                "valid command re-encodes after zero shot_id case"))
         return 7;
-    set_wire_u32(wire, 28, 0);
+    set_wire_u32(wire, 52, 0);
     if (!check(decode_weapon_command(wire, decoded) ==
                    WeaponCommandCodecError::InvalidShotId,
                "zero shot_id is rejected during decode"))
@@ -295,7 +444,7 @@ int main()
         std::numeric_limits<float>::infinity(),
         kMaxNetworkAimPointComponent + 1.0f,
     };
-    const std::array<std::size_t, 3> aim_offsets = {32, 36, 40};
+    const std::array<std::size_t, 3> aim_offsets = {56, 60, 64};
     for (std::size_t component = 0; component != aim_offsets.size(); ++component) {
         for (const float value : invalid_values) {
             invalid = expected;
@@ -332,7 +481,7 @@ int main()
                    WeaponCommandCodecError::None,
                "valid command re-encodes before malformed speed decode"))
         return 13;
-    set_wire_f32(wire, 44, std::numeric_limits<float>::infinity());
+    set_wire_f32(wire, 68, std::numeric_limits<float>::infinity());
     if (!check(decode_weapon_command(wire, decoded) ==
                    WeaponCommandCodecError::InvalidAimSpeed,
                "non-finite aim speed is rejected during decode"))
@@ -381,7 +530,7 @@ int main()
     wire[0] = Byte{};
     if (!check(decode_weapon_command(wire, decoded) ==
                    WeaponCommandCodecError::BadMagic,
-               "bad WPN6 magic is rejected"))
+               "bad WPN7 magic is rejected"))
         return 20;
     if (!check(encode_weapon_command(expected, wire) ==
                    WeaponCommandCodecError::None,
@@ -390,7 +539,7 @@ int main()
     wire[4] = static_cast<Byte>(2);
     if (!check(decode_weapon_command(wire, decoded) ==
                    WeaponCommandCodecError::BadVersion,
-               "bad WPN6 version is rejected"))
+               "bad WPN7 version is rejected"))
         return 22;
 
     std::cout << "weapon command tests passed\n";

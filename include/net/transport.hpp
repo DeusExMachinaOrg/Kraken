@@ -14,6 +14,11 @@ namespace kraken::net {
 
 inline constexpr bool kEnetBackendCompiled = KRAKEN_NET_ENABLE_ENET != 0;
 
+// The match protocol and LAN advertisement carry player counts in the range
+// 1..64. Transport capacity is bounded to the same finite range so a stale or
+// manually supplied setting cannot allocate an unbounded ENet peer table.
+inline constexpr std::uint32_t kMaxTransportPeerCapacity = 64;
+
 class EnetTransport final : public ITransport {
 public:
     EnetTransport();

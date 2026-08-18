@@ -1,6 +1,7 @@
 #include "config.hpp"
 #include "ext/logger.hpp"
 #include <assert.h>
+#include <algorithm>
 #include <string>
 
 using kraken::logger::eLogDebug;
@@ -48,7 +49,10 @@ namespace kraken {
         this->multiplayer_host                  = { "multiplayer", "host",                          1,     true,  0,     1           };
         this->multiplayer_address               = { "multiplayer", "address",                       std::string("127.0.0.1")          };
         this->multiplayer_port                  = { "multiplayer", "port",                          27015, true,  1024,  65535       };
-        this->multiplayer_max_peers             = { "multiplayer", "max_peers",                     16,    true,  2,     16          };
+        this->multiplayer_max_peers             = { "multiplayer", "max_peers",                     kMinMultiplayerPeerCapacity, true, kMinMultiplayerPeerCapacity, kMaxMultiplayerPlayers };
+        this->multiplayer_max_players           = { "multiplayer", "maxPlayers",                    kMaxMultiplayerPlayers, true, kMinMultiplayerPlayers, kMaxMultiplayerPlayers };
+        this->multiplayer_join_policy           = { "multiplayer", "joinPolicy",                    std::string("closed_after_start") };
+        this->multiplayer_auto_host_coop       = { "multiplayer", "autoHostCoop",                  false                              };
         this->multiplayer_spawn_together        = { "multiplayer", "spawn_together",                1,     true,  0,     1           };
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
@@ -116,6 +120,14 @@ namespace kraken {
         this->LoadValue(&this->multiplayer_address);
         this->LoadValue(&this->multiplayer_port);
         this->LoadValue(&this->multiplayer_max_peers);
+        this->LoadValue(&this->multiplayer_max_players);
+        this->multiplayer_max_players.value =
+            clamp_multiplayer_max_players(this->multiplayer_max_players.value);
+        this->multiplayer_max_peers.value = (std::max)(
+            this->multiplayer_max_peers.value,
+            multiplayer_host_peer_capacity(this->multiplayer_max_players.value));
+        this->LoadValue(&this->multiplayer_join_policy);
+        this->LoadValue(&this->multiplayer_auto_host_coop);
         this->LoadValue(&this->multiplayer_spawn_together);
     };
 
@@ -161,6 +173,9 @@ namespace kraken {
         this->DumpValue(&this->multiplayer_address);
         this->DumpValue(&this->multiplayer_port);
         this->DumpValue(&this->multiplayer_max_peers);
+        this->DumpValue(&this->multiplayer_max_players);
+        this->DumpValue(&this->multiplayer_join_policy);
+        this->DumpValue(&this->multiplayer_auto_host_coop);
         this->DumpValue(&this->multiplayer_spawn_together);
     };
 
@@ -202,13 +217,12 @@ namespace kraken {
         }
         else if constexpr (std::is_same_v<bool, T>) {
             GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);
-            if (strnlen_s(buffer, sizeof(buffer)) > 0)
-                if (strcmp(buffer, "true") || strcmp(buffer, "1")) {
+            if (strnlen_s(buffer, sizeof(buffer)) > 0) {
+                if (strcmp(buffer, "true") == 0 || strcmp(buffer, "1") == 0)
                     value->value = true;
-                }
-                else if (strcmp(buffer, "false") || strcmp(buffer, "0")) {
+                else if (strcmp(buffer, "false") == 0 || strcmp(buffer, "0") == 0)
                     value->value = false;
-                }
+            }
         }
         else if constexpr (std::is_same_v<std::string, T>) {
             GetPrivateProfileStringA(value->section, value->key, "", buffer, sizeof(buffer), CONFIG_PATH);

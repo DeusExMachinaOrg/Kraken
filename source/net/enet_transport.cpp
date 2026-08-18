@@ -99,7 +99,9 @@ TransportResult EnetTransport::start(const TransportConfig& config)
         m_impl = std::make_unique<Impl>();
     if (m_impl->running)
         return {TransportResultCode::AlreadyRunning};
-    if (config.max_peers == 0 || config.receive_limit == 0 ||
+    if (config.max_peers == 0 ||
+        config.max_peers > kMaxTransportPeerCapacity ||
+        config.receive_limit == 0 ||
         config.max_packet_size == 0 ||
         (config.role == TransportRole::Server &&
          config.bind_endpoint.port == 0))
@@ -124,7 +126,8 @@ TransportResult EnetTransport::start(const TransportConfig& config)
         host = enet_host_create(&address, config.max_peers, 2, 0, 0);
     }
     else {
-        // A client host binds an ephemeral local port.
+        // A client host binds an ephemeral local port and needs only its one
+        // server peer; max_peers is intentionally ignored by ENet here.
         host = enet_host_create(nullptr, 1, 2, 0, 0);
     }
 

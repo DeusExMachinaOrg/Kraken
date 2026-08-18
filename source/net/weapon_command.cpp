@@ -64,12 +64,22 @@ bool is_zero(const VehicleVector3& point) noexcept
 
 WeaponCommandCodecError validate(const WeaponCommand& command) noexcept
 {
+    if (command.session_epoch == 0)
+        return WeaponCommandCodecError::InvalidEpoch;
     if (command.entity_id == 0)
         return WeaponCommandCodecError::InvalidEntityId;
-    if (command.gun_id < 0 || command.gun_id > kMaxNetworkGunId)
-        return WeaponCommandCodecError::InvalidGunId;
+    if (command.entity_generation == kInvalidEntityGeneration)
+        return WeaponCommandCodecError::InvalidEntityGeneration;
+    if (command.gun.attachment_id == 0 || command.gun.path_hash == 0)
+        return WeaponCommandCodecError::InvalidAttachment;
     if (command.target_entity_id == command.entity_id)
         return WeaponCommandCodecError::InvalidTargetEntityId;
+    if (command.target_entity_id != 0 &&
+        command.target_generation == kInvalidEntityGeneration)
+        return WeaponCommandCodecError::InvalidTargetGeneration;
+    if (command.target_entity_id == 0 &&
+        command.target_generation != kInvalidEntityGeneration)
+        return WeaponCommandCodecError::InvalidTargetGeneration;
     if (command.shot_id == 0)
         return WeaponCommandCodecError::InvalidShotId;
     if (!command.has_aim_point && !is_zero(command.aim_point))
@@ -97,18 +107,26 @@ WeaponCommandCodecError encode_weapon_command(const WeaponCommand& command,
     put_u32(data + 0, kWeaponCommandWireMagic);
     put_u16(data + 4, kWeaponCommandWireVersion);
     put_u16(data + 6, 0);
-    put_u32(data + 8, command.entity_id);
-    put_u32(data + 12, command.sequence);
-    put_u32(data + 16, command.client_tick);
-    put_u32(data + 20, static_cast<std::uint32_t>(command.gun_id));
-    put_u32(data + 24, command.target_entity_id);
-    put_u32(data + 28, command.shot_id);
-    put_f32(data + 32, command.aim_point.x);
-    put_f32(data + 36, command.aim_point.y);
-    put_f32(data + 40, command.aim_point.z);
-    put_f32(data + 44, command.aim_speed);
-    put_u32(data + 48, command.shells_in_current_charge);
-    put_u32(data + 52, command.shells_in_pool);
+    put_u32(data + 8, command.session_epoch);
+    put_u32(data + 12, command.entity_id);
+    put_u16(data + 16, command.entity_generation);
+    put_u16(data + 18, 0);
+    put_u32(data + 20, command.sequence);
+    put_u32(data + 24, command.client_tick);
+    for (int byte = 0; byte != 8; ++byte)
+        data[28 + byte] = static_cast<Byte>(command.gun.attachment_id >> (8 * byte));
+    for (int byte = 0; byte != 8; ++byte)
+        data[36 + byte] = static_cast<Byte>(command.gun.path_hash >> (8 * byte));
+    put_u32(data + 44, command.target_entity_id);
+    put_u16(data + 48, command.target_generation);
+    put_u16(data + 50, 0);
+    put_u32(data + 52, command.shot_id);
+    put_f32(data + 56, command.aim_point.x);
+    put_f32(data + 60, command.aim_point.y);
+    put_f32(data + 64, command.aim_point.z);
+    put_f32(data + 68, command.aim_speed);
+    put_u32(data + 72, command.shells_in_current_charge);
+    put_u32(data + 76, command.shells_in_pool);
     // The low flag byte carries trigger state. The high flag byte carries
     // aim-point presence; both bytes remain explicitly bounded.
     data[6] = static_cast<Byte>(command.trigger_held ? 1 : 0);
@@ -128,21 +146,34 @@ WeaponCommandCodecError decode_weapon_command(ByteView input,
     if (get_u16(data + 4) != kWeaponCommandWireVersion)
         return WeaponCommandCodecError::BadVersion;
     if ((data[6] != Byte{} && data[6] != static_cast<Byte>(1)) ||
+        get_u16(data + 18) != 0 || get_u16(data + 50) != 0 ||
         (static_cast<std::uint8_t>(data[7]) & ~std::uint8_t{3}) != 0)
         return WeaponCommandCodecError::BadFlags;
 
     WeaponCommand decoded{};
-    decoded.entity_id = get_u32(data + 8);
-    decoded.sequence = get_u32(data + 12);
-    decoded.client_tick = get_u32(data + 16);
-    decoded.gun_id = static_cast<std::int32_t>(get_u32(data + 20));
-    decoded.target_entity_id = get_u32(data + 24);
-    decoded.shot_id = get_u32(data + 28);
-    decoded.aim_point = {get_f32(data + 32), get_f32(data + 36),
-                        get_f32(data + 40)};
-    decoded.aim_speed = get_f32(data + 44);
-    decoded.shells_in_current_charge = get_u32(data + 48);
-    decoded.shells_in_pool = get_u32(data + 52);
+    decoded.session_epoch = get_u32(data + 8);
+    decoded.entity_id = get_u32(data + 12);
+    decoded.entity_generation = get_u16(data + 16);
+    decoded.sequence = get_u32(data + 20);
+    decoded.client_tick = get_u32(data + 24);
+    decoded.gun.attachment_id = 0;
+    decoded.gun.path_hash = 0;
+    for (int byte = 0; byte != 8; ++byte) {
+        decoded.gun.attachment_id |=
+            static_cast<std::uint64_t>(static_cast<std::uint8_t>(data[28 + byte])) <<
+            (8 * byte);
+        decoded.gun.path_hash |=
+            static_cast<std::uint64_t>(static_cast<std::uint8_t>(data[36 + byte])) <<
+            (8 * byte);
+    }
+    decoded.target_entity_id = get_u32(data + 44);
+    decoded.target_generation = get_u16(data + 48);
+    decoded.shot_id = get_u32(data + 52);
+    decoded.aim_point = {get_f32(data + 56), get_f32(data + 60),
+                        get_f32(data + 64)};
+    decoded.aim_speed = get_f32(data + 68);
+    decoded.shells_in_current_charge = get_u32(data + 72);
+    decoded.shells_in_pool = get_u32(data + 76);
     decoded.trigger_held = data[6] == static_cast<Byte>(1);
     decoded.has_aim_point = (static_cast<std::uint8_t>(data[7]) & 1u) != 0;
     decoded.has_ammo_state = (static_cast<std::uint8_t>(data[7]) & 2u) != 0;

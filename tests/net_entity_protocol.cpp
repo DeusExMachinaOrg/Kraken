@@ -53,10 +53,11 @@ void test_spawn_round_trip_preserves_identity_and_kind()
     assert(actual.rotation.w == expected.rotation.w);
     assert(actual.health_fraction == expected.health_fraction);
 
-    for (const EntityKind kind : {EntityKind::PlayerVehicle,
+        for (const EntityKind kind : {EntityKind::PlayerVehicle,
                                   EntityKind::NpcVehicle,
                                   EntityKind::WorldObject,
-                                  EntityKind::LootContainer}) {
+                                  EntityKind::LootContainer,
+                                  EntityKind::Wreck}) {
         expected.kind = kind;
         assert(encode_entity_spawn(expected, bytes) == EntityCodecError::None);
         assert(decode_entity_spawn(bytes, actual) == EntityCodecError::None);
@@ -86,7 +87,7 @@ void test_spawn_rejects_invalid_generation_kind_and_bounds()
            EntityCodecError::InvalidGeneration);
 
     assert(encode_entity_spawn(expected, bytes) == EntityCodecError::None);
-    bytes[6] = Byte{5};
+    bytes[6] = Byte{6};
     assert(decode_entity_spawn(bytes, actual) == EntityCodecError::InvalidKind);
 
     expected = make_spawn();

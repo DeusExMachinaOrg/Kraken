@@ -1,6 +1,7 @@
 # Directories
 build
 build-*
+build_*/
 artifacts/
 .vscode
 .vs
@@ -12,3 +13,4 @@ artifacts/
 **/*.lib
 **/*.ilk
 **/*.pdb
+**/*.exe
