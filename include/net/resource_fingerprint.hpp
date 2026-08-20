@@ -23,6 +23,10 @@ inline constexpr std::string_view kResourceFingerprintPrefix =
 // uses '/' as the path separator.
 struct ResourceFingerprintPolicy {
     std::vector<std::filesystem::path> ignored_directories;
+    // File rules use the same matching convention: a one-component path
+    // matches that basename at any depth; a multi-component path matches the
+    // exact normalized install-relative path.
+    std::vector<std::filesystem::path> ignored_files;
 };
 
 // Each input is resolved below install_root.  It may name one regular file or
@@ -53,6 +57,7 @@ struct ResourceFingerprintManifestStats {
     std::uint64_t file_count = 0;
     std::uint64_t total_bytes = 0;
     std::uint64_t ignored_directory_count = 0;
+    std::uint64_t ignored_file_count = 0;
 };
 
 struct ResourceFingerprintResult {
@@ -72,6 +77,15 @@ struct ResourceFingerprintResult {
         return succeeded();
     }
 };
+
+// Adds one relative install path to an input set while keeping only the
+// minimal non-overlapping coverage.  A directory already covered by an
+// ancestor is ignored; adding an ancestor removes its covered descendants.
+// Comparisons follow the fingerprint manifest's case-insensitive '/' path
+// rules.  Invalid or absolute paths are rejected without changing inputs.
+[[nodiscard]] bool insert_resource_fingerprint_input_coverage(
+    std::vector<std::filesystem::path>& inputs,
+    const std::filesystem::path& input);
 
 [[nodiscard]] const char* resource_fingerprint_error_name(
     ResourceFingerprintErrorCode) noexcept;

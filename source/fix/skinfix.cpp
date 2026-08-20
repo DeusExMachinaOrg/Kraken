@@ -34,6 +34,13 @@ namespace kraken::fix::skinfix
     void Apply()
     {
         LOG_INFO("Feature enabled");
-        routines::Redirect(0x0044, (void*) 0x006165C0, (void*) &SetSkinFixed);
+        // PhysicBody::SetSkin is 0x21 bytes at 0x006165C0; the next exported
+        // method, GetSkin, starts at 0x006165F0.  The old 0x44-byte patch
+        // crossed that boundary and filled GetSkin's entry with INT3.  A
+        // direct relative jump is the complete detour and owns exactly five
+        // bytes at the target entry.
+        routines::Redirect(sizeof(routines::_Redirect),
+                           reinterpret_cast<void*>(0x006165C0),
+                           reinterpret_cast<void*>(&SetSkinFixed));
     }
 }

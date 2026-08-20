@@ -415,6 +415,27 @@ void test_replica_archive_source_policy()
     for (const char* forbidden : {"_EvaluateToDead", "_DeadActions",
                                   "BreakModel", "LoadRuntimeValues"})
         CHECK(source.find(forbidden) == std::string::npos);
+
+    const std::size_t envelope = source.find(
+        "CreateNode(hta::m3d::cmn::XML_NODE_ELEMENT, \"Object\")");
+    const std::size_t save = source.find(
+        "object.SaveToXML(xml_file, object_node)");
+    const std::size_t attach = source.find(
+        "xml_file->AddChild(object_node)");
+    CHECK(envelope != std::string::npos);
+    CHECK(save != std::string::npos);
+    CHECK(attach != std::string::npos);
+    CHECK(envelope < attach);
+    CHECK(attach < save);
+    CHECK(source.find(
+              "CreateNode(hta::m3d::cmn::XML_NODE_DOCUMENT") ==
+          std::string::npos);
+    CHECK(source.find("if (!suspended_object.m_bNeedPostLoad)") !=
+          std::string::npos);
+    CHECK(source.find("if (vehicle->bIsUpdatingByODE())") ==
+          std::string::npos);
+    CHECK(source.find("object.SaveToXML(xml_file, document)") ==
+          std::string::npos);
 }
 
 } // namespace

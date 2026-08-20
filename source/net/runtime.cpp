@@ -469,6 +469,7 @@ struct ClientJipMapLoad {
     MatchPlayerId player_id = kInvalidMatchPlayerId;
     NetId entity_id = kInvalidNetId;
     std::string target_map;
+    bool vehicle_descriptor_sent = false;
     bool map_ready_sent = false;
 };
 
@@ -488,6 +489,8 @@ struct RuntimeState {
     QuestProjectionHost quest_projection_host;
     QuestProjectionClient quest_projection_client;
     QuestTriggerProvenanceRegistry quest_trigger_provenance;
+    std::string quest_projection_map_namespace;
+    bool quest_projection_sample_ready = false;
     std::unique_ptr<WorldObserver> world_observer;
     std::unique_ptr<WorldMutationApplier> world_mutation_applier;
     ReplicationSourceContext world_source_context =
@@ -529,6 +532,9 @@ struct RuntimeState {
     std::vector<std::pair<StaticWorldId, HostWorldEngineHandle>>
         static_world_original_bindings;
     bool static_world_identity_stable = false;
+    StaticWorldIndexError static_world_identity_last_error =
+        StaticWorldIndexError::None;
+    std::string static_world_identity_error_map;
     std::string static_world_loaded_map;
     bool static_world_source_error_logged = false;
     bool static_world_source_loaded = false;
@@ -711,6 +717,7 @@ struct RuntimeState {
 
 RuntimeState g_state;
 std::uint32_t g_next_session_epoch = 1;
+inline constexpr std::int32_t kNativeNoQuestObjectId = -1;
 
 void emit_match_accept_marker()
 {
@@ -898,6 +905,7 @@ bool bind_host_player_vehicle();
 bool initialize_player_slots();
 bool activate_dynamic_player_bindings();
 bool is_player_controlled_vehicle(const hta::ai::Vehicle& vehicle);
+void run_raid_autotest_tick();
 void run_combat_autotest_tick(float elapsed_time);
 int __fastcall controls_hook(hta::CMiracle3d*, void*, float, float);
 bool release_player_slot_entity(NetId entity_id,
@@ -1663,6 +1671,24 @@ hta::ai::Chest* chest_from_object(hta::ai::Obj* object)
     return static_cast<hta::ai::Chest*>(object);
 }
 
+bool vehicle_part_contains_gun(hta::ai::VehiclePart& part,
+                               const hta::ai::Gun* const gun)
+{
+    if (&part == gun)
+        return true;
+    if (!part.IsKindOf(hta::ai::CompoundVehiclePart::p_classObject))
+        return false;
+    const auto& compound =
+        static_cast<const hta::ai::CompoundVehiclePart&>(part);
+    for (auto iterator = compound.begin(); iterator != compound.end();
+         ++iterator) {
+        hta::ai::VehiclePart* const child = iterator->second.vp;
+        if (child != nullptr && vehicle_part_contains_gun(*child, gun))
+            return true;
+    }
+    return false;
+}
+
 hta::ai::Vehicle* vehicle_from_gun_owner(hta::ai::Gun* gun)
 {
     if (gun == nullptr)
@@ -1670,7 +1696,9 @@ hta::ai::Vehicle* vehicle_from_gun_owner(hta::ai::Gun* gun)
     const auto contains_gun = [gun](hta::ai::Vehicle& vehicle) {
         const auto names = vehicle.GetAttachedPartNames();
         for (std::size_t index = 0; index < names.size(); ++index) {
-            if (vehicle.GetPartByName(names[index]) == gun)
+            hta::ai::VehiclePart* const part =
+                vehicle.GetPartByName(names[index]);
+            if (part != nullptr && vehicle_part_contains_gun(*part, gun))
                 return true;
         }
         return false;
@@ -2329,6 +2357,46 @@ void emit_host_shot_confirmed(hta::ai::Gun& gun,
     if (identity.attachment_id == 0 &&
         !capture_weapon_identity(*owner, &gun, identity))
         return;
+    if (command != nullptr &&
+        !g_state.combat_autotest_scenario.empty() &&
+        command->target_entity_id != kInvalidNetId) {
+        hta::ai::Vehicle* const target = find_vehicle(
+            command->target_entity_id, command->target_generation);
+        if (target != nullptr) {
+            const hta::CVector shot_position = gun._CalcPosForNextShot();
+            const hta::CVector shot_direction = gun._CalcDirForNextShot();
+            const hta::CVector target_position = target->GetGeometricCenter();
+            const float dx = target_position.x - shot_position.x;
+            const float dy = target_position.y - shot_position.y;
+            const float dz = target_position.z - shot_position.z;
+            const float distance_squared = dx * dx + dy * dy + dz * dz;
+            const float direction_squared =
+                shot_direction.x * shot_direction.x +
+                shot_direction.y * shot_direction.y +
+                shot_direction.z * shot_direction.z;
+            float alignment = -1.0f;
+            float lateral_miss = -1.0f;
+            if (std::isfinite(distance_squared) && distance_squared > 0.0001f &&
+                std::isfinite(direction_squared) && direction_squared > 0.0001f) {
+                const float distance = std::sqrt(distance_squared);
+                const float direction_length = std::sqrt(direction_squared);
+                alignment = (dx * shot_direction.x + dy * shot_direction.y +
+                             dz * shot_direction.z) /
+                    (distance * direction_length);
+                const float projection = alignment * distance;
+                lateral_miss = std::sqrt((std::max)(
+                    0.0f, distance_squared - projection * projection));
+            }
+            LOG_INFO("KRAKEN_COMBAT_AUTOTEST shot-geometry scenario=%s shooter=%u target=%u gunObj=%d targetObj=%d align=%.6f lateralMiss=%.3f muzzle=%.3f,%.3f,%.3f dir=%.4f,%.4f,%.4f target=%.3f,%.3f,%.3f canShot=%u",
+                     g_state.combat_autotest_scenario.c_str(), shooter_id,
+                     command->target_entity_id, gun.GetId(), target->GetId(),
+                     alignment, lateral_miss, shot_position.x,
+                     shot_position.y, shot_position.z, shot_direction.x,
+                     shot_direction.y, shot_direction.z, target_position.x,
+                     target_position.y, target_position.z,
+                     gun.CanShotToTarget(target->GetId()) ? 1u : 0u);
+        }
+    }
     hta::m3d::SgNode* const barrel = gun.GetBarrelNode();
     if (barrel == nullptr)
         return;
@@ -2831,14 +2899,20 @@ void __fastcall process_all_events_raid_autotest_hook(void* application)
     reinterpret_cast<ProcessAllEventsFn>(kProcessAllEventsAddress)(application);
     confirm_deferred_exit_route(
         reinterpret_cast<hta::CMiracle3d*>(application));
-    if (!g_state.raid_autotest_enabled || g_state.raid_autotest_bootstrap_attempted)
+    if (!g_state.raid_autotest_enabled)
         return;
-    // ProcessAllEvents precedes OneFrame. The stock main menu must therefore
-    // have completed before invoking its native load path.
-    if (++g_state.raid_autotest_bootstrap_frames < 300)
-        return;
-    g_state.raid_autotest_bootstrap_attempted = true;
-    try_raid_autotest_bootstrap(application);
+    if (!g_state.raid_autotest_bootstrap_attempted) {
+        // ProcessAllEvents precedes OneFrame. The stock main menu must
+        // therefore have completed before invoking its native load path.
+        if (++g_state.raid_autotest_bootstrap_frames < 300)
+            return;
+        g_state.raid_autotest_bootstrap_attempted = true;
+        try_raid_autotest_bootstrap(application);
+    }
+    // Map transitions can temporarily stop CServer::Update. Keep test-only
+    // session orchestration on the application loop as well; the attempted
+    // flag inside run_raid_autotest_tick preserves exactly-once startup.
+    run_raid_autotest_tick();
 }
 
 bool install_raid_autotest_bootstrap_hook()
@@ -3959,8 +4033,7 @@ void add_fingerprint_input(const std::filesystem::path& root,
     const std::filesystem::path relative = absolute.lexically_relative(root);
     if (relative.empty() || relative.string().starts_with(".."))
         return;
-    if (std::find(inputs.begin(), inputs.end(), relative) == inputs.end())
-        inputs.push_back(relative);
+    (void)insert_resource_fingerprint_input_coverage(inputs, relative);
 }
 
 std::vector<std::filesystem::path> active_resource_inputs(
@@ -4016,6 +4089,13 @@ std::optional<SessionIdentity> production_session_identity()
     ResourceFingerprintRequest request{};
     request.install_root = *root;
     request.inputs = active_resource_inputs(*root);
+    // Session identity covers shared game/mod resources, never a player's
+    // profile, saves, local renderer/editor settings, or Kraken policy. Those
+    // are intentionally different between peers and are not replicated world
+    // content.
+    request.policy.ignored_directories = {"data/profiles"};
+    request.policy.ignored_files = {
+        "data/config.cfg", "data/kraken.ini", "data/m3deditor.cfg"};
     const ResourceFingerprintResult fingerprint = fingerprint_resources(request);
     if (!fingerprint.succeeded() || fingerprint.digest.empty()) {
         LOG_ERROR("multiplayer identity unavailable; resource fingerprint failed code=%s path=%s error=%s",
@@ -4025,6 +4105,12 @@ std::optional<SessionIdentity> production_session_identity()
         return std::nullopt;
     }
     identity.resource_fingerprint = fingerprint.digest;
+    LOG_INFO("multiplayer resource identity digest=%s files=%llu bytes=%llu ignored_dirs=%llu ignored_files=%llu",
+             fingerprint.digest.c_str(),
+             static_cast<unsigned long long>(fingerprint.stats.file_count),
+             static_cast<unsigned long long>(fingerprint.stats.total_bytes),
+             static_cast<unsigned long long>(fingerprint.stats.ignored_directory_count),
+             static_cast<unsigned long long>(fingerprint.stats.ignored_file_count));
     if (!is_valid_session_identity(identity)) {
         LOG_ERROR("multiplayer identity unavailable; refusing production session (identity fields must be non-empty)");
         return std::nullopt;
@@ -4224,8 +4310,15 @@ void erase_match_jip_barrier(const PeerId peer)
 
 bool host_peer_world_transfer_permitted(const PeerId peer)
 {
+    if (!g_state.is_host || g_state.match.state() == MatchState::Offline)
+        return true;
     const MatchJipPeerBarrier* const barrier = match_jip_barrier_for_peer(peer);
-    return barrier == nullptr || match_jip_snapshot_permitted(barrier->barrier);
+    // Forming peers still own the lobby map, while Playing peers that have no
+    // barrier have not completed the JIP map load yet.  In either case a
+    // permissive "missing barrier" default leaks stale EntitySpawn metadata
+    // from the previous map into the next descriptor snapshot.
+    return barrier != nullptr &&
+        match_jip_snapshot_permitted(barrier->barrier);
 }
 
 bool encode_and_send_match_ready_request(const PeerId peer)
@@ -4656,6 +4749,8 @@ void reset_match_state() noexcept
     g_state.quest_trigger_provenance.preserve_session_reset();
     g_state.quest_projection_host.reset();
     g_state.quest_projection_client.reset();
+    g_state.quest_projection_map_namespace.clear();
+    g_state.quest_projection_sample_ready = false;
     g_state.quest_projection_committed = false;
     g_state.quest_play_pending = false;
     g_state.quest_local_state_logged = false;
@@ -4724,6 +4819,11 @@ bool start_matchmaking_impl(const std::uint8_t required_players,
         return false;
     }
     g_state.match_request_pending = false;
+    // A session may have published an Offline/co-op baseline before a mod
+    // starts matchmaking.  The locked target-map baseline has a different
+    // native object graph and must be emitted again after its map barrier.
+    g_state.spawn_publications.clear();
+    g_state.loadout_publications.clear();
 
     // A peer can finish transport handshaking before the menu invokes
     // StartMatchmaking.  Add it to the unready forming roster now and use the
@@ -4813,17 +4913,30 @@ void tick_match(const Clock::time_point now)
             return;
         g_state.visible_match_state = MatchState::Loading;
         g_state.match_loading_announced = true;
+        g_state.match_jip_map_barriers.clear();
         emit_match_accept_marker();
 
         // The coordinator removes unready peers while locking the roster.
         // Explicitly reject and disconnect them so a closed roster cannot
         // continue sending gameplay traffic after the load barrier.
         for (const PeerId peer : g_state.peers) {
-            if (match_player_for_peer(peer) == nullptr) {
+            const MatchPlayer* const player = match_player_for_peer(peer);
+            if (player == nullptr) {
                 (void)send_match_reject(peer, MatchRejectReason::NotReady);
                 (void)g_state.transport.disconnect(peer);
                 continue;
             }
+            MatchJipPeerBarrier barrier{peer, {}};
+            if (!begin_match_jip_map_load(
+                    barrier.barrier, g_state.match_epoch,
+                    g_state.match_roster_revision, player->id,
+                    player->entity_id)) {
+                (void)send_match_reject(peer,
+                                       MatchRejectReason::InvalidRequest);
+                (void)g_state.transport.disconnect(peer);
+                continue;
+            }
+            g_state.match_jip_map_barriers.push_back(std::move(barrier));
             (void)send_match_roster_lock(peer);
             (void)send_match_load(peer);
         }
@@ -4838,6 +4951,20 @@ void tick_match(const Clock::time_point now)
 
     if (g_state.match.state() == MatchState::Loading &&
         g_state.match_loading_announced) {
+        // Loading a map is synchronous inside the native engine, but peers
+        // complete it independently.  Never construct a remote native graph
+        // or release a snapshot while either side can still own the lobby.
+        if (current_level_name() != g_state.match.config().target_map)
+            return;
+        for (const MatchPlayer& player : g_state.match.players()) {
+            if (player.host || player.peer == kInvalidPeer)
+                continue;
+            const MatchJipPeerBarrier* const barrier =
+                match_jip_barrier_for_peer(player.peer);
+            if (barrier == nullptr ||
+                !match_jip_snapshot_permitted(barrier->barrier))
+                return;
+        }
         if (!g_state.match.begin_synchronizing())
             return;
         g_state.visible_match_state = MatchState::Synchronizing;
@@ -4847,6 +4974,16 @@ void tick_match(const Clock::time_point now)
             if (player.host || player.peer == kInvalidPeer)
                 continue;
             has_remote = true;
+            PeerController* const controller = find_controller(player.peer);
+            if (controller == nullptr ||
+                create_host_remote_vehicle(*controller) == nullptr) {
+                LOG_ERROR("initial snapshot denied: client vehicle materialization failed peer=%u entity=%u",
+                          player.peer, player.entity_id);
+                (void)send_match_reject(player.peer,
+                                         MatchRejectReason::InvalidRequest);
+                (void)g_state.transport.disconnect(player.peer);
+                continue;
+            }
             publish_host_baseline_to_peer(player.peer);
             send_world_loot_baseline(player.peer);
             if (!send_world_snapshot_and_descriptors(player.peer)) {
@@ -4855,6 +4992,9 @@ void tick_match(const Clock::time_point now)
                 (void)g_state.transport.disconnect(player.peer);
                 continue;
             }
+            if (MatchJipPeerBarrier* const barrier =
+                    match_jip_barrier_for_peer(player.peer))
+                (void)mark_match_jip_snapshot_started(barrier->barrier);
             (void)send_match_sync(player.peer, player.id, true);
         }
         if (!has_remote && g_state.match.begin_playing()) {
@@ -5533,6 +5673,14 @@ void handle_match_message(const SessionEvent& event)
                      event.peer, static_cast<unsigned>(result));
             return;
         }
+        if (g_state.match.state() == MatchState::Loading) {
+            LOG_INFO("match map-ready accepted peer=%u player=%u entity=%u",
+                     event.peer, acknowledgement.player_id,
+                     acknowledgement.entity_id);
+            break;
+        }
+        if (g_state.match.state() != MatchState::Playing)
+            return;
         if (!start_join_in_progress_snapshot(event.peer, player->id))
             LOG_ERROR("JIP snapshot start failed after valid map-ready peer=%u",
                       event.peer);
@@ -5602,19 +5750,15 @@ void handle_match_message(const SessionEvent& event)
         g_state.match_request.target_map = load.target_map;
         g_state.match_request.exit_map = load.exit_map;
         g_state.match_request.friendly_fire = load.friendly_fire;
-        if (g_state.client_jip_join_requested) {
-            if (g_state.local_match_player_id == kInvalidMatchPlayerId ||
-                g_state.local_entity_id == kInvalidNetId) {
-                LOG_ERROR("JIP map load rejected: local roster identity is unavailable");
-                return;
-            }
-            g_state.client_jip_map_load = ClientJipMapLoad{
-                event.peer, load.session_epoch, load.roster_revision,
-                g_state.local_match_player_id, g_state.local_entity_id,
-                load.target_map, false};
-        } else {
-            g_state.client_jip_map_load.reset();
+        if (g_state.local_match_player_id == kInvalidMatchPlayerId ||
+            g_state.local_entity_id == kInvalidNetId) {
+            LOG_ERROR("match map load rejected: local roster identity is unavailable");
+            return;
         }
+        g_state.client_jip_map_load = ClientJipMapLoad{
+            event.peer, load.session_epoch, load.roster_revision,
+            g_state.local_match_player_id, g_state.local_entity_id,
+            load.target_map, false, false};
         g_state.visible_match_state = MatchState::Loading;
         g_state.local_assigned_spawn_applied = false;
         emit_match_accept_marker();
@@ -6091,11 +6235,20 @@ bool capture_native_part(const hta::ai::VehiclePart& part,
     constexpr VehicleInstanceId kMaxGraphInstances =
         static_cast<VehicleInstanceId>(kMaxVehicleDescriptorNodes);
     if (output.size() >= kMaxVehicleDescriptorNodes || next_id == 0 ||
-        next_id > kMaxGraphInstances + 1)
+        next_id > kMaxGraphInstances + 1) {
+        LOG_ERROR("vehicle descriptor attachment limit exceeded objId=%d slot=%s count=%llu next=%u",
+                  part.GetId(), slot.c_str(),
+                  static_cast<unsigned long long>(output.size()), next_id);
         return false;
+    }
     const std::string prototype_name = native_prototype_name(part);
-    if (part.GetPrototypeId() < 0 || prototype_name.empty() || slot.empty())
+    if (part.GetPrototypeId() < 0 || prototype_name.empty() || slot.empty()) {
+        LOG_ERROR("vehicle descriptor attachment metadata invalid objId=%d slot=%s prototype=%d name=%s",
+                  part.GetId(), slot.empty() ? "<empty>" : slot.c_str(),
+                  part.GetPrototypeId(),
+                  prototype_name.empty() ? "<empty>" : prototype_name.c_str());
         return false;
+    }
     VehicleDescriptorNode node{};
     node.kind = VehicleDescriptorNodeKind::Attachment;
     node.instance_id = next_id++;
@@ -6119,7 +6272,12 @@ bool capture_native_part(const hta::ai::VehiclePart& part,
         return true;
     const auto& compound = static_cast<const hta::ai::CompoundVehiclePart&>(part);
     for (auto iterator = compound.begin(); iterator != compound.end(); ++iterator) {
-        if (iterator->second.vp == nullptr || next_id > kMaxGraphInstances ||
+        if (iterator->second.vp == nullptr) {
+            LOG_ERROR("vehicle descriptor compound attachment is null parentObjId=%d slot=%s",
+                      part.GetId(), iterator->first.c_str());
+            return false;
+        }
+        if (next_id > kMaxGraphInstances ||
             !capture_native_part(*iterator->second.vp, iterator->first.c_str(),
                                  current_id, next_id, output))
             return false;
@@ -6186,8 +6344,12 @@ bool capture_native_repository_contents(
     if (repository == nullptr || depth > kMaxVehicleDescriptorCargoDepth ||
         next_id == 0 || next_id > kMaxGraphInstances + 1)
         return repository == nullptr;
-    if (repository->m_slots.size() > kMaxVehicleDescriptorCargoStacks)
+    if (repository->m_slots.size() > kMaxVehicleDescriptorCargoStacks) {
+        LOG_ERROR("vehicle descriptor repository slot limit exceeded kind=%u slots=%llu",
+                  static_cast<unsigned>(repository_kind),
+                  static_cast<unsigned long long>(repository->m_slots.size()));
         return false;
+    }
     for (std::size_t index = 0;
          index < repository->m_slots.size();
          ++index) {
@@ -6198,8 +6360,13 @@ bool capture_native_repository_contents(
         if (item.bIsResourceItem()) {
             if (item.m_origin.x < 0 || item.m_origin.y < 0 ||
                 item.m_origin.x > kMaxVehicleDescriptorCargoCoordinate ||
-                item.m_origin.y > kMaxVehicleDescriptorCargoCoordinate)
+                item.m_origin.y > kMaxVehicleDescriptorCargoCoordinate) {
+                LOG_ERROR("vehicle descriptor cargo coordinate invalid kind=%u index=%llu x=%d y=%d",
+                          static_cast<unsigned>(repository_kind),
+                          static_cast<unsigned long long>(index),
+                          item.m_origin.x, item.m_origin.y);
                 return false;
+            }
             std::string name = native_prototype_name(item.GetPrototypeId());
             if (name.empty())
                 name = native_prototype_name(item.GetResourceId());
@@ -6217,14 +6384,53 @@ bool capture_native_repository_contents(
         }
         const hta::ai::Obj* const object = item.GetObj();
         if (object == nullptr || next_id > kMaxGraphInstances || objects.size() >=
-                kMaxVehicleDescriptorCargoObjects || next_id == 0)
+                kMaxVehicleDescriptorCargoObjects || next_id == 0) {
+            LOG_ERROR("vehicle descriptor cargo object invalid kind=%u index=%llu object=%p count=%llu next=%u",
+                      static_cast<unsigned>(repository_kind),
+                      static_cast<unsigned long long>(index), object,
+                      static_cast<unsigned long long>(objects.size()), next_id);
             return false;
+        }
+        // GeomRepository::m_slots contains both a root container and the
+        // hierarchical children stored inside it.  Children are already
+        // serialized by capture_native_object_tree; emitting them again as
+        // roots produces two placements at the same origin on restore.
+        if (object->bHasParent()) {
+            const hta::ai::Obj* const parent = object->GetParent();
+            if (parent == nullptr ||
+                parent->GetParentRepository() != repository) {
+                LOG_ERROR("vehicle descriptor cargo child has an invalid repository parent kind=%u index=%llu objId=%d parentId=%d",
+                          static_cast<unsigned>(repository_kind),
+                          static_cast<unsigned long long>(index),
+                          object->GetId(), object->GetParentId());
+                return false;
+            }
+            continue;
+        }
         const char* const object_name = object->GetName();
-        const std::string name = object_name != nullptr ? object_name : "";
+        std::string name = object_name != nullptr ? object_name : "";
         const std::string prototype_name = native_prototype_name(*object);
+        if (name.empty()) {
+            // Repository placement is the native stable identity for a root
+            // cargo object. Stock/EFA objects are allowed to have no Obj
+            // name; never substitute a process-local ObjId.
+            char generated[64]{};
+            std::snprintf(generated, sizeof(generated), "cargo-%u-%d-%d-p%d",
+                          static_cast<unsigned>(repository_kind),
+                          item.m_origin.x, item.m_origin.y,
+                          object->GetPrototypeId());
+            name = generated;
+        }
         if (object->GetPrototypeId() < 0 || prototype_name.empty() ||
-            name.empty() || name.size() > kMaxVehicleDescriptorSlotLength)
+            name.size() > kMaxVehicleDescriptorSlotLength) {
+            LOG_ERROR("vehicle descriptor cargo metadata invalid kind=%u index=%llu objId=%d prototype=%d prototypeName=%s objectName=%s",
+                      static_cast<unsigned>(repository_kind),
+                      static_cast<unsigned long long>(index), object->GetId(),
+                      object->GetPrototypeId(),
+                      prototype_name.empty() ? "<empty>" : prototype_name.c_str(),
+                      name.empty() ? "<empty>" : name.c_str());
             return false;
+        }
         VehicleDescriptorNode node{};
         node.kind = VehicleDescriptorNodeKind::Container;
         node.instance_id = next_id++;
@@ -6476,6 +6682,8 @@ bool install_static_world_source(const std::string& map_namespace,
         g_state.static_world_ids_by_post_load_index.clear();
         g_state.static_world_original_bindings.clear();
         g_state.static_world_identity_stable = false;
+        g_state.static_world_identity_last_error = StaticWorldIndexError::None;
+        g_state.static_world_identity_error_map.clear();
         g_state.static_world_loaded_map = map_namespace;
         g_state.static_world_source_error_logged = false;
         g_state.static_world_source_loaded = false;
@@ -6524,6 +6732,27 @@ bool object_is_bound_vehicle_or_descendant(hta::ai::Obj* object)
     return false;
 }
 
+bool quest_projection_object_name_is_unique(
+    hta::ai::ObjContainer& objects, const hta::ai::Obj& expected,
+    const char* const name)
+{
+    if (name == nullptr || name[0] == '\0')
+        return false;
+    const hta::ai::Obj* match = nullptr;
+    for (auto iterator = objects.begin(); iterator != objects.end(); ++iterator) {
+        const hta::ai::Obj* const candidate = *iterator;
+        if (candidate == nullptr || candidate->GetDeletedStatus())
+            continue;
+        const char* const candidate_name = candidate->GetName();
+        if (candidate_name == nullptr || std::strcmp(candidate_name, name) != 0)
+            continue;
+        if (match != nullptr)
+            return false;
+        match = candidate;
+    }
+    return match == &expected;
+}
+
 std::optional<QuestProjectionIdentity> quest_projection_identity_for_object(
     hta::ai::CServer& server, hta::ai::Obj& object,
     const std::string& map_namespace, const bool reference_identity = false)
@@ -6532,12 +6761,32 @@ std::optional<QuestProjectionIdentity> quest_projection_identity_for_object(
         g_state.session_identity.resource_fingerprint.empty())
         return std::nullopt;
     const char* const object_name = object.GetName();
-    if (object_name == nullptr || object_name[0] == '\0')
-        return std::nullopt;
     hta::CStr resource_name;
+    std::string stable_name;
     QuestProjectionSourceKind source_kind =
         QuestProjectionSourceKind::ReferencedObject;
-    if (!reference_identity && object.IsKindOf("Trigger")) {
+    if (reference_identity) {
+        // Runtime player/AI vehicle names and ObjIds are process-local. Resolve
+        // a shared vehicle reference through the same authoritative NetId and
+        // generation that already bind its world replica on every peer.
+        hta::ai::Vehicle* const vehicle = vehicle_from_object(&object);
+        NetId entity_id = kInvalidNetId;
+        EntityGeneration generation = kInvalidEntityGeneration;
+        if (vehicle != nullptr &&
+            static_cast<hta::ai::Obj*>(vehicle) == &object &&
+            g_state.entities.lookup_net_id(vehicle->GetId(), entity_id,
+                                           generation) &&
+            entity_id != kInvalidNetId &&
+            generation != kInvalidEntityGeneration) {
+            resource_name = hta::CStr("network-entity");
+            stable_name = std::to_string(entity_id) + ":" +
+                std::to_string(generation);
+        }
+    }
+    if (resource_name.empty() &&
+        (object_name == nullptr || object_name[0] == '\0'))
+        return std::nullopt;
+    if (resource_name.empty() && !reference_identity && object.IsKindOf("Trigger")) {
         const auto provenance = g_state.quest_trigger_provenance.lookup(object_name);
         if (!provenance.has_value()) {
             LOG_WARNING("quest trigger provenance %s for name=%s",
@@ -6548,29 +6797,37 @@ std::optional<QuestProjectionIdentity> quest_projection_identity_for_object(
         }
         resource_name = hta::CStr(provenance->resource_path.c_str());
         source_kind = provenance->source_kind;
-    } else if (!reference_identity && object.IsKindOf("DynamicQuest")) {
+        stable_name = object_name;
+    } else if (resource_name.empty() && !reference_identity &&
+               object.IsKindOf("DynamicQuest")) {
         const hta::CStr& configured = server.m_level->m_questStatesFileName;
         if (configured.empty())
             return std::nullopt;
         resource_name = server.m_level->GetFullPathNameA(configured);
         source_kind = QuestProjectionSourceKind::DynamicQuest;
-    } else {
-        // References may point at any already-created map object. Full object
-        // path plus exact name and fingerprint makes this a stable reference;
-        // the local ObjId is resolved only at application time.
-        const hta::CStr full_name = server.m_pObjects != nullptr
-            ? server.m_pObjects->GetObjectFullName(hta::CStr(object_name))
-            : hta::CStr();
-        resource_name = full_name;
+        stable_name = object_name;
+    } else if (resource_name.empty()) {
+        // References may point at special engine-owned objects for which the
+        // native full-name lookup is not valid. A name that is unique in
+        // the active map is a stable reference when combined with the map and
+        // resource fingerprint. Ambiguous names fail closed; local ObjIds and
+        // pointers never cross the wire.
+        if (server.m_pObjects == nullptr ||
+            !quest_projection_object_name_is_unique(
+                *server.m_pObjects, object, object_name))
+            return std::nullopt;
+        resource_name = hta::CStr("unique-map-object");
+        stable_name = object_name;
     }
-    if (resource_name.empty() || resource_name.c_str() == nullptr)
+    if (resource_name.empty() || resource_name.c_str() == nullptr ||
+        stable_name.empty())
         return std::nullopt;
     QuestProjectionIdentity identity;
     identity.resource_fingerprint = g_state.session_identity.resource_fingerprint;
     identity.map_namespace = map_namespace;
     identity.source_kind = source_kind;
     identity.resource_path = resource_name.c_str();
-    identity.stable_name = object_name;
+    identity.stable_name = std::move(stable_name);
     identity.id = quest_projection_id_hash(identity.canonical_key());
     return identity.valid() ? std::optional<QuestProjectionIdentity>(std::move(identity))
                             : std::nullopt;
@@ -6624,13 +6881,21 @@ void observe_authoritative_quest_state()
         g_state.session_identity.resource_fingerprint;
     if (resource_fingerprint.empty())
         return;
-    if (g_state.quest_projection_host.epoch() != epoch)
+    if (g_state.quest_projection_map_namespace != map_namespace) {
+        g_state.quest_projection_map_namespace = map_namespace;
         g_state.quest_projection_host.reset(epoch, resource_fingerprint);
-    else
+        g_state.quest_projection_sample_ready = false;
+        g_state.quest_local_state_logged = false;
+    } else if (g_state.quest_projection_host.epoch() != epoch) {
+        g_state.quest_projection_host.reset(epoch, resource_fingerprint);
+        g_state.quest_projection_sample_ready = false;
+    } else {
         g_state.quest_projection_host.set_resource_fingerprint(resource_fingerprint);
+    }
 
     std::vector<QuestProjectionRecord> records;
     bool identity_complete = true;
+    std::string first_identity_failure;
     for (auto iterator = server->m_pObjects->begin();
          iterator != server->m_pObjects->end(); ++iterator) {
         hta::ai::Obj* const object = *iterator;
@@ -6639,7 +6904,7 @@ void observe_authoritative_quest_state()
             server->m_pObjects->m_objIdsToRemove.end(), object->GetId()) !=
             server->m_pObjects->m_objIdsToRemove.end();
         if (object == nullptr || object->GetDeletedStatus() ||
-            object->m_bIsUpdating || object->m_bNeedPostLoad ||
+            object->m_bNeedPostLoad ||
             object->m_bMustCreateVisualPart || object->m_bPassedToAnotherMap ||
             pending_removal || object_is_bound_vehicle_or_descendant(object))
             continue;
@@ -6656,6 +6921,9 @@ void observe_authoritative_quest_state()
             quest_projection_identity_for_object(*server, *object, map_namespace);
         if (!identity) {
             identity_complete = false;
+            if (first_identity_failure.empty())
+                first_identity_failure = std::string("shared object name=") +
+                    (object->GetName() != nullptr ? object->GetName() : "<unnamed>");
             continue;
         }
         QuestProjectionRecord record;
@@ -6689,6 +6957,14 @@ void observe_authoritative_quest_state()
                             return item.canonical_key() == reference->canonical_key();
                         })) {
                     identity_complete = false;
+                    if (first_identity_failure.empty())
+                        first_identity_failure = std::string("trigger reference owner=") +
+                            (object->GetName() != nullptr
+                                 ? object->GetName() : "<unnamed>") +
+                            " refObjId=" +
+                            std::to_string(*ref_iterator) + " refName=" +
+                            (referenced != nullptr && referenced->GetName() != nullptr
+                                 ? referenced->GetName() : "<missing>");
                     break;
                 }
                 state.object_refs.push_back(*reference);
@@ -6697,18 +6973,13 @@ void observe_authoritative_quest_state()
                 trigger->m_callEvent.m_eventId);
             state.call_obj_name = trigger->m_callEvent.m_objName.c_str() != nullptr
                 ? trigger->m_callEvent.m_objName.c_str() : "";
-            if (trigger->m_callEvent.m_callObjId != kInvalidObjId) {
-                hta::ai::Obj* const call_object =
-                    server->m_pObjects->GetEntityByObjId(
-                        trigger->m_callEvent.m_callObjId);
-                if (call_object == nullptr)
-                    identity_complete = false;
-                else
-                    state.call_obj_ref = quest_projection_identity_for_object(
-                        *server, *call_object, map_namespace, true);
-                if (!state.call_obj_ref)
-                    identity_complete = false;
-            }
+            // LoRA-verified ai::Trigger::_StoreCallEvent stores the most
+            // recent event caller here and writes Unknown/-1 when that caller
+            // has already disappeared. It is transient execution context,
+            // not a persistent quest reference. Preserve the event/name for
+            // presentation while deliberately keeping the process-local ID
+            // absent on replicas.
+            state.call_obj_ref.reset();
             record.state = state;
         } else {
             const auto* const quest =
@@ -6724,7 +6995,7 @@ void observe_authoritative_quest_state()
             const auto capture_dynamic_reference =
                 [&server, &map_namespace](const std::int32_t object_id,
                                           std::optional<QuestProjectionIdentity>& output) {
-                    if (object_id == kInvalidObjId || object_id == 0)
+                    if (object_id <= 0)
                         return true;
                     hta::ai::Obj* const referenced =
                         server->m_pObjects->GetEntityByObjId(object_id);
@@ -6744,8 +7015,13 @@ void observe_authoritative_quest_state()
         records.push_back(std::move(record));
     }
     if (!identity_complete) {
+        g_state.quest_projection_sample_ready = false;
         if (!g_state.quest_local_state_logged) {
-            LOG_WARNING("quest projection skipped an unbound trigger/quest identity; personal QuestStateManager state remains local");
+            LOG_WARNING("quest projection incomplete map=%s reason=%s; authoritative snapshot withheld",
+                        map_namespace.c_str(),
+                        first_identity_failure.empty()
+                            ? "unbound trigger/quest identity"
+                            : first_identity_failure.c_str());
             g_state.quest_local_state_logged = true;
         }
         return;
@@ -6753,10 +7029,20 @@ void observe_authoritative_quest_state()
     QuestProjectionDelta delta;
     const QuestProjectionHostResult result =
         g_state.quest_projection_host.observe(records, delta);
-    if (result == QuestProjectionHostResult::DeltaProduced)
+    if (result == QuestProjectionHostResult::DeltaProduced) {
+        LOG_INFO("quest projection delta produced epoch=%u base=%llu revision=%llu records=%u",
+                 delta.epoch,
+                 static_cast<unsigned long long>(delta.base_revision),
+                 static_cast<unsigned long long>(delta.revision),
+                 static_cast<unsigned>(delta.records.size()));
         broadcast_quest_projection_delta(delta);
-    else if (result == QuestProjectionHostResult::InvalidInput)
+    } else if (result == QuestProjectionHostResult::InvalidInput)
         LOG_WARNING("quest projection post-update sample rejected fail-closed");
+    g_state.quest_projection_sample_ready =
+        result != QuestProjectionHostResult::InvalidInput &&
+        result != QuestProjectionHostResult::RevisionExhausted &&
+        result != QuestProjectionHostResult::HistoryOverflow &&
+        g_state.quest_projection_host.initialized();
 }
 
 bool apply_authoritative_quest_projection(
@@ -6764,13 +7050,21 @@ bool apply_authoritative_quest_projection(
     const std::span<const QuestProjectionRecord> target)
 {
     (void)previous;
-    if (g_state.is_host || !IsSessionActive())
+    if (g_state.is_host || !IsSessionActive()) {
+        LOG_ERROR("quest projection apply failed: invalid runtime role host=%u sessionActive=%u",
+                  g_state.is_host ? 1u : 0u, IsSessionActive() ? 1u : 0u);
         return false;
+    }
     hta::ai::CServer* const server = hta::ai::CServer::Instance();
     if (server == nullptr || server->m_pObjects == nullptr ||
         server->m_level == nullptr ||
-        g_state.session_identity.resource_fingerprint.empty())
+        g_state.session_identity.resource_fingerprint.empty()) {
+        LOG_ERROR("quest projection apply failed: native world unavailable server=%p objects=%p level=%p fingerprint=%u",
+                  server, server != nullptr ? server->m_pObjects : nullptr,
+                  server != nullptr ? server->m_level : nullptr,
+                  g_state.session_identity.resource_fingerprint.empty() ? 0u : 1u);
         return false;
+    }
 
     struct NativeChange {
         hta::ai::Trigger* trigger = nullptr;
@@ -6782,23 +7076,28 @@ bool apply_authoritative_quest_projection(
         std::vector<int> old_object_ids;
         std::int32_t old_call_obj_id = kInvalidObjId;
         std::vector<int> new_object_ids;
-        std::int32_t new_call_obj_id = kInvalidObjId;
-        std::int32_t new_hirer_obj_id = kInvalidObjId;
-        std::int32_t new_target_obj_id = kInvalidObjId;
+        std::int32_t new_call_obj_id = kNativeNoQuestObjectId;
+        std::int32_t new_hirer_obj_id = kNativeNoQuestObjectId;
+        std::int32_t new_target_obj_id = kNativeNoQuestObjectId;
         QuestProjectionRecord record;
     };
     std::vector<NativeChange> changes;
     changes.reserve(target.size());
     const std::string map_namespace = static_world_map_namespace();
-    if (map_namespace.empty())
+    if (map_namespace.empty()) {
+        LOG_ERROR("quest projection apply failed: active map namespace is empty");
         return false;
+    }
 
     // A complete baseline must account for every native shared trigger/quest.
     // References are resolved only for identities explicitly requested by the
     // target records. Unrelated unnamed objects are not part of this contract.
     std::vector<std::string> requested_reference_keys;
     if (!collect_quest_projection_reference_keys(target, requested_reference_keys))
+    {
+        LOG_ERROR("quest projection apply failed: invalid referenced-object identity");
         return false;
+    }
     struct NativeIdentity {
         std::string key;
         QuestProjectionRecordKind kind = QuestProjectionRecordKind::Trigger;
@@ -6834,14 +7133,20 @@ bool apply_authoritative_quest_projection(
             continue;
         const std::optional<QuestProjectionIdentity> identity =
             quest_projection_identity_for_object(*server, *object, map_namespace);
-        if (!identity)
+        if (!identity) {
+            LOG_ERROR("quest projection apply failed: local object has no stable identity objId=%d",
+                      object->GetId());
             return false;
+        }
         const std::string key = identity->canonical_key();
         if (std::any_of(native_identities.begin(), native_identities.end(),
                         [&key](const NativeIdentity& item) {
                             return item.key == key;
-                        }))
+                        })) {
+            LOG_ERROR("quest projection apply failed: duplicate local identity key=%s objId=%d",
+                      key.c_str(), object->GetId());
             return false;
+        }
         native_identities.push_back({
             key, is_trigger ? QuestProjectionRecordKind::Trigger
                             : QuestProjectionRecordKind::DynamicQuest, object});
@@ -6852,8 +7157,11 @@ bool apply_authoritative_quest_projection(
                 return record.identity.canonical_key() == native.key &&
                        record.kind() == native.kind;
             });
-        if (present == target.end())
+        if (present == target.end()) {
+            LOG_ERROR("quest projection apply failed: local identity absent from authoritative target key=%s",
+                      native.key.c_str());
             return false;
+        }
     }
 
     QuestProjectionTransactionPlan transaction_plan;
@@ -6861,10 +7169,16 @@ bool apply_authoritative_quest_projection(
     locally_present_keys.reserve(native_identities.size());
     for (const NativeIdentity& native : native_identities)
         locally_present_keys.push_back(native.key);
-    if (build_quest_projection_transaction_plan(
-            target, locally_present_keys, transaction_plan) !=
-        QuestProjectionTransactionPlanResult::Ready)
+    const QuestProjectionTransactionPlanResult plan_result =
+        build_quest_projection_transaction_plan(
+            target, locally_present_keys, transaction_plan);
+    if (plan_result != QuestProjectionTransactionPlanResult::Ready) {
+        LOG_ERROR("quest projection apply failed: transaction plan result=%u local=%u target=%u",
+                  static_cast<unsigned>(plan_result),
+                  static_cast<unsigned>(locally_present_keys.size()),
+                  static_cast<unsigned>(target.size()));
         return false;
+    }
 
     std::vector<QuestProjectionRecord> ordered(
         std::move(transaction_plan.apply_records));
@@ -6881,35 +7195,54 @@ bool apply_authoritative_quest_projection(
             const QuestProjectionIdentity& requested,
             std::int32_t& object_id) {
             const std::string key = requested.canonical_key();
-            if (resolve_quest_projection_reference(
-                    key, reference_candidate_keys) !=
-                QuestProjectionReferenceResolution::Resolved)
+            const QuestProjectionReferenceResolution resolution =
+                resolve_quest_projection_reference(key,
+                                                   reference_candidate_keys);
+            if (resolution != QuestProjectionReferenceResolution::Resolved) {
+                LOG_ERROR("quest projection apply failed: reference resolution=%u key=%s candidates=%u",
+                          static_cast<unsigned>(resolution), key.c_str(),
+                          static_cast<unsigned>(reference_candidate_keys.size()));
                 return false;
+            }
             const auto found = std::find_if(
                 reference_identities.begin(), reference_identities.end(),
                 [&key](const auto& item) { return item.first == key; });
-            if (found == reference_identities.end())
+            if (found == reference_identities.end()) {
+                LOG_ERROR("quest projection apply failed: resolved reference has no object key=%s",
+                          key.c_str());
                 return false;
+            }
             object_id = found->second->GetId();
-            return object_id != kInvalidObjId && object_id != 0;
+            if (object_id <= 0)
+                LOG_ERROR("quest projection apply failed: resolved reference has invalid objId=%d key=%s",
+                          object_id, key.c_str());
+            return object_id > 0;
         };
     for (const QuestProjectionRecord& record : ordered) {
         hta::ai::Obj* found = nullptr;
         for (const NativeIdentity& identity : native_identities) {
             if (identity.key != record.identity.canonical_key())
                 continue;
-            if (identity.kind != record.kind() || found != nullptr)
+            if (identity.kind != record.kind() || found != nullptr) {
+                LOG_ERROR("quest projection apply failed: local identity kind/uniqueness mismatch key=%s",
+                          record.identity.canonical_key().c_str());
                 return false;
+            }
             found = identity.object;
         }
         if (found == nullptr) {
+            LOG_ERROR("quest projection apply failed: authoritative identity absent locally key=%s",
+                      record.identity.canonical_key().c_str());
             return false;
         }
         NativeChange change;
         change.record = record;
         if (record.kind() == QuestProjectionRecordKind::Trigger) {
-            if (!found->IsKindOf("Trigger"))
+            if (!found->IsKindOf("Trigger")) {
+                LOG_ERROR("quest projection apply failed: trigger identity resolved to wrong native type key=%s",
+                          record.identity.canonical_key().c_str());
                 return false;
+            }
             change.trigger = static_cast<hta::ai::Trigger*>(found);
             change.old_trigger.state = static_cast<QuestTriggerState>(
                 change.trigger->m_state);
@@ -6937,18 +7270,27 @@ bool apply_authoritative_quest_projection(
                 std::get<TriggerProjectionState>(record.state);
             for (const QuestProjectionIdentity& reference : state.object_refs) {
                 std::int32_t referenced_id = kInvalidObjId;
-                if (!resolve_reference(reference, referenced_id))
+                if (!resolve_reference(reference, referenced_id)) {
+                    LOG_ERROR("quest projection apply failed: trigger object reference unresolved owner=%s",
+                              record.identity.canonical_key().c_str());
                     return false;
+                }
                 change.new_object_ids.push_back(referenced_id);
             }
             if (state.call_obj_ref.has_value()) {
                 if (!resolve_reference(*state.call_obj_ref,
-                                       change.new_call_obj_id))
+                                       change.new_call_obj_id)) {
+                    LOG_ERROR("quest projection apply failed: trigger call reference unresolved owner=%s",
+                              record.identity.canonical_key().c_str());
                     return false;
+                }
             }
         } else {
-            if (!found->IsKindOf("DynamicQuest"))
+            if (!found->IsKindOf("DynamicQuest")) {
+                LOG_ERROR("quest projection apply failed: quest identity resolved to wrong native type key=%s",
+                          record.identity.canonical_key().c_str());
                 return false;
+            }
             change.quest = static_cast<hta::ai::DynamicQuest*>(found);
             change.old_quest.reward = change.quest->GetReward();
             change.old_quest.take_game_time = change.quest->GetTakeGameTime().asInt64();
@@ -6964,12 +7306,18 @@ bool apply_authoritative_quest_projection(
                 std::get<DynamicQuestProjectionState>(record.state);
             if (state.hirer_reference.has_value() &&
                 !resolve_reference(*state.hirer_reference,
-                                   change.new_hirer_obj_id))
+                                   change.new_hirer_obj_id)) {
+                    LOG_ERROR("quest projection apply failed: quest hirer unresolved owner=%s",
+                              record.identity.canonical_key().c_str());
                     return false;
+            }
             if (state.target_reference.has_value() &&
                 !resolve_reference(*state.target_reference,
-                                   change.new_target_obj_id))
+                                   change.new_target_obj_id)) {
+                    LOG_ERROR("quest projection apply failed: quest target unresolved owner=%s",
+                              record.identity.canonical_key().c_str());
                     return false;
+            }
         }
         changes.push_back(std::move(change));
     }
@@ -7048,6 +7396,7 @@ bool apply_authoritative_quest_projection(
     } catch (...) {
         restore();
         g_state.world_source_context = prior_source;
+        LOG_ERROR("quest projection apply failed: exception while assigning native state");
         return false;
     }
     g_state.world_source_context = prior_source;
@@ -7058,8 +7407,21 @@ bool send_quest_snapshot(const PeerId peer)
 {
     if (!g_state.is_host || peer == kInvalidPeer)
         return false;
-    if (!g_state.quest_projection_host.initialized())
-        observe_authoritative_quest_state();
+    // Map loading may have initialized the host projection with the lobby's
+    // empty state. Always sample at the send barrier and require that sample
+    // to belong to the currently active map.
+    observe_authoritative_quest_state();
+    const std::string map_namespace = static_world_map_namespace();
+    if (!g_state.quest_projection_sample_ready || map_namespace.empty() ||
+        g_state.quest_projection_map_namespace != map_namespace ||
+        !g_state.quest_projection_host.initialized()) {
+        LOG_ERROR("quest snapshot withheld peer=%u map=%s sampledMap=%s ready=%u initialized=%u",
+                  peer, map_namespace.c_str(),
+                  g_state.quest_projection_map_namespace.c_str(),
+                  g_state.quest_projection_sample_ready ? 1u : 0u,
+                  g_state.quest_projection_host.initialized() ? 1u : 0u);
+        return false;
+    }
     const QuestProjectionSnapshot snapshot =
         g_state.quest_projection_host.snapshot();
     std::vector<Byte> payload;
@@ -7074,10 +7436,18 @@ void receive_quest_snapshot(const SessionEvent& event)
     if (g_state.is_host || event.channel != Channel::Reliable)
         return;
     QuestProjectionSnapshot snapshot;
-    if (decode_quest_projection_snapshot(event.payload, snapshot) !=
-            QuestProjectionCodecError::None ||
+    const QuestProjectionCodecError decoded =
+        decode_quest_projection_snapshot(event.payload, snapshot);
+    if (decoded != QuestProjectionCodecError::None ||
         (g_state.match_epoch != 0 && g_state.match_epoch != snapshot.epoch) ||
         snapshot.resource_fingerprint != g_state.session_identity.resource_fingerprint) {
+        LOG_ERROR("quest snapshot rejected codec=%u localEpoch=%u snapshotEpoch=%u fingerprintMatch=%u records=%u",
+                  static_cast<unsigned>(decoded), g_state.match_epoch,
+                  snapshot.epoch,
+                  snapshot.resource_fingerprint ==
+                          g_state.session_identity.resource_fingerprint
+                      ? 1u : 0u,
+                  static_cast<unsigned>(snapshot.records.size()));
         g_state.client_join_failure_pending = true;
         return;
     }
@@ -7089,6 +7459,11 @@ void receive_quest_snapshot(const SessionEvent& event)
         });
     const QuestProjectionClientResult result =
         g_state.quest_projection_client.begin_snapshot(snapshot);
+    LOG_INFO("quest snapshot accepted epoch=%u revision=%llu records=%u result=%u",
+             snapshot.epoch,
+             static_cast<unsigned long long>(snapshot.revision),
+             static_cast<unsigned>(snapshot.records.size()),
+             static_cast<unsigned>(result));
     if (result == QuestProjectionClientResult::Invalid ||
         result == QuestProjectionClientResult::WrongEpoch ||
         result == QuestProjectionClientResult::WrongFingerprint ||
@@ -7120,16 +7495,32 @@ void receive_quest_delta(const SessionEvent& event)
     g_state.match_epoch = delta.epoch;
     const QuestProjectionClientResult result =
         g_state.quest_projection_client.accept_delta(delta);
+    if (result != QuestProjectionClientResult::Applied &&
+        result != QuestProjectionClientResult::Buffered &&
+        result != QuestProjectionClientResult::Duplicate) {
+        LOG_ERROR("quest projection delta rejected epoch=%u base=%llu revision=%llu applied=%llu state=%u result=%u records=%u",
+                  delta.epoch,
+                  static_cast<unsigned long long>(delta.base_revision),
+                  static_cast<unsigned long long>(delta.revision),
+                  static_cast<unsigned long long>(
+                      g_state.quest_projection_client.applied_revision()),
+                  static_cast<unsigned>(g_state.quest_projection_client.state()),
+                  static_cast<unsigned>(result),
+                  static_cast<unsigned>(delta.records.size()));
+    }
     if (result == QuestProjectionClientResult::Invalid ||
         result == QuestProjectionClientResult::WrongEpoch ||
         result == QuestProjectionClientResult::WrongFingerprint ||
         result == QuestProjectionClientResult::Gap ||
         result == QuestProjectionClientResult::Overflow ||
+        result == QuestProjectionClientResult::ApplyFailed ||
         result == QuestProjectionClientResult::ResnapshotRequired)
         g_state.client_join_failure_pending = true;
-    if (result == QuestProjectionClientResult::Applied)
+    if (result == QuestProjectionClientResult::Applied) {
         emit_quest_projection_committed_marker(
             g_state.quest_projection_client.applied_revision());
+        return;
+    }
     maybe_commit_quest_projection();
 }
 
@@ -7137,6 +7528,10 @@ void maybe_commit_quest_projection()
 {
     if (g_state.is_host || !g_state.world_snapshot_committed ||
         g_state.client_join_failure_pending)
+        return;
+    if (g_state.quest_projection_client.state() ==
+            QuestProjectionClientState::Idle ||
+        g_state.quest_projection_client.ready())
         return;
     g_state.quest_projection_client.set_applier(
         [](std::span<const QuestProjectionRecord> previous,
@@ -7147,6 +7542,10 @@ void maybe_commit_quest_projection()
     const QuestProjectionClientResult result =
         g_state.quest_projection_client.commit();
     if (result != QuestProjectionClientResult::Ready) {
+        LOG_ERROR("quest projection commit deferred/failed state=%u result=%u worldReady=%u",
+                  static_cast<unsigned>(g_state.quest_projection_client.state()),
+                  static_cast<unsigned>(result),
+                  g_state.world_snapshot_committed ? 1u : 0u);
         if (result == QuestProjectionClientResult::Gap ||
             result == QuestProjectionClientResult::Invalid ||
             result == QuestProjectionClientResult::ApplyFailed ||
@@ -7235,12 +7634,19 @@ void observe_authoritative_world()
         // sample could demote original static objects into new dynamic IDs.
         g_state.static_world_identity_stable = false;
         g_state.static_world_stability.reset();
-        LOG_WARNING("static world post-load identity sample rejected map=%s error=%u; retaining prior committed identities",
-                    map_namespace.c_str(),
-                    static_cast<unsigned>(identity_match.error));
+        if (g_state.static_world_identity_last_error != identity_match.error ||
+            g_state.static_world_identity_error_map != map_namespace) {
+            LOG_WARNING("static world post-load identity sample rejected map=%s error=%u; retaining prior committed identities",
+                        map_namespace.c_str(),
+                        static_cast<unsigned>(identity_match.error));
+            g_state.static_world_identity_last_error = identity_match.error;
+            g_state.static_world_identity_error_map = map_namespace;
+        }
         return;
     }
     else {
+        g_state.static_world_identity_last_error = StaticWorldIndexError::None;
+        g_state.static_world_identity_error_map.clear();
         g_state.static_world_ids_by_post_load_index =
             identity_match.ids_by_post_load_index;
         g_state.static_world_identity_stable =
@@ -10327,18 +10733,65 @@ bool bind_local_player_vehicle()
 
     const auto existing = g_state.player_slots.current(index);
     if (existing && g_state.player_slots.is_bound(index)) {
+        if (existing->owner_entity_id != g_state.local_entity_id) {
+            LOG_ERROR("local client player slot is owned by another entity local=%u owner=%u",
+                      g_state.local_entity_id, existing->owner_entity_id);
+            return false;
+        }
         ObjId bound_object_id = kInvalidObjId;
         EntityGeneration bound_generation = kInvalidEntityGeneration;
-        if (existing->owner_entity_id == g_state.local_entity_id &&
-            g_state.entities.lookup_obj_id(g_state.local_entity_id,
-                                           bound_object_id, bound_generation) &&
+        const bool has_binding = g_state.entities.lookup_obj_id(
+            g_state.local_entity_id, bound_object_id, bound_generation);
+        if (has_binding &&
             bound_object_id == vehicle->GetId() &&
             bound_generation == existing->generation) {
             g_state.local_player_vehicle_obj_id = vehicle->GetId();
             return true;
         }
-        LOG_ERROR("local client player slot has inconsistent native vehicle binding");
-        return false;
+        if (has_binding && bound_generation != existing->generation) {
+            LOG_ERROR("local client player slot generation mismatch entity=%u slot=%u registry=%u",
+                      g_state.local_entity_id,
+                      static_cast<unsigned>(existing->generation),
+                      static_cast<unsigned>(bound_generation));
+            return false;
+        }
+        // LoadMap replaces the engine-owned Player vehicle while the network
+        // player slot and its generation remain valid. Explicitly retire the
+        // stale map-local ObjId, then bind the new native vehicle. This is the
+        // only permitted same-generation rebind path.
+        if (has_binding &&
+            g_state.entities.unbind_net_id(g_state.local_entity_id) !=
+                EntityRegistryUnbindResult::Removed) {
+            LOG_ERROR("local client map-transition unbind failed entity=%u oldObjId=%d",
+                      g_state.local_entity_id, bound_object_id);
+            return false;
+        }
+        const EntityRegistryBindResult rebound = g_state.entities.bind(
+            g_state.local_entity_id, vehicle->GetId(), existing->generation);
+        if (rebound != EntityRegistryBindResult::Inserted &&
+            rebound != EntityRegistryBindResult::AlreadyBound) {
+            LOG_ERROR("local client map-transition rebind failed entity=%u oldObjId=%d newObjId=%d code=%u",
+                      g_state.local_entity_id, bound_object_id, vehicle->GetId(),
+                      static_cast<unsigned>(rebound));
+            return false;
+        }
+        g_state.local_player_vehicle_obj_id = vehicle->GetId();
+        // Every native attachment pointer and path belongs to the replaced
+        // map-local vehicle.  Do not let a cached lobby weapon identity cross
+        // the LoadMap boundary; the next native weapon callback resolves the
+        // selected gun from the new graph.
+        g_state.local_weapon_gun = {};
+        g_state.has_local_weapon_gun = false;
+        g_state.local_weapon_gun_id = 0;
+        g_state.local_weapon_trigger_held = false;
+        g_state.has_local_weapon_aim = false;
+        g_state.local_weapon_target_obj_id = kInvalidObjId;
+        g_state.local_weapon_target_entity_id = kInvalidNetId;
+        LOG_INFO("MP client rebound native vehicle after map transition entity=%u generation=%u oldObjId=%d newObjId=%d",
+                 g_state.local_entity_id,
+                 static_cast<unsigned>(existing->generation),
+                 bound_object_id, vehicle->GetId());
+        return true;
     }
 
     const auto lease = g_state.player_slots.reserve(index, g_state.local_entity_id);
@@ -10516,8 +10969,25 @@ void apply_belong_to_vehicle_tree(hta::ai::Vehicle& vehicle,
                                   const std::int32_t belong)
 {
     std::vector<hta::ai::Obj*> visited;
-    visited.reserve(16);
+    visited.reserve(kMaxVehicleDescriptorNodes +
+                    kMaxVehicleDescriptorCargoObjects);
     apply_belong_to_object_tree(vehicle, belong, visited);
+    const std::array<hta::ai::GeomRepository*, 2> repositories{{
+        vehicle.GetRepository(), vehicle.GetGroundRepository()}};
+    for (hta::ai::GeomRepository* const repository : repositories) {
+        if (repository == nullptr)
+            continue;
+        for (std::size_t index = 0; index < repository->m_slots.size();
+             ++index) {
+            const hta::ai::GeomRepositoryItem item = repository->GetItem(
+                static_cast<std::int32_t>(index));
+            hta::ai::Obj* const object =
+                item.IsValid() && !item.bIsResourceItem()
+                    ? item.GetObj() : nullptr;
+            if (object != nullptr)
+                apply_belong_to_object_tree(*object, belong, visited);
+        }
+    }
 }
 
 bool choose_host_relative_spawn(const PeerController& controller,
@@ -10651,6 +11121,10 @@ bool activate_host_remote_vehicle(PeerController& controller,
 
 hta::ai::Vehicle* create_host_remote_vehicle(PeerController& controller)
 {
+    const MatchState match_state = g_state.match.state();
+    if (match_state != MatchState::Synchronizing &&
+        match_state != MatchState::Playing)
+        return nullptr;
     const bool has_rich_descriptor = controller.has_descriptor &&
         controller.descriptor.prototype_id >= 0;
     if (controller.host_vehicle_active)
@@ -10778,7 +11252,10 @@ hta::ai::Vehicle* create_host_remote_vehicle(PeerController& controller)
         !validate_vehicle_descriptor_structure(
             *vehicle, *descriptor_to_apply, "host dynamic player")) {
         controller.spawn_attempt.reject_permanently();
-        server->m_pObjects->AddObjIdToRemove(object_id);
+        // PostLoad has already linked this graph into ODE/collision cells.
+        // Retire it in place; asynchronous removal here leaves null cell
+        // entries until purge and crashes the native collision walker.
+        retire_network_vehicle(*server->m_pObjects, *object, *vehicle, true);
         controller.vehicle_obj_id = kInvalidObjId;
         controller.host_vehicle_active = false;
         LOG_ERROR("host vehicle descriptor structural validation failed entity=%u generation=%u objId=%d",
@@ -10984,7 +11461,7 @@ bool drive_network_gun(hta::ai::Vehicle& vehicle, WeaponCommand& command,
         gun->LookAtPoint(to_engine_vector(command.aim_point), command.aim_speed);
     g_replaying_network_fire = true;
     g_active_host_weapon_command = &command;
-    const bool accepted = gun->Fire(command.trigger_held);
+    (void)gun->Fire(command.trigger_held);
     g_active_host_weapon_command = nullptr;
     g_replaying_network_fire = false;
     if (!g_state.combat_autotest_scenario.empty() &&
@@ -10997,7 +11474,10 @@ bool drive_network_gun(hta::ai::Vehicle& vehicle, WeaponCommand& command,
                  resolved_target_object != nullptr ? resolved_target_object->GetId()
                                                    : kInvalidObjId);
     }
-    return accepted;
+    // Gun::Fire reports whether this particular native update emitted a shot.
+    // A false result is normal between rounds, while reloading, and on trigger
+    // release; the network command was still applied successfully.
+    return true;
 }
 
 bool apply_network_weapon_ammo(hta::ai::Vehicle& vehicle,
@@ -11317,23 +11797,52 @@ bool decode_descriptor_modifier_value(const VehicleModifier& modifier,
     return false;
 }
 
+hta::ai::VehiclePart* resolve_descriptor_part(
+    hta::ai::Vehicle& vehicle,
+    const std::vector<VehicleDescriptorNode>& nodes,
+    const VehicleDescriptorNode& node);
+
 bool apply_descriptor_state(hta::ai::Obj& object,
                             const std::vector<VehicleAffix>& prefixes,
                             const std::vector<VehicleAffix>& suffixes,
                             const std::vector<VehicleModifier>& modifiers,
                             const char* const context)
 {
-    // Legacy pre-archive helper retained for old non-rich callers only.  It
-    // has no runtime caller: successful native archive restoration is the
-    // sole affix/modifier state path and must never flow through this helper.
+    // Obj::LoadFromXML treats AffixesWasApplied as a policy switch: depending
+    // on the source save it can restore only the affix IDs or omit an affix
+    // whose resource-name lookup differs.  The typed descriptor is therefore
+    // the authoritative, idempotent supplement to native XML.  Existing exact
+    // state is retained; only missing state crosses ApplyAffix/ApplyModifier.
     hta::ai::CServer* const server = hta::ai::CServer::Instance();
     hta::ai::AffixManager* const manager =
         server != nullptr ? server->GetAffixManager() : nullptr;
-    const auto apply_affixes = [&](const std::vector<VehicleAffix>& affixes) {
+    const auto apply_affixes = [&](const std::vector<VehicleAffix>& affixes,
+                                   auto& applied_ids,
+                                   const hta::ai::AffixType expected_type) {
         for (const VehicleAffix& descriptor : affixes) {
             hta::ai::Affix* const affix = manager != nullptr
                 ? manager->GetAffixById(descriptor.id) : nullptr;
-            if (affix == nullptr || !object.ApplyAffix(affix)) {
+            const hta::ai::AffixGroup* const group =
+                affix != nullptr ? affix->GetAffixGroup() : nullptr;
+            if (affix == nullptr || group == nullptr ||
+                affix->GetName().c_str() == nullptr ||
+                group->GetName().c_str() == nullptr ||
+                descriptor.name != affix->GetName().c_str() ||
+                descriptor.target_resource_id != group->GetTargetResourceId() ||
+                descriptor.target_resource_name != group->GetName().c_str() ||
+                affix->GetAffixType() != expected_type) {
+                LOG_ERROR("%s descriptor affix identity mismatch objId=%d affix=%d name=%s target=%d/%s",
+                          context, object.GetId(), descriptor.id,
+                          descriptor.name.c_str(), descriptor.target_resource_id,
+                          descriptor.target_resource_name.c_str());
+                return false;
+            }
+            if (std::find(applied_ids.begin(), applied_ids.end(), descriptor.id) !=
+                applied_ids.end())
+                continue;
+            if (!object.ApplyAffix(affix) ||
+                std::find(applied_ids.begin(), applied_ids.end(), descriptor.id) ==
+                    applied_ids.end()) {
                 LOG_ERROR("%s descriptor affix apply failed objId=%d affix=%d",
                           context, object.GetId(), descriptor.id);
                 return false;
@@ -11341,24 +11850,42 @@ bool apply_descriptor_state(hta::ai::Obj& object,
         }
         return true;
     };
-    if (!apply_affixes(prefixes) || !apply_affixes(suffixes))
+    if (!apply_affixes(prefixes, object.m_appliedPrefixIds,
+                       hta::ai::AFFIXTYPE_PREFIX) ||
+        !apply_affixes(suffixes, object.m_appliedSuffixIds,
+                       hta::ai::AFFIXTYPE_SUFFIX))
         return false;
     for (const VehicleModifier& descriptor : modifiers) {
+        const auto exact = std::find_if(
+            object.m_modifiers.begin(), object.m_modifiers.end(),
+            [&descriptor](const hta::ai::Modifier& candidate) {
+                VehicleModifier native{};
+                capture_native_modifier(candidate, native);
+                return native == descriptor;
+            });
+        if (exact != object.m_modifiers.end())
+            continue;
         hta::m3d::AIParam value{};
         if (!decode_descriptor_modifier_value(descriptor, value)) {
             LOG_ERROR("%s descriptor modifier payload invalid objId=%d property=%s",
                       context, object.GetId(), descriptor.property_name.c_str());
             return false;
         }
-        hta::ai::Modifier native{};
-        native.m_timeOut = descriptor.timeout;
-        native.m_Operation = static_cast<hta::ai::eModifierOperation>(
+        std::aligned_storage_t<sizeof(hta::ai::Modifier),
+                               alignof(hta::ai::Modifier)> storage{};
+        hta::ai::Modifier* const native =
+            reinterpret_cast<hta::ai::Modifier*>(&storage);
+        ::CallCtor<0x007DEE40, hta::ai::Modifier>(native);
+        native->m_timeOut = descriptor.timeout;
+        native->m_Operation = static_cast<hta::ai::eModifierOperation>(
             static_cast<std::uint8_t>(descriptor.operation));
-        native.m_magicPrototypeId = descriptor.magic_prototype_id;
-        native.m_PropertyName = hta::CStr(descriptor.property_name.c_str());
-        native.m_SenderID = descriptor.sender_id;
-        native.m_Value = value;
-        if (!object.ApplyModifier(native)) {
+        native->m_magicPrototypeId = descriptor.magic_prototype_id;
+        native->m_PropertyName = hta::CStr(descriptor.property_name.c_str());
+        native->m_SenderID = descriptor.sender_id;
+        native->m_Value = value;
+        const bool applied = object.ApplyModifier(*native);
+        ::CallDtor<0x007DEF20, hta::ai::Modifier>(native);
+        if (!applied) {
             LOG_ERROR("%s descriptor modifier apply failed objId=%d property=%s",
                       context, object.GetId(), descriptor.property_name.c_str());
             return false;
@@ -11464,12 +11991,358 @@ bool collect_native_part_bindings(
     return true;
 }
 
+bool reconcile_vehicle_descriptor_state(hta::ai::Vehicle& vehicle,
+                                        const VehicleDescriptor& descriptor,
+                                        const char* const context)
+{
+    if (!apply_descriptor_state(vehicle, descriptor.prefixes,
+                                descriptor.suffixes, descriptor.modifiers,
+                                context))
+        return false;
+    for (const VehicleDescriptorNode& node : descriptor.attachments) {
+        hta::ai::VehiclePart* const part = resolve_descriptor_part(
+            vehicle, descriptor.attachments, node);
+        if (part == nullptr || part->GetPrototypeId() != node.prototype_id ||
+            native_prototype_name(*part) != node.prototype_name) {
+            LOG_ERROR("%s descriptor state target missing objId=%d slot=%s expected=%d/%s",
+                      context, vehicle.GetId(), node.slot.c_str(),
+                      node.prototype_id, node.prototype_name.c_str());
+            return false;
+        }
+        if (!apply_descriptor_state(*part, node.prefixes, node.suffixes,
+                                    node.modifiers, context))
+            return false;
+    }
+    return true;
+}
+
+bool normalize_native_vehicle_attachment_roots(
+    hta::ai::Vehicle& vehicle, const VehicleDescriptor& descriptor,
+    const char* const context)
+{
+    hta::ai::CServer* const server = hta::ai::CServer::Instance();
+    if (server == nullptr || server->m_pObjects == nullptr) {
+        LOG_ERROR("%s attachment-root object container unavailable objId=%d",
+                  context, vehicle.GetId());
+        return false;
+    }
+    // m_bNeedPostLoad is the authoritative transaction boundary here.
+    // Freshly created Vehicles can retain their prototype's
+    // bIsUpdatingByODE policy bit before _InternalPostLoad has created any
+    // ODE body, so that bit cannot distinguish a suspended graph from a live
+    // one.
+    if (!vehicle.m_bNeedPostLoad) {
+        LOG_ERROR("%s attachment-root normalization requires suspended vehicle objId=%d",
+                  context, vehicle.GetId());
+        return false;
+    }
+
+    const ObjId object_id = vehicle.GetId();
+    for (const VehicleDescriptorNode& requested : descriptor.attachments) {
+        if (requested.parent_instance_id != 0)
+            continue;
+
+        hta::ai::Obj* const object =
+            server->m_pObjects->GetEntityByObjId(object_id);
+        hta::ai::Vehicle* const current = vehicle_from_object(object);
+        if (current != &vehicle || !current->m_bNeedPostLoad) {
+            LOG_ERROR("%s attachment-root ownership/suspension check failed objId=%d slot=%s",
+                      context, object_id, requested.slot.c_str());
+            return false;
+        }
+
+        const hta::CStr slot(requested.slot.c_str());
+        hta::ai::VehiclePart* const existing = current->GetPartByName(slot);
+        if (existing != nullptr &&
+            existing->GetPrototypeId() == requested.prototype_id &&
+            native_prototype_name(*existing) == requested.prototype_name)
+            continue;
+
+        // CreateNewObjectWithSuspendedPostLoad builds the base prototype's
+        // stock attachment graph.  NPC generators are allowed to replace a
+        // root part afterwards, so that stock graph is not necessarily the
+        // graph captured by the host.  SetNewPart is the engine's native,
+        // ownership-aware boundary for making that exact replacement before
+        // PostLoad.  Its compound children are then checked by the full
+        // archive preflight below; no mismatch is hidden or guessed.
+        if (!current->SetNewPart(slot,
+                                 hta::CStr(requested.prototype_name.c_str()))) {
+            LOG_ERROR("%s native attachment-root replacement failed objId=%d slot=%s expected=%d/%s actual=%d/%s",
+                      context, object_id, requested.slot.c_str(),
+                      requested.prototype_id, requested.prototype_name.c_str(),
+                      existing != nullptr ? existing->GetPrototypeId() : -1,
+                      existing != nullptr ? native_prototype_name(*existing).c_str()
+                                          : "<missing>");
+            return false;
+        }
+
+        // SetNewPart creates/removes native objects.  Resolve the vehicle and
+        // the part again before dereferencing either of them.
+        hta::ai::Obj* const rebound_object =
+            server->m_pObjects->GetEntityByObjId(object_id);
+        hta::ai::Vehicle* const rebound = vehicle_from_object(rebound_object);
+        hta::ai::VehiclePart* const replacement =
+            rebound != nullptr ? rebound->GetPartByName(slot) : nullptr;
+        if (rebound != &vehicle || !rebound->m_bNeedPostLoad ||
+            replacement == nullptr ||
+            replacement->GetPrototypeId() != requested.prototype_id ||
+            native_prototype_name(*replacement) != requested.prototype_name) {
+            LOG_ERROR("%s attachment-root replacement verification failed objId=%d slot=%s expected=%d/%s actual=%d/%s",
+                      context, object_id, requested.slot.c_str(),
+                      requested.prototype_id, requested.prototype_name.c_str(),
+                      replacement != nullptr ? replacement->GetPrototypeId() : -1,
+                      replacement != nullptr
+                          ? native_prototype_name(*replacement).c_str()
+                          : "<missing>");
+            return false;
+        }
+    }
+    return true;
+}
+
 hta::ai::GeomRepository* cargo_repository_for(
     hta::ai::Vehicle& vehicle, const VehicleCargoRepository repository)
 {
     return repository == VehicleCargoRepository::Ground
         ? vehicle.GetGroundRepository()
         : vehicle.GetRepository();
+}
+
+struct VehicleCargoRestoreTransaction {
+    hta::ai::ObjContainer& objects;
+    std::vector<ObjId> created_object_ids;
+    std::vector<std::pair<hta::ai::GeomRepository*, ObjId>> placed_objects;
+    bool committed = false;
+
+    ~VehicleCargoRestoreTransaction()
+    {
+        if (committed)
+            return;
+        for (auto iterator = placed_objects.rbegin();
+             iterator != placed_objects.rend(); ++iterator) {
+            if (iterator->first != nullptr)
+                (void)iterator->first->GiveUpThingByObjId(iterator->second);
+        }
+        for (auto iterator = created_object_ids.rbegin();
+             iterator != created_object_ids.rend(); ++iterator) {
+            if (objects.GetEntityByObjId(*iterator) != nullptr)
+                objects.AddObjIdToRemove(*iterator);
+        }
+    }
+};
+
+bool clear_suspended_vehicle_repositories(hta::ai::Vehicle& vehicle,
+                                          const char* const context)
+{
+    hta::ai::CServer* const server = hta::ai::CServer::Instance();
+    if (server == nullptr || server->m_pObjects == nullptr ||
+        !vehicle.m_bNeedPostLoad)
+        return false;
+    const std::array<hta::ai::GeomRepository*, 2> repositories{{
+        vehicle.GetRepository(), vehicle.GetGroundRepository()}};
+    for (std::size_t repository_index = 0;
+         repository_index < repositories.size(); ++repository_index) {
+        hta::ai::GeomRepository* const repository =
+            repositories[repository_index];
+        if (repository == nullptr) {
+            LOG_ERROR("%s suspended repository unavailable objId=%d repo=%u",
+                      context, vehicle.GetId(),
+                      static_cast<unsigned>(repository_index));
+            return false;
+        }
+        std::vector<ObjId> detached_objects;
+        detached_objects.reserve(repository->m_slots.size());
+        for (std::size_t slot = 0; slot < repository->m_slots.size(); ++slot) {
+            const hta::ai::GeomRepositoryItem item = repository->GetItem(
+                static_cast<std::int32_t>(slot));
+            if (!item.IsValid() || item.bIsResourceItem())
+                continue;
+            hta::ai::Obj* const object = item.GetObj();
+            if (object == nullptr || object->GetParentRepository() != repository) {
+                LOG_ERROR("%s suspended repository has invalid object binding vehicle=%d repo=%u slot=%u",
+                          context, vehicle.GetId(),
+                          static_cast<unsigned>(repository_index),
+                          static_cast<unsigned>(slot));
+                return false;
+            }
+            detached_objects.push_back(object->GetId());
+        }
+        // LoRA/game.pdb: Clear(false) invokes GeomRepositoryItem::Clear(false)
+        // for every slot, which only detaches object cargo from the repository;
+        // unlike Clear(true), it does not invoke the object's visual-world
+        // transition.  This is the safe suspended-graph normalization seam.
+        repository->Clear(false);
+        if (!repository->IsEmpty()) {
+            LOG_ERROR("%s suspended repository clear failed vehicle=%d repo=%u",
+                      context, vehicle.GetId(),
+                      static_cast<unsigned>(repository_index));
+            return false;
+        }
+        for (const ObjId object_id : detached_objects)
+            if (server->m_pObjects->GetEntityByObjId(object_id) != nullptr)
+                server->m_pObjects->AddObjIdToRemove(object_id);
+    }
+    return true;
+}
+
+hta::ai::Obj* find_named_child(hta::ai::Obj& parent,
+                               const std::string& name);
+
+hta::ai::Obj* restore_vehicle_cargo_node(
+    const VehicleDescriptorNode& node, hta::ai::ObjContainer& objects,
+    VehicleCargoRestoreTransaction& transaction, const char* const context,
+    const std::size_t depth)
+{
+    if (depth > kMaxVehicleDescriptorCargoDepth ||
+        node.kind != VehicleDescriptorNodeKind::Container ||
+        node.prototype_id < 0 || node.prototype_name.empty() ||
+        node.slot.empty()) {
+        LOG_ERROR("%s cargo descriptor invalid depth=%u prototype=%d slot=%s",
+                  context, static_cast<unsigned>(depth), node.prototype_id,
+                  node.slot.empty() ? "<empty>" : node.slot.c_str());
+        return nullptr;
+    }
+    const ObjId object_id = objects.CreateNewObjectWithSuspendedPostLoad(
+        node.prototype_id, node.slot.c_str(), -1, -1);
+    if (object_id < 0) {
+        LOG_ERROR("%s cargo creation failed depth=%u prototype=%d/%s slot=%s",
+                  context, static_cast<unsigned>(depth), node.prototype_id,
+                  node.prototype_name.c_str(), node.slot.c_str());
+        return nullptr;
+    }
+    transaction.created_object_ids.push_back(object_id);
+    hta::ai::Obj* const object = objects.GetEntityByObjId(object_id);
+    if (object == nullptr || !object->m_bNeedPostLoad ||
+        object->GetPrototypeId() != node.prototype_id ||
+        native_prototype_name(*object) != node.prototype_name) {
+        LOG_ERROR("%s cargo prototype mismatch objId=%d expected=%d/%s actual=%d/%s suspended=%u",
+                  context, object_id, node.prototype_id,
+                  node.prototype_name.c_str(),
+                  object != nullptr ? object->GetPrototypeId() : -1,
+                  object != nullptr ? native_prototype_name(*object).c_str()
+                                    : "<missing>",
+                  object != nullptr && object->m_bNeedPostLoad ? 1u : 0u);
+        return nullptr;
+    }
+    if (!apply_descriptor_state(*object, node.prefixes, node.suffixes,
+                                node.modifiers, context))
+        return nullptr;
+    for (const VehicleDescriptorNode& child_node : node.cargo_objects) {
+        hta::ai::Obj* const child = restore_vehicle_cargo_node(
+            child_node, objects, transaction, context, depth + 1);
+        if (child == nullptr)
+            return nullptr;
+        object->AddChild(child);
+        if (find_named_child(*object, child_node.slot) != child) {
+            LOG_ERROR("%s cargo child link failed parent=%d child=%d slot=%s",
+                      context, object_id, child->GetId(),
+                      child_node.slot.c_str());
+            return nullptr;
+        }
+    }
+    return object;
+}
+
+bool restore_vehicle_repository_objects(
+    hta::ai::Vehicle& vehicle, const VehicleDescriptor& descriptor,
+    const char* const context)
+{
+    if (descriptor.cargo_objects.empty())
+        return true;
+    hta::ai::CServer* const server = hta::ai::CServer::Instance();
+    if (server == nullptr || server->m_pObjects == nullptr)
+        return false;
+    VehicleCargoRestoreTransaction transaction{*server->m_pObjects};
+    for (const VehicleDescriptorNode& node : descriptor.cargo_objects) {
+        hta::ai::GeomRepository* const repository = cargo_repository_for(
+            vehicle, node.cargo_placement.repository);
+        if (repository == nullptr) {
+            LOG_ERROR("%s cargo repository unavailable repo=%u prototype=%d",
+                      context,
+                      static_cast<unsigned>(node.cargo_placement.repository),
+                      node.prototype_id);
+            return false;
+        }
+        hta::ai::Obj* const object = restore_vehicle_cargo_node(
+            node, *server->m_pObjects, transaction, context, 0);
+        if (object == nullptr)
+            return false;
+        const hta::PointBase<int> place{node.cargo_placement.x,
+                                        node.cargo_placement.y};
+        std::aligned_storage_t<sizeof(hta::ai::GeomRepositoryItem),
+                               alignof(hta::ai::GeomRepositoryItem)> storage{};
+        hta::ai::GeomRepositoryItem* const item =
+            reinterpret_cast<hta::ai::GeomRepositoryItem*>(&storage);
+        ::CallCtor<0x006CDBA0, hta::ai::GeomRepositoryItem>(item,
+                                                            object->GetId());
+        std::int32_t accepted = 0;
+        const std::int32_t can_add = item->IsValid()
+            ? repository->CanAddThingToPlace(*item, place, &accepted) : 0;
+        const bool placed_exactly = item->IsValid() &&
+            repository->AddThingToPlace(*item, place);
+        // GeomRepository::LoadFromXML uses the same policy: saved PosX/PosY
+        // is preferred, but stale/overlapping generator layout is fed through
+        // native AddThing so the repository can deterministically repack it.
+        const bool added = placed_exactly ||
+            (item->IsValid() && repository->AddThing(*item, 0));
+        if (!added) {
+            const hta::PointBase<int> repository_size =
+                repository->GetGeomSize();
+            const hta::PointBase<int> item_size = item->GetGeomSize();
+            LOG_ERROR("%s cargo placement failed objId=%d prototype=%d repo=%u place=%d,%d canAdd=%d accepted=%d repoSize=%d,%d itemSize=%d,%d slots=%u",
+                      context, object->GetId(),
+                      object->GetPrototypeId(),
+                      static_cast<unsigned>(node.cargo_placement.repository),
+                      node.cargo_placement.x, node.cargo_placement.y,
+                      can_add, accepted, repository_size.x, repository_size.y,
+                      item_size.x, item_size.y,
+                      static_cast<unsigned>(repository->m_slots.size()));
+            for (std::size_t slot_index = 0;
+                 slot_index < repository->m_slots.size(); ++slot_index) {
+                const hta::ai::GeomRepositoryItem occupied =
+                    repository->GetItem(static_cast<std::int32_t>(slot_index));
+                if (!occupied.IsValid())
+                    continue;
+                const hta::PointBase<int> occupied_size =
+                    occupied.GetGeomSize();
+                LOG_ERROR("%s cargo occupied slot=%u type=%u resource=%d objId=%d amount=%u origin=%d,%d size=%d,%d",
+                          context, static_cast<unsigned>(slot_index),
+                          occupied.bIsResourceItem() ? 0u : 1u,
+                          occupied.GetResourceId(), occupied.GetObjId(),
+                          occupied.GetAmount(), occupied.m_origin.x,
+                          occupied.m_origin.y, occupied_size.x,
+                          occupied_size.y);
+            }
+            item->~GeomRepositoryItem();
+            return false;
+        }
+        item->~GeomRepositoryItem();
+        transaction.placed_objects.emplace_back(repository, object->GetId());
+        const std::int32_t slot = repository->GetSlotByObjId(object->GetId());
+        if (slot < 0) {
+            LOG_ERROR("%s cargo placement verification failed objId=%d repo=%u preferredPlace=%d,%d slot=%d",
+                      context, object->GetId(),
+                      static_cast<unsigned>(node.cargo_placement.repository),
+                      node.cargo_placement.x, node.cargo_placement.y, slot);
+            return false;
+        }
+        if (!placed_exactly) {
+            LOG_INFO("%s cargo native repack accepted objId=%d prototype=%d repo=%u preferredPlace=%d,%d slot=%d",
+                     context, object->GetId(), object->GetPrototypeId(),
+                     static_cast<unsigned>(node.cargo_placement.repository),
+                     node.cargo_placement.x, node.cargo_placement.y, slot);
+        }
+        const hta::ai::GeomRepositoryItem placed = repository->GetItem(slot);
+        if (!placed.IsValid() || placed.GetObj() != object) {
+            LOG_ERROR("%s cargo placement verification failed objId=%d repo=%u place=%d,%d slot=%d",
+                      context, object->GetId(),
+                      static_cast<unsigned>(node.cargo_placement.repository),
+                      node.cargo_placement.x, node.cargo_placement.y, slot);
+            return false;
+        }
+    }
+    transaction.committed = true;
+    return true;
 }
 
 bool restore_vehicle_repository_resources(
@@ -11479,8 +12352,13 @@ bool restore_vehicle_repository_resources(
     for (const VehicleCargoStack& stack : descriptor.cargo_stacks) {
         hta::ai::GeomRepository* const repository = cargo_repository_for(
             vehicle, stack.placement.repository);
-        if (repository == nullptr)
+        if (repository == nullptr) {
+            LOG_ERROR("%s repository missing repo=%u resource=%d",
+                      context,
+                      static_cast<unsigned>(stack.placement.repository),
+                      stack.resource_id);
             return false;
+        }
         const hta::PointBase<int> place{stack.placement.x,
                                         stack.placement.y};
         // The checked-in HTA headers expose this constructor but the native
@@ -11494,8 +12372,10 @@ bool restore_vehicle_repository_resources(
             reinterpret_cast<hta::ai::GeomRepositoryItem*>(&storage);
         ::CallCtor<0x006CD0D0, hta::ai::GeomRepositoryItem>(
             item, stack.resource_id, stack.amount);
-        const bool added = item->IsValid() && repository->AddThingToPlace(
-            *item, place);
+        const bool placed_exactly = item->IsValid() &&
+            repository->AddThingToPlace(*item, place);
+        const bool added = placed_exactly ||
+            (item->IsValid() && repository->AddThing(*item, 0));
         item->~GeomRepositoryItem();
         if (!added) {
             LOG_ERROR("%s repository resource restore failed resource=%d amount=%u repo=%u place=%d,%d",
@@ -11504,24 +12384,11 @@ bool restore_vehicle_repository_resources(
                       stack.placement.x, stack.placement.y);
             return false;
         }
-        const std::int32_t slot = repository->GetSlotByPlace(place);
-        if (slot < 0) {
-            LOG_ERROR("%s repository resource placement missing resource=%d repo=%u place=%d,%d",
-                      context, stack.resource_id,
-                      static_cast<unsigned>(stack.placement.repository),
-                      stack.placement.x, stack.placement.y);
-            return false;
-        }
-        const hta::ai::GeomRepositoryItem placed = repository->GetItem(slot);
-        if (!placed.IsValid() || !placed.bIsResourceItem() ||
-            placed.GetResourceId() != stack.resource_id ||
-            placed.GetAmount() != stack.amount) {
-            LOG_ERROR("%s repository resource structural mismatch resource=%d repo=%u place=%d,%d",
-                      context, stack.resource_id,
-                      static_cast<unsigned>(stack.placement.repository),
-                      stack.placement.x, stack.placement.y);
-            return false;
-        }
+        if (!placed_exactly)
+            LOG_INFO("%s repository resource accepted by native repack resource=%d amount=%u repo=%u preferredPlace=%d,%d",
+                     context, stack.resource_id, stack.amount,
+                     static_cast<unsigned>(stack.placement.repository),
+                     stack.placement.x, stack.placement.y);
     }
     return true;
 }
@@ -11530,29 +12397,25 @@ bool validate_vehicle_repository_resources(
     hta::ai::Vehicle& vehicle, const VehicleDescriptor& descriptor,
     const char* const context)
 {
-    std::size_t expected_by_repository[2]{};
+    struct ResourceTotal {
+        std::int32_t resource_id = -1;
+        std::uint64_t amount = 0;
+    };
+    std::array<std::vector<ResourceTotal>, 2> expected_by_repository;
     for (const VehicleCargoStack& stack : descriptor.cargo_stacks) {
-        ++expected_by_repository[static_cast<unsigned>(
-            stack.placement.repository)];
-        hta::ai::GeomRepository* const repository = cargo_repository_for(
-            vehicle, stack.placement.repository);
-        if (repository == nullptr)
+        const unsigned repository_index = static_cast<unsigned>(
+            stack.placement.repository);
+        if (repository_index >= expected_by_repository.size())
             return false;
-        const hta::PointBase<int> place{stack.placement.x,
-                                        stack.placement.y};
-        const std::int32_t slot = repository->GetSlotByPlace(place);
-        if (slot < 0)
-            return false;
-        const hta::ai::GeomRepositoryItem placed = repository->GetItem(slot);
-        if (!placed.IsValid() || !placed.bIsResourceItem() ||
-            placed.GetResourceId() != stack.resource_id ||
-            placed.GetAmount() != stack.amount) {
-            LOG_ERROR("%s repository validation mismatch resource=%d repo=%u place=%d,%d",
-                      context, stack.resource_id,
-                      static_cast<unsigned>(stack.placement.repository),
-                      stack.placement.x, stack.placement.y);
-            return false;
-        }
+        auto& expected = expected_by_repository[repository_index];
+        const auto existing = std::find_if(
+            expected.begin(), expected.end(), [&stack](const ResourceTotal& value) {
+                return value.resource_id == stack.resource_id;
+            });
+        if (existing == expected.end())
+            expected.push_back({stack.resource_id, stack.amount});
+        else
+            existing->amount += stack.amount;
     }
     for (unsigned repository_index = 0; repository_index != 2;
          ++repository_index) {
@@ -11560,21 +12423,44 @@ bool validate_vehicle_repository_resources(
             ? VehicleCargoRepository::Main : VehicleCargoRepository::Ground;
         hta::ai::GeomRepository* const repository = cargo_repository_for(
             vehicle, repository_kind);
-        if (repository == nullptr)
+        if (repository == nullptr) {
+            LOG_ERROR("%s repository unavailable repo=%u",
+                      context, repository_index);
             return false;
-        std::size_t actual = 0;
+        }
+        std::vector<ResourceTotal> actual;
         for (std::size_t index = 0; index < repository->m_slots.size();
              ++index) {
             const hta::ai::GeomRepositoryItem item = repository->GetItem(
                 static_cast<std::int32_t>(index));
-            if (item.IsValid() && item.bIsResourceItem())
-                ++actual;
+            if (!item.IsValid() || !item.bIsResourceItem())
+                continue;
+            const auto existing = std::find_if(
+                actual.begin(), actual.end(), [&item](const ResourceTotal& value) {
+                    return value.resource_id == item.GetResourceId();
+                });
+            if (existing == actual.end())
+                actual.push_back({item.GetResourceId(), item.GetAmount()});
+            else
+                existing->amount += item.GetAmount();
         }
-        if (actual != expected_by_repository[repository_index]) {
-            LOG_ERROR("%s repository resource count mismatch repo=%u expected=%u actual=%u",
+        const auto& expected = expected_by_repository[repository_index];
+        const bool exact_totals = expected.size() == actual.size() &&
+            std::all_of(expected.begin(), expected.end(),
+                [&actual](const ResourceTotal& value) {
+                    const auto matching = std::find_if(
+                        actual.begin(), actual.end(),
+                        [&value](const ResourceTotal& candidate) {
+                            return candidate.resource_id == value.resource_id;
+                        });
+                    return matching != actual.end() &&
+                        matching->amount == value.amount;
+                });
+        if (!exact_totals) {
+            LOG_ERROR("%s repository resource totals mismatch repo=%u expectedKinds=%u actualKinds=%u",
                       context, repository_index,
-                      static_cast<unsigned>(expected_by_repository[repository_index]),
-                      static_cast<unsigned>(actual));
+                      static_cast<unsigned>(expected.size()),
+                      static_cast<unsigned>(actual.size()));
             return false;
         }
     }
@@ -11592,11 +12478,17 @@ bool validate_native_descriptor_state(
         return std::find(ids.begin(), ids.end(), id) != ids.end();
     };
     for (const VehicleAffix& affix : prefixes)
-        if (!has_affix(object.m_appliedPrefixIds, affix.id))
+        if (!has_affix(object.m_appliedPrefixIds, affix.id)) {
+            LOG_ERROR("%s descriptor prefix missing objId=%d affix=%d",
+                      context, object.GetId(), affix.id);
             return false;
+        }
     for (const VehicleAffix& affix : suffixes)
-        if (!has_affix(object.m_appliedSuffixIds, affix.id))
+        if (!has_affix(object.m_appliedSuffixIds, affix.id)) {
+            LOG_ERROR("%s descriptor suffix missing objId=%d affix=%d",
+                      context, object.GetId(), affix.id);
             return false;
+        }
     for (const VehicleModifier& modifier : modifiers) {
         const auto found = std::find_if(
             object.m_modifiers.begin(), object.m_modifiers.end(),
@@ -11604,10 +12496,13 @@ bool validate_native_descriptor_state(
                 return candidate.m_PropertyName.c_str() != nullptr &&
                     modifier.property_name == candidate.m_PropertyName.c_str();
             });
-        if (found == object.m_modifiers.end())
+        if (found == object.m_modifiers.end()) {
+            LOG_ERROR("%s descriptor modifier missing objId=%d property=%s",
+                      context, object.GetId(),
+                      modifier.property_name.c_str());
             return false;
+        }
     }
-    (void)context;
     return true;
 }
 
@@ -11636,8 +12531,13 @@ bool validate_native_cargo_node(hta::ai::Obj& object,
 {
     if (depth > kMaxVehicleDescriptorCargoDepth ||
         object.GetPrototypeId() != node.prototype_id ||
-        native_prototype_name(object) != node.prototype_name)
+        native_prototype_name(object) != node.prototype_name) {
+        LOG_ERROR("%s cargo node mismatch objId=%d depth=%u expected=%d/%s actual=%d/%s",
+                  context, object.GetId(), static_cast<unsigned>(depth),
+                  node.prototype_id, node.prototype_name.c_str(),
+                  object.GetPrototypeId(), native_prototype_name(object).c_str());
         return false;
+    }
     if (!validate_native_descriptor_state(object, node.prefixes,
                                           node.suffixes, node.modifiers,
                                           context))
@@ -11669,21 +12569,90 @@ bool validate_vehicle_cargo_objects(
     hta::ai::Vehicle& vehicle, const VehicleDescriptor& descriptor,
     const char* const context)
 {
+    std::array<std::vector<ObjId>, 2> validated_roots;
     for (const VehicleDescriptorNode& node : descriptor.cargo_objects) {
+        const unsigned repository_index = static_cast<unsigned>(
+            node.cargo_placement.repository);
+        if (repository_index >= validated_roots.size())
+            return false;
         hta::ai::GeomRepository* const repository = cargo_repository_for(
             vehicle, node.cargo_placement.repository);
+        if (repository == nullptr) {
+            LOG_ERROR("%s cargo repository missing repo=%u place=%d,%d prototype=%d",
+                      context,
+                      static_cast<unsigned>(node.cargo_placement.repository),
+                      node.cargo_placement.x, node.cargo_placement.y,
+                      node.prototype_id);
+            return false;
+        }
+        hta::ai::Obj* object = nullptr;
+        for (std::size_t slot = 0; slot < repository->m_slots.size(); ++slot) {
+            const hta::ai::GeomRepositoryItem item = repository->GetItem(
+                static_cast<std::int32_t>(slot));
+            hta::ai::Obj* const candidate = item.IsValid() &&
+                    !item.bIsResourceItem() ? item.GetObj() : nullptr;
+            if (candidate == nullptr || candidate->bHasParent() ||
+                candidate->GetParentRepository() != repository ||
+                candidate->GetName() == nullptr ||
+                node.slot != candidate->GetName())
+                continue;
+            if (object != nullptr && object != candidate) {
+                LOG_ERROR("%s duplicate cargo identity repo=%u slotName=%s",
+                          context, repository_index, node.slot.c_str());
+                return false;
+            }
+            object = candidate;
+        }
+        if (object == nullptr) {
+            LOG_ERROR("%s cargo object missing repo=%u preferredPlace=%d,%d prototype=%d slotName=%s",
+                      context,
+                      static_cast<unsigned>(node.cargo_placement.repository),
+                      node.cargo_placement.x, node.cargo_placement.y,
+                      node.prototype_id, node.slot.c_str());
+            return false;
+        }
+        auto& roots = validated_roots[repository_index];
+        if (std::find(roots.begin(), roots.end(), object->GetId()) != roots.end()) {
+            LOG_ERROR("%s cargo object matched more than once repo=%u objId=%d",
+                      context, repository_index, object->GetId());
+            return false;
+        }
+        roots.push_back(object->GetId());
+        if (!validate_native_cargo_node(*object, node, context, 0))
+            return false;
+    }
+    for (unsigned repository_index = 0; repository_index != 2;
+         ++repository_index) {
+        const auto repository_kind = repository_index == 0
+            ? VehicleCargoRepository::Main : VehicleCargoRepository::Ground;
+        hta::ai::GeomRepository* const repository = cargo_repository_for(
+            vehicle, repository_kind);
         if (repository == nullptr)
             return false;
-        const hta::PointBase<int> place{node.cargo_placement.x,
-                                        node.cargo_placement.y};
-        const std::int32_t slot = repository->GetSlotByPlace(place);
-        if (slot < 0)
+        std::vector<ObjId> actual_roots;
+        for (std::size_t slot = 0; slot < repository->m_slots.size(); ++slot) {
+            const hta::ai::GeomRepositoryItem item = repository->GetItem(
+                static_cast<std::int32_t>(slot));
+            hta::ai::Obj* const object = item.IsValid() &&
+                    !item.bIsResourceItem() ? item.GetObj() : nullptr;
+            if (object == nullptr || object->bHasParent())
+                continue;
+            if (object->GetParentRepository() != repository) {
+                LOG_ERROR("%s cargo root repository mismatch repo=%u objId=%d",
+                          context, repository_index, object->GetId());
+                return false;
+            }
+            if (std::find(actual_roots.begin(), actual_roots.end(),
+                          object->GetId()) == actual_roots.end())
+                actual_roots.push_back(object->GetId());
+        }
+        if (actual_roots.size() != validated_roots[repository_index].size()) {
+            LOG_ERROR("%s cargo root count mismatch repo=%u expected=%u actual=%u",
+                      context, repository_index,
+                      static_cast<unsigned>(validated_roots[repository_index].size()),
+                      static_cast<unsigned>(actual_roots.size()));
             return false;
-        const hta::ai::GeomRepositoryItem item = repository->GetItem(slot);
-        hta::ai::Obj* const object = item.IsValid() ? item.GetObj() : nullptr;
-        if (object == nullptr || !validate_native_cargo_node(
-                *object, node, context, 0))
-            return false;
+        }
     }
     return true;
 }
@@ -11693,8 +12662,13 @@ bool validate_vehicle_descriptor_structure(
     const char* const context)
 {
     if (vehicle.GetPrototypeId() != descriptor.prototype_id ||
-        native_prototype_name(vehicle) != descriptor.prototype_name)
+        native_prototype_name(vehicle) != descriptor.prototype_name) {
+        LOG_ERROR("%s descriptor root mismatch objId=%d expected=%d/%s actual=%d/%s",
+                  context, vehicle.GetId(), descriptor.prototype_id,
+                  descriptor.prototype_name.c_str(), vehicle.GetPrototypeId(),
+                  native_prototype_name(vehicle).c_str());
         return false;
+    }
     if (!validate_native_descriptor_state(vehicle, descriptor.prefixes,
                                           descriptor.suffixes,
                                           descriptor.modifiers, context))
@@ -11703,21 +12677,39 @@ bool validate_vehicle_descriptor_structure(
         hta::ai::VehiclePart* const part = resolve_descriptor_part(
             vehicle, descriptor.attachments, node);
         if (part == nullptr || part->GetPrototypeId() != node.prototype_id ||
-            native_prototype_name(*part) != node.prototype_name)
+            native_prototype_name(*part) != node.prototype_name) {
+            LOG_ERROR("%s descriptor part mismatch objId=%d slot=%s expected=%d/%s actual=%d/%s",
+                      context, vehicle.GetId(), node.slot.c_str(),
+                      node.prototype_id, node.prototype_name.c_str(),
+                      part != nullptr ? part->GetPrototypeId() : -1,
+                      part != nullptr ? native_prototype_name(*part).c_str()
+                                      : "<missing>");
             return false;
+        }
         if (!validate_native_descriptor_state(*part, node.prefixes,
                                               node.suffixes, node.modifiers,
                                               context))
             return false;
         if (node.gun.present) {
-            if (!part->IsKindOf(hta::ai::Gun::p_classObject))
+            if (!part->IsKindOf(hta::ai::Gun::p_classObject)) {
+                LOG_ERROR("%s descriptor gun class mismatch objId=%d slot=%s",
+                          context, vehicle.GetId(), node.slot.c_str());
                 return false;
+            }
             const auto& gun = static_cast<const hta::ai::Gun&>(*part);
             if (gun.m_curBarrelIndex != node.gun.barrel_index ||
                 gun.GetShellsInCurrentCharge() != node.gun.current_charge ||
                 gun.GetShellsInPool() != node.gun.pool ||
-                gun.m_bIsFiring != node.gun.firing)
+                gun.m_bIsFiring != node.gun.firing) {
+                LOG_ERROR("%s descriptor gun state mismatch objId=%d slot=%s barrel=%d/%d charge=%d/%d pool=%d/%d firing=%u/%u",
+                          context, vehicle.GetId(), node.slot.c_str(),
+                          gun.m_curBarrelIndex, node.gun.barrel_index,
+                          gun.GetShellsInCurrentCharge(), node.gun.current_charge,
+                          gun.GetShellsInPool(), node.gun.pool,
+                          gun.m_bIsFiring ? 1u : 0u,
+                          node.gun.firing ? 1u : 0u);
                 return false;
+            }
         }
     }
     if (!validate_vehicle_repository_resources(vehicle, descriptor, context) ||
@@ -11733,6 +12725,20 @@ bool finalize_native_vehicle_graph(hta::ai::ObjContainer& objects,
     constexpr std::size_t kMaxGraphObjects =
         kMaxVehicleDescriptorNodes + kMaxVehicleDescriptorCargoObjects;
     std::vector<hta::ai::Obj*> pending{&vehicle};
+    const std::array<hta::ai::GeomRepository*, 2> repositories{{
+        vehicle.GetRepository(), vehicle.GetGroundRepository()}};
+    for (hta::ai::GeomRepository* const repository : repositories) {
+        if (repository == nullptr)
+            continue;
+        for (std::size_t index = 0; index < repository->m_slots.size();
+             ++index) {
+            const hta::ai::GeomRepositoryItem item = repository->GetItem(
+                static_cast<std::int32_t>(index));
+            if (item.IsValid() && !item.bIsResourceItem() &&
+                item.GetObj() != nullptr)
+                pending.push_back(item.GetObj());
+        }
+    }
     std::vector<hta::ai::Obj*> visited;
     visited.reserve(kMaxGraphObjects);
     while (!pending.empty()) {
@@ -11787,6 +12793,26 @@ bool apply_vehicle_descriptor_to_inactive_vehicle(
                   static_cast<unsigned>(descriptor.native_structure.size()));
         return false;
     }
+
+    // Validate all untrusted bounds, graph links, resource names and the
+    // native-archive envelope before the first native mutation.  The encoded
+    // bytes are intentionally discarded: restore uses the original archive,
+    // while this pass is the mutation-safety gate.
+    std::vector<Byte> descriptor_validation_wire;
+    const VehicleDescriptorCodecError descriptor_codec_error =
+        encode_vehicle_descriptor(descriptor, descriptor_validation_wire);
+    if (!vehicle_descriptor_codec_succeeded(descriptor_codec_error)) {
+        LOG_ERROR("%s native vehicle descriptor rejected before graph normalization objId=%d codec=%u",
+                  context, vehicle.GetId(),
+                  static_cast<unsigned>(descriptor_codec_error));
+        return false;
+    }
+    if (!normalize_native_vehicle_attachment_roots(vehicle, descriptor,
+                                                   context)) {
+        LOG_ERROR("%s native destination root graph could not be normalized objId=%d",
+                  context, vehicle.GetId());
+        return false;
+    }
     std::vector<VehicleArchiveNameBinding> destination_bindings;
     if (!collect_native_part_bindings(vehicle, destination_bindings)) {
         LOG_ERROR("%s native destination graph could not be enumerated objId=%d",
@@ -11819,10 +12845,24 @@ bool apply_vehicle_descriptor_to_inactive_vehicle(
                   restored.detail.c_str());
         return false;
     }
-    // Native XML is the canonical attachment/affix/modifier/gun state.  The
-    // only typed state supplemented here is resource stacks omitted by
-    // GeomRepository::SaveToXML; duplicate typed reconstruction is forbidden.
-    return restore_vehicle_repository_resources(vehicle, descriptor, context);
+    if (!reconcile_vehicle_descriptor_state(vehicle, descriptor, context)) {
+        LOG_ERROR("%s native vehicle typed state reconciliation failed objId=%d",
+                  context, vehicle.GetId());
+        return false;
+    }
+    if (!clear_suspended_vehicle_repositories(vehicle, context)) {
+        LOG_ERROR("%s native vehicle repository normalization failed objId=%d",
+                  context, vehicle.GetId());
+        return false;
+    }
+    // Repository branches are deliberately omitted from the canonical XML:
+    // they contain local ObjIds and gameplay ownership.  The fresh native
+    // prototype can nevertheless carry stock cargo, so normalize both
+    // repositories to empty first and reconstruct their typed, stable-ID
+    // representation exactly once while the whole graph is still suspended.
+    // The shared PostLoad barrier then seals the complete graph.
+    return restore_vehicle_repository_resources(vehicle, descriptor, context) &&
+        restore_vehicle_repository_objects(vehicle, descriptor, context);
 }
 
 hta::ai::Vehicle* ensure_remote_vehicle_replica(RemoteEntity& remote,
@@ -12035,7 +13075,8 @@ hta::ai::Vehicle* ensure_remote_vehicle(RemoteEntity& remote,
         // the local player's prototype.
         return nullptr;
     }
-    if (remote.kind == EntityKind::PlayerVehicle) {
+    if (remote.kind == EntityKind::PlayerVehicle ||
+        remote.kind == EntityKind::NpcVehicle) {
         // ObjContainer creation is legal only before CServer::Update. This
         // post-simulation interpolation phase consumes a prebuilt replica.
         return find_vehicle(remote.entity_id, remote.generation);
@@ -12050,8 +13091,11 @@ void materialize_remote_vehicle_replicas()
     if (g_state.is_host)
         return;
     for (RemoteEntity& remote : g_state.remote_entities) {
+        const bool supported_vehicle =
+            remote.kind == EntityKind::PlayerVehicle ||
+            remote.kind == EntityKind::NpcVehicle;
         if (!remote.has_spawn || remote.retired ||
-            remote.kind != EntityKind::PlayerVehicle ||
+            !supported_vehicle ||
             !remote.has_spawn_snapshot)
             continue;
         hta::ai::Vehicle* const vehicle = ensure_remote_vehicle_replica(
@@ -12179,22 +13223,31 @@ void apply_local_correction()
 
 void pump()
 {
-    if (!g_state.session)
+    Session* const active_session = g_state.session.get();
+    if (active_session == nullptr)
         return;
 
     g_state.lan_discovery.pump();
 
-    const TransportResult result = g_state.session->pump();
+    const TransportResult result = active_session->pump();
     if (!result && result.code != TransportResultCode::WouldBlock)
         LOG_ERROR("network pump failed code=%u", static_cast<unsigned>(result.code));
 
     std::array<SessionEvent, 64> events{};
     for (;;) {
-        const std::size_t count = g_state.session->drain_events(events);
+        if (g_state.session.get() != active_session)
+            return;
+        const std::size_t count = active_session->drain_events(events);
         if (count == 0)
             break;
-        for (std::size_t index = 0; index < count; ++index)
+        for (std::size_t index = 0; index < count; ++index) {
             handle_event(std::move(events[index]));
+            // A handler may deliberately leave/end the session (for example
+            // after a fail-closed descriptor rejection). Do not process the
+            // remainder of the detached batch or touch the destroyed Session.
+            if (g_state.session.get() != active_session)
+                return;
+        }
     }
 
     if (g_state.host_defeat_session_end_pending) {
@@ -12841,6 +13894,19 @@ void maybe_send_jip_map_ready()
     const std::string loaded_map = current_level_name();
     if (loaded_map.empty() || loaded_map != pending.target_map)
         return;
+    // The descriptor uploaded during Forming describes the vehicle in the
+    // lobby/save map.  LoadMap replaces that native graph.  Upload the exact
+    // post-load graph before acknowledging map readiness; both messages use
+    // the same reliable channel, so the host cannot materialize a stale
+    // lobby vehicle and then accept commands from different attachments.
+    if (!pending.vehicle_descriptor_sent) {
+        if (!send_local_vehicle_descriptor(pending.host_peer))
+            return;
+        pending.vehicle_descriptor_sent = true;
+        LOG_INFO("post-load vehicle descriptor sent peer=%u epoch=%u entity=%u map=%s",
+                 pending.host_peer, pending.session_epoch, pending.entity_id,
+                 loaded_map.c_str());
+    }
     const MatchMapReady acknowledgement{
         pending.session_epoch, pending.roster_revision,
         pending.player_id, pending.entity_id};
@@ -12851,7 +13917,7 @@ void maybe_send_jip_map_ready()
                             payload))
         return;
     pending.map_ready_sent = true;
-    LOG_INFO("JIP map-ready sent peer=%u epoch=%u roster=%u player=%u entity=%u map=%s",
+    LOG_INFO("match map-ready sent peer=%u epoch=%u roster=%u player=%u entity=%u map=%s",
              pending.host_peer, pending.session_epoch, pending.roster_revision,
              pending.player_id, pending.entity_id, loaded_map.c_str());
 }
@@ -13512,7 +14578,7 @@ void __fastcall server_update_hook(void* server, void*, float elapsed_time)
     materialize_remote_vehicle_replicas();
     if (!g_state.is_host && g_state.client_join_failure_pending) {
         g_state.client_join_failure_pending = false;
-        LOG_ERROR("match join failed during native vehicle archive materialization");
+        LOG_ERROR("match join failed during native synchronization materialization");
         if (host_world_pass)
             g_state.world_source_context = prior_world_source;
         (void)LeaveSession(SessionLeaveReason::User);
@@ -15043,6 +16109,8 @@ bool end_session_teardown()
     g_state.static_world_ids_by_post_load_index.clear();
     g_state.static_world_original_bindings.clear();
     g_state.static_world_identity_stable = false;
+    g_state.static_world_identity_last_error = StaticWorldIndexError::None;
+    g_state.static_world_identity_error_map.clear();
     g_state.static_world_loaded_map.clear();
     g_state.static_world_dynamic_identity_logged = false;
     g_state.static_world_source_loaded = false;
@@ -15252,6 +16320,8 @@ bool BeginSession()
     g_state.static_world_ids_by_post_load_index.clear();
     g_state.static_world_original_bindings.clear();
     g_state.static_world_identity_stable = false;
+    g_state.static_world_identity_last_error = StaticWorldIndexError::None;
+    g_state.static_world_identity_error_map.clear();
     g_state.static_world_loaded_map.clear();
     g_state.static_world_dynamic_identity_logged = false;
     g_state.static_world_source_loaded = false;

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <unordered_set>
@@ -108,6 +109,17 @@ void lowercase_ascii(std::string& value) noexcept
     return false;
 }
 
+[[nodiscard]] bool ignored_file(std::string_view relative,
+                                const std::vector<IgnoreRule>& rules)
+{
+    for (const IgnoreRule& rule : rules) {
+        if ((rule.basename && basename_of(relative) == rule.normalized) ||
+            (!rule.basename && relative == rule.normalized))
+            return true;
+    }
+    return false;
+}
+
 [[nodiscard]] bool add_file_entry(
     std::vector<FileEntry>& entries, std::unordered_set<std::string>& seen,
     const fs::path& root, const fs::path& physical_path,
@@ -136,7 +148,9 @@ void lowercase_ascii(std::string& value) noexcept
 
 [[nodiscard]] bool collect_directory(
     const fs::path& root, const fs::path& directory,
-    const std::vector<IgnoreRule>& rules, std::vector<FileEntry>& entries,
+    const std::vector<IgnoreRule>& directory_rules,
+    const std::vector<IgnoreRule>& file_rules,
+    std::vector<FileEntry>& entries,
     std::unordered_set<std::string>& seen,
     ResourceFingerprintManifestStats& stats,
     ResourceFingerprintResult& error_result)
@@ -154,7 +168,8 @@ void lowercase_ascii(std::string& value) noexcept
                 current, "directory does not have a valid relative path");
             return false;
         }
-        if (relative.valid && ignored_directory(relative.value, rules)) {
+        if (relative.valid &&
+            ignored_directory(relative.value, directory_rules)) {
             ++stats.ignored_directory_count;
             continue;
         }
@@ -196,14 +211,26 @@ void lowercase_ascii(std::string& value) noexcept
                         child, "directory is outside install_root");
                     return false;
                 }
-                if (ignored_directory(child_relative.value, rules)) {
+                if (ignored_directory(child_relative.value, directory_rules)) {
                     ++stats.ignored_directory_count;
                 } else {
                     pending.push_back(child);
                 }
             } else if (fs::is_regular_file(status)) {
-                if (!add_file_entry(entries, seen, root, child, error_result))
+                const NormalizedPath child_relative = normalized_relative_path(
+                    child.lexically_relative(root));
+                if (!child_relative.valid) {
+                    error_result = failure(
+                        ResourceFingerprintErrorCode::InputOutsideInstallRoot,
+                        child, "regular file is outside install_root");
                     return false;
+                }
+                if (ignored_file(child_relative.value, file_rules)) {
+                    ++stats.ignored_file_count;
+                } else if (!add_file_entry(entries, seen, root, child,
+                                           error_result)) {
+                    return false;
+                }
             } else {
                 error_result = failure(
                     ResourceFingerprintErrorCode::UnsupportedInput, child,
@@ -535,18 +562,32 @@ constexpr std::array<std::uint32_t, 64> Sha256::kRoundConstants;
                        "install_root could not be normalized: " +
                            root_error.message());
 
-    std::vector<IgnoreRule> rules;
-    rules.reserve(request.policy.ignored_directories.size());
-    for (const fs::path& ignored : request.policy.ignored_directories) {
-        const NormalizedPath normalized = normalized_relative_path(ignored);
-        if (!normalized.valid) {
-            return failure(ResourceFingerprintErrorCode::InvalidIgnorePolicy,
-                           ignored,
-                           "ignored directory must be a non-empty relative path");
+    const auto make_rules = [](const std::vector<fs::path>& paths,
+                               const char* kind,
+                               std::vector<IgnoreRule>& output)
+        -> std::optional<ResourceFingerprintResult> {
+        output.reserve(paths.size());
+        for (const fs::path& ignored : paths) {
+            const NormalizedPath normalized = normalized_relative_path(ignored);
+            if (!normalized.valid) {
+                return failure(
+                    ResourceFingerprintErrorCode::InvalidIgnorePolicy, ignored,
+                    std::string("ignored ") + kind +
+                        " must be a non-empty relative path");
+            }
+            output.push_back({normalized.value,
+                              normalized.value.find('/') == std::string::npos});
         }
-        rules.push_back(
-            {normalized.value, normalized.value.find('/') == std::string::npos});
-    }
+        return std::nullopt;
+    };
+    std::vector<IgnoreRule> directory_rules;
+    if (const auto error = make_rules(request.policy.ignored_directories,
+                                      "directory", directory_rules))
+        return *error;
+    std::vector<IgnoreRule> file_rules;
+    if (const auto error = make_rules(request.policy.ignored_files, "file",
+                                      file_rules))
+        return *error;
 
     ResourceFingerprintManifestStats stats{};
     stats.input_count = request.inputs.size();
@@ -583,14 +624,21 @@ constexpr std::array<std::uint32_t, 64> Sha256::kRoundConstants;
         if (fs::is_directory(status)) {
             const NormalizedPath relative = normalized_relative_path(
                 resolved.lexically_relative(root));
-            if (relative.valid && ignored_directory(relative.value, rules)) {
+            if (relative.valid &&
+                ignored_directory(relative.value, directory_rules)) {
                 ++stats.ignored_directory_count;
                 continue;
             }
-            if (!collect_directory(root, resolved, rules, entries, seen, stats,
-                                   error_result))
+            if (!collect_directory(root, resolved, directory_rules, file_rules,
+                                   entries, seen, stats, error_result))
                 return error_result;
         } else if (fs::is_regular_file(status)) {
+            const NormalizedPath relative = normalized_relative_path(
+                resolved.lexically_relative(root));
+            if (relative.valid && ignored_file(relative.value, file_rules)) {
+                ++stats.ignored_file_count;
+                continue;
+            }
             if (!add_file_entry(entries, seen, root, resolved, error_result))
                 return error_result;
         } else {
@@ -622,6 +670,36 @@ constexpr std::array<std::uint32_t, 64> Sha256::kRoundConstants;
 }
 
 } // namespace
+
+bool insert_resource_fingerprint_input_coverage(
+    std::vector<fs::path>& inputs, const fs::path& input)
+{
+    const NormalizedPath candidate = normalized_relative_path(input);
+    if (!candidate.valid)
+        return false;
+
+    const auto covers = [](const std::string_view parent,
+                           const std::string_view child) {
+        return child == parent ||
+               (child.size() > parent.size() &&
+                child.starts_with(parent) && child[parent.size()] == '/');
+    };
+
+    for (const fs::path& existing_path : inputs) {
+        const NormalizedPath existing =
+            normalized_relative_path(existing_path);
+        if (existing.valid && covers(existing.value, candidate.value))
+            return true;
+    }
+
+    std::erase_if(inputs, [&](const fs::path& existing_path) {
+        const NormalizedPath existing =
+            normalized_relative_path(existing_path);
+        return existing.valid && covers(candidate.value, existing.value);
+    });
+    inputs.push_back(input.lexically_normal());
+    return true;
+}
 
 const char* resource_fingerprint_error_name(
     const ResourceFingerprintErrorCode error) noexcept

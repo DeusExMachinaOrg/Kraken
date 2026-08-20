@@ -913,11 +913,12 @@ void test_runtime_dispatch_integration_source()
 {
 #ifdef KRAKEN_RUNTIME_SOURCE_PATH
     std::ifstream input(KRAKEN_RUNTIME_SOURCE_PATH, std::ios::binary);
-    const std::string source{
+    std::string source{
         std::istreambuf_iterator<char>(input),
         std::istreambuf_iterator<char>()};
+    source.erase(std::remove(source.begin(), source.end(), '\r'), source.end());
 #else
-    const std::string source;
+    std::string source;
 #endif
     check(!source.empty(), "runtime integration source is available");
     for (const char* required : {
@@ -979,6 +980,11 @@ void test_runtime_dispatch_integration_source()
              "g_evaluate_to_dead_original(vehicle)",
              "process_host_wreck_candidates()",
              "capture_native_object_archive(",
+             "match map-ready accepted peer=%u player=%u entity=%u",
+             "current_level_name() != g_state.match.config().target_map",
+             "match_state != MatchState::Synchronizing",
+             "descriptor gun state mismatch",
+             "Retire it in place",
              "publish_host_wreck_archive",
              "create_suspended_transaction",
              "created_object_ids.rbegin()",
@@ -1229,6 +1235,450 @@ void test_runtime_dispatch_integration_source()
               "session exit success requires later native mode/map confirmation");
     }
 
+    const std::size_t application_tick = source.find(
+        "void __fastcall process_all_events_raid_autotest_hook(void* application)");
+    const std::size_t application_tick_end = source.find(
+        "bool install_raid_autotest_bootstrap_hook()", application_tick);
+    check(application_tick != std::string::npos &&
+              application_tick_end > application_tick &&
+              source.substr(application_tick,
+                            application_tick_end - application_tick)
+                      .find("run_raid_autotest_tick();") != std::string::npos,
+          "raid matchmaking orchestration survives map transitions on the application loop");
+
+    const std::size_t pump_begin = source.find("void pump()\n{");
+    const std::size_t pump_end = source.find("void server_update_hook", pump_begin);
+    check(pump_begin != std::string::npos && pump_end > pump_begin,
+          "session pump source is available");
+    if (pump_begin != std::string::npos && pump_end > pump_begin) {
+        const std::string session_pump =
+            source.substr(pump_begin, pump_end - pump_begin);
+        check(session_pump.find("Session* const active_session") !=
+                      std::string::npos &&
+                  session_pump.find(
+                      "g_state.session.get() != active_session") !=
+                      std::string::npos,
+              "event handlers cannot continue after destroying the active session");
+    }
+    check(source.find("cargo-%u-%d-%d-p%d") != std::string::npos &&
+              source.find("Repository placement is the native stable identity") !=
+                  std::string::npos,
+          "unnamed root cargo uses repository placement instead of local ObjId");
+    const std::size_t repository_capture_begin = source.find(
+        "bool capture_native_repository_contents(");
+    const std::size_t repository_capture_end = source.find(
+        "bool capture_native_repository(", repository_capture_begin);
+    check(repository_capture_begin != std::string::npos &&
+              repository_capture_end > repository_capture_begin,
+          "native repository capture source is available");
+    if (repository_capture_begin != std::string::npos &&
+        repository_capture_end > repository_capture_begin) {
+        const std::string repository_capture = source.substr(
+            repository_capture_begin,
+            repository_capture_end - repository_capture_begin);
+        check(repository_capture.find("if (object->bHasParent())") !=
+                  std::string::npos &&
+              repository_capture.find("object->GetParent()") !=
+                  std::string::npos &&
+              repository_capture.find(
+                  "parent->GetParentRepository() != repository") !=
+                  std::string::npos &&
+              repository_capture.find("capture_native_object_tree(") !=
+                  std::string::npos,
+              "repository children are captured recursively once and never emitted again as root cargo placements");
+    }
+    const std::size_t transfer_gate_begin = source.find(
+        "bool host_peer_world_transfer_permitted(const PeerId peer)");
+    const std::size_t transfer_gate_end = source.find(
+        "bool encode_and_send_match_ready_request", transfer_gate_begin);
+    check(transfer_gate_begin != std::string::npos &&
+              transfer_gate_end > transfer_gate_begin,
+          "host world-transfer map barrier source is available");
+    if (transfer_gate_begin != std::string::npos &&
+        transfer_gate_end > transfer_gate_begin) {
+        const std::string transfer_gate = source.substr(
+            transfer_gate_begin, transfer_gate_end - transfer_gate_begin);
+        check(transfer_gate.find("MatchState::Offline") != std::string::npos &&
+                  transfer_gate.find("barrier != nullptr") !=
+                      std::string::npos &&
+                  transfer_gate.find("barrier == nullptr ||") ==
+                      std::string::npos,
+              "matchmaking cannot publish lobby EntitySpawn data before map-ready");
+    }
+    const std::size_t match_tick_begin = source.find(
+        "void tick_match(const Clock::time_point now)");
+    const std::size_t match_tick_end = source.find(
+        "bool is_world_baseline_message", match_tick_begin);
+    check(match_tick_begin != std::string::npos &&
+              match_tick_end > match_tick_begin,
+          "match coordinator source is available");
+    if (match_tick_begin != std::string::npos && match_tick_end > match_tick_begin) {
+        const std::string match_tick = source.substr(
+            match_tick_begin, match_tick_end - match_tick_begin);
+        const std::size_t materialize = match_tick.find(
+            "create_host_remote_vehicle(*controller)");
+        const std::size_t baseline = match_tick.find(
+            "publish_host_baseline_to_peer(player.peer)", materialize);
+        const std::size_t snapshot = match_tick.find(
+            "send_world_snapshot_and_descriptors(player.peer)", baseline);
+        check(materialize != std::string::npos && baseline > materialize &&
+                  snapshot > baseline,
+              "initial synchronization materializes every roster vehicle before baseline and descriptor snapshot");
+    }
+    const std::size_t quest_observer_begin = source.find(
+        "void observe_authoritative_quest_state()\n{");
+    const std::size_t quest_observer_end = source.find(
+        "bool apply_authoritative_quest_projection(", quest_observer_begin);
+    check(quest_observer_begin != std::string::npos &&
+              quest_observer_end > quest_observer_begin,
+          "authoritative quest observer source is available");
+    if (quest_observer_begin != std::string::npos &&
+        quest_observer_end > quest_observer_begin) {
+        const std::string quest_observer = source.substr(
+            quest_observer_begin, quest_observer_end - quest_observer_begin);
+        check(quest_observer.find("server->m_pObjects->m_inUpdate") !=
+                  std::string::npos &&
+              quest_observer.find("object->m_bIsUpdating") ==
+                  std::string::npos,
+              "quest snapshot uses the container update barrier without dropping every active Trigger");
+        check(quest_observer.find(
+                  "g_state.quest_projection_map_namespace != map_namespace") !=
+                  std::string::npos &&
+              quest_observer.find(
+                  "g_state.quest_projection_sample_ready = false") !=
+                  std::string::npos,
+              "quest baseline is invalidated when the active map namespace changes");
+        check(quest_observer.find("state.call_obj_ref.reset();") !=
+                  std::string::npos &&
+              quest_observer.find("if (object_id <= 0)") !=
+                  std::string::npos,
+              "quest observer omits transient Trigger event callers and treats non-positive DynamicQuest ObjIds as absent");
+    }
+    const std::size_t quest_identity_begin = source.find(
+        "bool quest_projection_object_name_is_unique(");
+    const std::size_t quest_identity_end = source.find(
+        "std::uint32_t quest_projection_dependency_order(", quest_identity_begin);
+    check(quest_identity_begin != std::string::npos &&
+              quest_identity_end > quest_identity_begin,
+          "quest referenced-object identity source is available");
+    if (quest_identity_begin != std::string::npos &&
+        quest_identity_end > quest_identity_begin) {
+        const std::string quest_identity = source.substr(
+            quest_identity_begin, quest_identity_end - quest_identity_begin);
+        check(quest_identity.find("quest_projection_object_name_is_unique(") !=
+                  std::string::npos &&
+              quest_identity.find("unique-map-object") != std::string::npos &&
+              quest_identity.find("network-entity") != std::string::npos &&
+              quest_identity.find("g_state.entities.lookup_net_id(") !=
+                  std::string::npos &&
+              quest_identity.find("network-entity") <
+                  quest_identity.find("unique-map-object") &&
+              quest_identity.find("GetObjectFullName") == std::string::npos,
+              "quest references resolve network vehicles by stable entity identity before the unique map-name fallback");
+    }
+    const std::size_t quest_send_begin = source.find(
+        "bool send_quest_snapshot(const PeerId peer)");
+    const std::size_t quest_send_end = source.find(
+        "void receive_quest_snapshot(", quest_send_begin);
+    check(quest_send_begin != std::string::npos &&
+              quest_send_end > quest_send_begin,
+          "quest snapshot send barrier source is available");
+    if (quest_send_begin != std::string::npos && quest_send_end > quest_send_begin) {
+        const std::string quest_send = source.substr(
+            quest_send_begin, quest_send_end - quest_send_begin);
+        check(quest_send.find("observe_authoritative_quest_state();") !=
+                  std::string::npos &&
+              quest_send.find("quest_projection_sample_ready") !=
+                  std::string::npos &&
+              quest_send.find("quest_projection_map_namespace != map_namespace") !=
+                  std::string::npos,
+              "quest snapshot is freshly sampled and bound to the active map before transmission");
+    }
+    check(source.find(
+              "inline constexpr std::int32_t kNativeNoQuestObjectId = -1;") !=
+              std::string::npos &&
+          source.find(
+              "std::int32_t new_call_obj_id = kNativeNoQuestObjectId;") !=
+              std::string::npos &&
+          source.find(
+              "std::int32_t new_hirer_obj_id = kNativeNoQuestObjectId;") !=
+              std::string::npos &&
+          source.find(
+              "std::int32_t new_target_obj_id = kNativeNoQuestObjectId;") !=
+              std::string::npos,
+          "quest application writes the native -1 no-object sentinel instead of the network registry sentinel");
+    check(source.find(
+              "if (result == QuestProjectionClientResult::Applied) {\n        emit_quest_projection_committed_marker(") !=
+              std::string::npos &&
+          source.find(
+              "g_state.quest_projection_client.state() ==\n            QuestProjectionClientState::Idle ||\n        g_state.quest_projection_client.ready()") !=
+              std::string::npos,
+          "live quest deltas do not re-enter the one-time snapshot commit barrier");
+
+    const std::size_t local_bind_begin = source.find(
+        "bool bind_local_player_vehicle()\n{");
+    const std::size_t local_bind_end = source.find(
+        "bool bind_host_player_vehicle()", local_bind_begin);
+    check(local_bind_begin != std::string::npos &&
+              local_bind_end > local_bind_begin,
+          "local client vehicle binding source is available");
+    if (local_bind_begin != std::string::npos && local_bind_end > local_bind_begin) {
+        const std::string local_bind = source.substr(
+            local_bind_begin, local_bind_end - local_bind_begin);
+        check(local_bind.find("map-transition unbind failed") !=
+                  std::string::npos &&
+              local_bind.find("map-transition rebind failed") !=
+                  std::string::npos &&
+              local_bind.find("existing->generation") != std::string::npos,
+              "LoadMap rebinds the engine-owned client vehicle while preserving the leased generation");
+        check(local_bind.find("g_state.local_weapon_gun = {};") !=
+                  std::string::npos &&
+              local_bind.find("g_state.has_local_weapon_gun = false;") !=
+                  std::string::npos &&
+              local_bind.find("g_state.local_weapon_trigger_held = false;") !=
+                  std::string::npos,
+              "LoadMap invalidates cached lobby weapon identity and trigger state");
+    }
+
+    const std::size_t map_ready_begin = source.find(
+        "void maybe_send_jip_map_ready()\n{");
+    const std::size_t map_ready_end = source.find(
+        "std::optional<LanSessionAdvertisement> current_lan_advertisement()",
+        map_ready_begin);
+    check(map_ready_begin != std::string::npos &&
+              map_ready_end > map_ready_begin,
+          "client map-ready source is available");
+    if (map_ready_begin != std::string::npos && map_ready_end > map_ready_begin) {
+        const std::string map_ready = source.substr(
+            map_ready_begin, map_ready_end - map_ready_begin);
+        const std::size_t descriptor = map_ready.find(
+            "send_local_vehicle_descriptor(pending.host_peer)");
+        const std::size_t acknowledgement = map_ready.find(
+            "send_match_payload(pending.host_peer, MessageType::MatchMapReady");
+        check(descriptor != std::string::npos && acknowledgement > descriptor &&
+                  map_ready.find("pending.vehicle_descriptor_sent = true;") >
+                      descriptor,
+              "the exact post-load vehicle descriptor precedes map-ready on the reliable channel");
+    }
+
+    const std::size_t replica_materialize_begin = source.find(
+        "void materialize_remote_vehicle_replicas()\n{");
+    const std::size_t replica_materialize_end = source.find(
+        "void apply_remote_loadout(", replica_materialize_begin);
+    check(replica_materialize_begin != std::string::npos &&
+              replica_materialize_end > replica_materialize_begin,
+          "pre-simulation vehicle materializer source is available");
+    if (replica_materialize_begin != std::string::npos &&
+        replica_materialize_end > replica_materialize_begin) {
+        const std::string materializer = source.substr(
+            replica_materialize_begin,
+            replica_materialize_end - replica_materialize_begin);
+        check(materializer.find("EntityKind::PlayerVehicle") !=
+                  std::string::npos &&
+              materializer.find("EntityKind::NpcVehicle") !=
+                  std::string::npos &&
+              materializer.find("supported_vehicle") != std::string::npos,
+              "safe pre-simulation materialization admits both player and NPC vehicle replicas");
+    }
+    check(source.find(
+              "g_state.spawn_publications.clear();\n    g_state.loadout_publications.clear();\n\n    // A peer can finish transport handshaking") !=
+              std::string::npos,
+          "starting matchmaking invalidates any prior Offline/co-op baseline");
+    const std::size_t cargo_restore_begin = source.find(
+        "struct VehicleCargoRestoreTransaction");
+    const std::size_t cargo_restore_end = source.find(
+        "bool restore_vehicle_repository_resources(", cargo_restore_begin);
+    check(cargo_restore_begin != std::string::npos &&
+              cargo_restore_end > cargo_restore_begin,
+          "typed object-cargo restore transaction is available");
+    if (cargo_restore_begin != std::string::npos &&
+        cargo_restore_end > cargo_restore_begin) {
+        const std::string cargo_restore = source.substr(
+            cargo_restore_begin, cargo_restore_end - cargo_restore_begin);
+        for (const char* required : {
+                 "CreateNewObjectWithSuspendedPostLoad(",
+                 "apply_descriptor_state(*object",
+                 "object->AddChild(child)",
+                 "CallCtor<0x006CDBA0, hta::ai::GeomRepositoryItem>",
+                 "repository->AddThingToPlace(*item, place)",
+                 "repository->AddThing(*item, 0)",
+                 "repository->GetSlotByObjId(object->GetId())",
+                 "GiveUpThingByObjId(iterator->second)",
+                 "objects.AddObjIdToRemove(*iterator)"})
+            check(cargo_restore.find(required) != std::string::npos,
+                  "object cargo is restored and rolled back through native boundaries");
+        const std::size_t preferred = cargo_restore.find(
+            "repository->AddThingToPlace(*item, place)");
+        const std::size_t repack = cargo_restore.find(
+            "repository->AddThing(*item, 0)", preferred);
+        const std::size_t verify_id = cargo_restore.find(
+            "repository->GetSlotByObjId(object->GetId())", repack);
+        check(preferred != std::string::npos && repack > preferred &&
+                  verify_id > repack,
+              "saved object placement is preferred, native repack is the fallback, and identity is verified independently of coordinates");
+    }
+    const std::size_t resource_validate_begin = source.find(
+        "bool validate_vehicle_repository_resources(");
+    const std::size_t resource_validate_end = source.find(
+        "bool validate_native_descriptor_state(", resource_validate_begin);
+    check(resource_validate_begin != std::string::npos &&
+              resource_validate_end > resource_validate_begin,
+          "resource cargo validation source is available");
+    if (resource_validate_begin != std::string::npos &&
+        resource_validate_end > resource_validate_begin) {
+        const std::string resource_validate = source.substr(
+            resource_validate_begin,
+            resource_validate_end - resource_validate_begin);
+        check(resource_validate.find("ResourceTotal") != std::string::npos &&
+                  resource_validate.find("matching->amount == value.amount") !=
+                      std::string::npos &&
+                  resource_validate.find("GetSlotByPlace") ==
+                      std::string::npos,
+              "resource cargo validates exact per-ID totals after native merging or repack, not stale coordinates");
+    }
+    const std::size_t object_validate_begin = source.find(
+        "bool validate_vehicle_cargo_objects(");
+    const std::size_t object_validate_end = source.find(
+        "bool validate_vehicle_descriptor_structure(", object_validate_begin);
+    check(object_validate_begin != std::string::npos &&
+              object_validate_end > object_validate_begin,
+          "object cargo validation source is available");
+    if (object_validate_begin != std::string::npos &&
+        object_validate_end > object_validate_begin) {
+        const std::string object_validate = source.substr(
+            object_validate_begin,
+            object_validate_end - object_validate_begin);
+        check(object_validate.find("node.slot != candidate->GetName()") !=
+                  std::string::npos &&
+              object_validate.find("validate_native_cargo_node") !=
+                  std::string::npos &&
+              object_validate.find("GetSlotByPlace") == std::string::npos,
+              "object cargo validates stable root identity and the full nested tree after native repack");
+    }
+    const std::size_t descriptor_apply_begin = source.find(
+        "bool apply_vehicle_descriptor_to_inactive_vehicle(",
+        cargo_restore_end);
+    const std::size_t descriptor_apply_end = source.find(
+        "hta::ai::Vehicle* ensure_remote_vehicle_replica(",
+        descriptor_apply_begin);
+    check(descriptor_apply_begin != std::string::npos &&
+              descriptor_apply_end > descriptor_apply_begin,
+          "native vehicle descriptor application source is available");
+    if (descriptor_apply_begin != std::string::npos &&
+        descriptor_apply_end > descriptor_apply_begin) {
+        const std::string descriptor_apply = source.substr(
+            descriptor_apply_begin,
+            descriptor_apply_end - descriptor_apply_begin);
+        const std::size_t validate = descriptor_apply.find(
+            "encode_vehicle_descriptor(descriptor, descriptor_validation_wire)");
+        const std::size_t normalize = descriptor_apply.find(
+            "normalize_native_vehicle_attachment_roots(vehicle, descriptor,");
+        const std::size_t preflight = descriptor_apply.find(
+            "preflight_vehicle_archive(");
+        const std::size_t restore = descriptor_apply.find(
+            "restore_native_object_archive(");
+        const std::size_t reconcile = descriptor_apply.find(
+            "reconcile_vehicle_descriptor_state(vehicle, descriptor, context)");
+        const std::size_t clear_repositories = descriptor_apply.find(
+            "clear_suspended_vehicle_repositories(vehicle, context)");
+        check(validate != std::string::npos && normalize > validate &&
+                  preflight > normalize && restore > preflight &&
+                  reconcile > restore && clear_repositories > reconcile,
+              "NPC roots are normalized before exact archive restore, then typed affix state and repositories are reconciled while suspended");
+        check(descriptor_apply.find(
+                  "restore_vehicle_repository_resources(vehicle, descriptor, context) &&") !=
+                  std::string::npos &&
+              descriptor_apply.find(
+                  "restore_vehicle_repository_objects(vehicle, descriptor, context)") !=
+                  std::string::npos,
+              "canonical archive supplements both resource and object cargo exactly once");
+    }
+    const std::size_t root_normalize_begin = source.find(
+        "bool normalize_native_vehicle_attachment_roots(");
+    const std::size_t root_normalize_end = source.find(
+        "hta::ai::GeomRepository* cargo_repository_for(",
+        root_normalize_begin);
+    check(root_normalize_begin != std::string::npos &&
+              root_normalize_end > root_normalize_begin,
+          "typed suspended NPC attachment-root normalizer is available");
+    if (root_normalize_begin != std::string::npos &&
+        root_normalize_end > root_normalize_begin) {
+        const std::string root_normalize = source.substr(
+            root_normalize_begin, root_normalize_end - root_normalize_begin);
+        check(root_normalize.find("requested.parent_instance_id != 0") !=
+                  std::string::npos &&
+              root_normalize.find("if (!vehicle.m_bNeedPostLoad)") !=
+                  std::string::npos &&
+              root_normalize.find("current->SetNewPart(") !=
+                  std::string::npos &&
+              root_normalize.find("GetEntityByObjId(object_id)") !=
+                  std::string::npos &&
+              root_normalize.find("current->bIsUpdatingByODE()") ==
+                  std::string::npos &&
+              root_normalize.find(
+                  "replacement->GetPrototypeId() != requested.prototype_id") !=
+                  std::string::npos,
+              "root normalization uses the suspended native replacement boundary, re-resolves ownership, and verifies exact prototype identity");
+    }
+    const std::size_t state_reconcile_begin = source.find(
+        "bool apply_descriptor_state(");
+    const std::size_t state_reconcile_end = source.find(
+        "const VehicleDescriptorNode* descriptor_node_by_id(",
+        state_reconcile_begin);
+    check(state_reconcile_begin != std::string::npos &&
+              state_reconcile_end > state_reconcile_begin,
+          "typed affix/modifier reconciliation source is available");
+    if (state_reconcile_begin != std::string::npos &&
+        state_reconcile_end > state_reconcile_begin) {
+        const std::string state_reconcile = source.substr(
+            state_reconcile_begin,
+            state_reconcile_end - state_reconcile_begin);
+        check(state_reconcile.find("object.ApplyAffix(affix)") !=
+                  std::string::npos &&
+              state_reconcile.find("capture_native_modifier(candidate, native)") !=
+                  std::string::npos &&
+              state_reconcile.find("if (exact != object.m_modifiers.end())") !=
+                  std::string::npos,
+              "typed state reconciliation is idempotent and uses native ApplyAffix/ApplyModifier seams");
+    }
+    const std::size_t repository_clear_begin = source.find(
+        "bool clear_suspended_vehicle_repositories(");
+    const std::size_t repository_clear_end = source.find(
+        "hta::ai::Obj* find_named_child(", repository_clear_begin);
+    check(repository_clear_begin != std::string::npos &&
+              repository_clear_end > repository_clear_begin,
+          "suspended stock repository normalizer is available");
+    if (repository_clear_begin != std::string::npos &&
+        repository_clear_end > repository_clear_begin) {
+        const std::string repository_clear = source.substr(
+            repository_clear_begin,
+            repository_clear_end - repository_clear_begin);
+        check(repository_clear.find("repository->Clear(false);") !=
+                  std::string::npos &&
+              repository_clear.find("object->GetParentRepository() != repository") !=
+                  std::string::npos &&
+              repository_clear.find("AddObjIdToRemove(object_id)") !=
+                  std::string::npos &&
+              repository_clear.find("repository->Clear(true)") ==
+                  std::string::npos,
+              "stock cargo is detached without a visual-world transition and retired before exact typed restore");
+    }
+    const std::size_t finalizer_begin = source.find(
+        "bool finalize_native_vehicle_graph(hta::ai::ObjContainer& objects,",
+        cargo_restore_end);
+    const std::size_t finalizer_end = source.find(
+        "bool apply_vehicle_descriptor_to_inactive_vehicle(", finalizer_begin);
+    if (finalizer_begin != std::string::npos && finalizer_end > finalizer_begin) {
+        const std::string finalizer = source.substr(
+            finalizer_begin, finalizer_end - finalizer_begin);
+        check(finalizer.find("vehicle.GetRepository()") != std::string::npos &&
+                  finalizer.find("vehicle.GetGroundRepository()") !=
+                      std::string::npos &&
+                  finalizer.find("pending.push_back(item.GetObj())") !=
+                      std::string::npos,
+              "shared PostLoad barrier includes object cargo outside the vehicle child map");
+    }
+
     const std::size_t survival_begin = source.find(
         "void emit_combat_host_survival_heartbeat()");
     const std::size_t survival_end = source.find(
@@ -1249,6 +1699,24 @@ void test_runtime_dispatch_integration_source()
     }
 }
 
+void test_skinfix_detour_does_not_overwrite_get_skin()
+{
+#ifdef KRAKEN_SKINFIX_SOURCE_PATH
+    std::ifstream input(KRAKEN_SKINFIX_SOURCE_PATH, std::ios::binary);
+    std::string source{std::istreambuf_iterator<char>(input),
+                       std::istreambuf_iterator<char>()};
+    source.erase(std::remove(source.begin(), source.end(), '\r'), source.end());
+#else
+    std::string source;
+#endif
+    check(!source.empty(), "skinfix source is available");
+    check(source.find("routines::Redirect(sizeof(routines::_Redirect)") !=
+              std::string::npos,
+          "SetSkin detour patches only the relative jump bytes");
+    check(source.find("Redirect(0x0044") == std::string::npos,
+          "SetSkin detour cannot overwrite adjacent PhysicBody::GetSkin");
+}
+
 } // namespace
 
 int main()
@@ -1263,6 +1731,7 @@ int main()
     test_callsite_preflight_fail_closed();
     test_replica_source_policy_regression();
     test_runtime_dispatch_integration_source();
+    test_skinfix_detour_does_not_overwrite_get_skin();
     if (failures != 0) {
         std::cerr << failures << " combat runtime test(s) failed\n";
         return 1;

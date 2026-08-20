@@ -375,6 +375,43 @@ void test_jip_ordering_gap_duplicate_epoch_and_transaction()
            QuestProjectionClientResult::WrongEpoch);
 }
 
+void test_live_trigger_timer_progress_does_not_publish_revisions()
+{
+    QuestProjectionHost host(4);
+    host.reset(31, kFingerprint);
+    QuestProjectionDelta delta;
+    QuestProjectionRecord current = trigger("triggers/main.xml", "timer", 1);
+    auto& initial = std::get<TriggerProjectionState>(current.state);
+    initial.timeout_for_time_period = 2.0f;
+    initial.frames_for_frames_passed = 10;
+    assert(host.observe(std::span<const QuestProjectionRecord>(&current, 1), delta) ==
+           QuestProjectionHostResult::Initialized);
+
+    QuestProjectionRecord progressed = current;
+    auto& timer = std::get<TriggerProjectionState>(progressed.state);
+    timer.timeout_for_time_period = 1.5f;
+    timer.frames_for_frames_passed = 11;
+    assert(quest_projection_live_records_equal(
+        std::span<const QuestProjectionRecord>(&current, 1),
+        std::span<const QuestProjectionRecord>(&progressed, 1)));
+    assert(host.observe(std::span<const QuestProjectionRecord>(&progressed, 1), delta) ==
+           QuestProjectionHostResult::Unchanged);
+    assert(host.revision() == 0);
+    const QuestProjectionSnapshot snapshot = host.snapshot();
+    const auto& snapshot_timer =
+        std::get<TriggerProjectionState>(snapshot.records.front().state);
+    assert(snapshot_timer.timeout_for_time_period == 1.5f &&
+           snapshot_timer.frames_for_frames_passed == 11);
+
+    timer.count = 2;
+    assert(!quest_projection_live_records_equal(
+        std::span<const QuestProjectionRecord>(&current, 1),
+        std::span<const QuestProjectionRecord>(&progressed, 1)));
+    assert(host.observe(std::span<const QuestProjectionRecord>(&progressed, 1), delta) ==
+           QuestProjectionHostResult::DeltaProduced);
+    assert(delta.base_revision == 0 && delta.revision == 1);
+}
+
 void test_reset_overflow_replica_gate_and_personal_exclusion()
 {
     QuestProjectionClient client(1);
@@ -435,6 +472,7 @@ int main()
     test_codec_identity_and_full_state();
     test_host_deltas_are_single_transition_and_bounded();
     test_jip_ordering_gap_duplicate_epoch_and_transaction();
+    test_live_trigger_timer_progress_does_not_publish_revisions();
     test_reset_overflow_replica_gate_and_personal_exclusion();
     std::cout << "quest state projection tests passed\n";
     return 0;

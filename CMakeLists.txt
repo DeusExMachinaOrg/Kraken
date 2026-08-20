@@ -271,7 +271,8 @@ if(BUILD_TESTING)
     target_include_directories(kraken_net_combat_runtime_test PRIVATE include)
     target_link_libraries(kraken_net_combat_runtime_test PRIVATE hta kernel32)
     target_compile_definitions(kraken_net_combat_runtime_test PRIVATE
-        KRAKEN_RUNTIME_SOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/source/net/runtime.cpp")
+        KRAKEN_RUNTIME_SOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/source/net/runtime.cpp"
+        KRAKEN_SKINFIX_SOURCE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/source/fix/skinfix.cpp")
     set_property(TARGET kraken_net_combat_runtime_test PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     add_test(NAME kraken_net_combat_runtime

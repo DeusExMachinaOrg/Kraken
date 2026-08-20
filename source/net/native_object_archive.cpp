@@ -1912,16 +1912,23 @@ NativeObjectArchiveResult capture_native_object_archive(
         ref_ptr<hta::m3d::cmn::XmlFile> xml_file = kernel->CreateXmlFile();
         if (!xml_file)
             return result(NativeObjectArchiveErrorCode::XmlFileCreateFailed);
-        ref_ptr<hta::m3d::cmn::XmlNode> document =
-            xml_file->CreateNode(hta::m3d::cmn::XML_NODE_DOCUMENT, nullptr);
-        if (!document)
-            return result(NativeObjectArchiveErrorCode::XmlSerializeFailed);
+        ref_ptr<hta::m3d::cmn::XmlNode> object_node =
+            xml_file->CreateNode(hta::m3d::cmn::XML_NODE_ELEMENT, "Object");
+        if (!object_node)
+            return result(NativeObjectArchiveErrorCode::XmlSerializeFailed,
+                          "native XML object envelope allocation failed");
+        // XmlFile is itself the document container. Native save paths such as
+        // DynamicScene::SaveSceneToFile attach their top-level element
+        // directly; XML_NODE_DOCUMENT is not created through CreateNode.
+        if (!xml_file->AddChild(object_node))
+            return result(NativeObjectArchiveErrorCode::XmlSerializeFailed,
+                          "native XML object envelope attach failed");
         // This is the recovered virtual SaveToXML seam. It includes native
         // Runtime automatically; canonicalization below applies the explicit
-        // visual allowlist and identity denylist.
-        object.SaveToXML(xml_file, document);
-        if (!xml_file->AddChild(document))
-            return result(NativeObjectArchiveErrorCode::XmlSerializeFailed);
+        // visual allowlist and identity denylist.  Obj::SaveToXML receives an
+        // existing <Object> element in ObjContainer::SaveToXml; passing the
+        // document node violates the native serializer contract.
+        object.SaveToXML(xml_file, object_node);
         NativeRawFile raw_file(temp_file.native_path().c_str(),
                                hta::m3d::fs::IStream::OPEN_WRITE, false);
         if (!raw_file->IsOpen() || xml_file->Write(raw_file.stream()) < 0 ||
@@ -2024,11 +2031,13 @@ NativeObjectArchiveResult restore_native_object_archive_v2(
     if (const auto error = validate_native_object_archive_v2(archive);
         error != NativeObjectArchiveErrorCode::None)
         return result(error);
-    if (suspended_object.IsKindOf("Vehicle")) {
-        auto* const vehicle = static_cast<hta::ai::Vehicle*>(&suspended_object);
-        if (vehicle->bIsUpdatingByODE())
-            return result(NativeObjectArchiveErrorCode::ObjectNotSuspended);
-    }
+    // CreateNewObjectWithSuspendedPostLoad leaves m_bNeedPostLoad set until
+    // the transaction seals the complete restored graph.  ODE ownership is
+    // not a suspension marker: prototype construction may initialize that
+    // flag before Obj::PostLoad, and presentation replicas retire it later.
+    if (!suspended_object.m_bNeedPostLoad)
+        return result(NativeObjectArchiveErrorCode::ObjectNotSuspended,
+                      "native object already crossed the PostLoad barrier");
     NativeObjectArchiveTempFile temp_file;
     if (const auto error = temp_file.create();
         error != NativeObjectArchiveErrorCode::None)

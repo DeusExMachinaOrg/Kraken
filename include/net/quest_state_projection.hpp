@@ -123,8 +123,10 @@ enum class DynamicQuestStatus : std::uint8_t {
 };
 
 // Every identity is explicit and stable across enumeration order, pointers,
-// ObjIds, process-local names, and Lua IDs. Fingerprint is repeated here in
-// addition to the packet header so nested references are independently bound.
+// ObjIds, and Lua IDs. Trigger/quest names are bound to their source resource;
+// referenced-object names are accepted only when unique in the active map.
+// Fingerprint is repeated here in addition to the packet header so nested
+// references are independently bound.
 struct QuestProjectionIdentity {
     std::string resource_fingerprint;
     std::string map_namespace;
@@ -152,6 +154,8 @@ struct TriggerProjectionState {
     std::vector<QuestProjectionIdentity> object_refs;
     std::int32_t call_event_id = 0;
     std::string call_obj_name;
+    // Legacy-capable optional field. Native m_callObjId is the ephemeral
+    // caller of the most recent event and current hosts intentionally omit it.
     std::optional<QuestProjectionIdentity> call_obj_ref;
     bool can_update = false;
 
@@ -284,6 +288,12 @@ enum class QuestProjectionCodecError : std::uint8_t {
 [[nodiscard]] QuestProjectionCodecError decode_quest_projection_delta(
     ByteView input, QuestProjectionDelta& output);
 [[nodiscard]] bool quest_projection_records_equal(
+    std::span<const QuestProjectionRecord> left,
+    std::span<const QuestProjectionRecord> right);
+// Trigger timeout/frame counters are host-internal scheduling progress. They
+// are retained in snapshots and meaningful deltas, but do not by themselves
+// create a live network revision while client trigger execution is suppressed.
+[[nodiscard]] bool quest_projection_live_records_equal(
     std::span<const QuestProjectionRecord> left,
     std::span<const QuestProjectionRecord> right);
 

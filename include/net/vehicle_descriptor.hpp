@@ -148,9 +148,10 @@ enum class VehicleCargoRepository : std::uint8_t {
            repository == VehicleCargoRepository::Ground;
 }
 
-// Coordinates are native GeomRepository places, not a flattened resource
-// identity.  Repository kind plus coordinates deliberately allow the same
-// resource ID to occur in main and ground repositories independently.
+// Coordinates are the native save's preferred GeomRepository places, not a
+// flattened resource identity.  The native loader may deterministically
+// repack stale or overlapping positions; repository identity and exact cargo
+// content remain authoritative.
 struct VehicleCargoPlacement {
     VehicleCargoRepository repository = VehicleCargoRepository::Main;
     std::int32_t x = 0;

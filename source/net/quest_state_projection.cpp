@@ -602,6 +602,38 @@ bool same_record_set(std::span<const QuestProjectionRecord> left,
            a == b;
 }
 
+bool same_live_record(const QuestProjectionRecord& left,
+                      const QuestProjectionRecord& right)
+{
+    if (!(left.identity == right.identity) ||
+        left.dependency_order != right.dependency_order ||
+        left.removed != right.removed || left.kind() != right.kind())
+        return false;
+    if (left.kind() == QuestProjectionRecordKind::DynamicQuest)
+        return std::get<DynamicQuestProjectionState>(left.state) ==
+               std::get<DynamicQuestProjectionState>(right.state);
+    const TriggerProjectionState& a =
+        std::get<TriggerProjectionState>(left.state);
+    const TriggerProjectionState& b =
+        std::get<TriggerProjectionState>(right.state);
+    return a.state == b.state && a.state_keep == b.state_keep &&
+           a.count == b.count &&
+           a.fly_path_for_cinematic_fly == b.fly_path_for_cinematic_fly &&
+           a.id_for_cinema_msg == b.id_for_cinema_msg &&
+           a.object_refs == b.object_refs &&
+           a.call_event_id == b.call_event_id &&
+           a.call_obj_name == b.call_obj_name &&
+           a.call_obj_ref == b.call_obj_ref &&
+           a.can_update == b.can_update;
+}
+
+bool same_live_record_set(std::span<const QuestProjectionRecord> left,
+                          std::span<const QuestProjectionRecord> right)
+{
+    return left.size() == right.size() &&
+        std::equal(left.begin(), left.end(), right.begin(), same_live_record);
+}
+
 bool apply_delta_to_records(std::vector<QuestProjectionRecord>& target,
                             const QuestProjectionDelta& delta)
 {
@@ -866,6 +898,17 @@ bool quest_projection_records_equal(std::span<const QuestProjectionRecord> left,
                                     std::span<const QuestProjectionRecord> right)
 { return same_record_set(left, right); }
 
+bool quest_projection_live_records_equal(
+    std::span<const QuestProjectionRecord> left,
+    std::span<const QuestProjectionRecord> right)
+{
+    std::vector<QuestProjectionRecord> a;
+    std::vector<QuestProjectionRecord> b;
+    return validate_records(left, false, a) == QuestProjectionCodecError::None &&
+           validate_records(right, false, b) == QuestProjectionCodecError::None &&
+           same_live_record_set(a, b);
+}
+
 QuestProjectionHost::QuestProjectionHost(const std::size_t history_capacity)
     : m_history_capacity(std::max<std::size_t>(history_capacity, 1u))
 {}
@@ -905,8 +948,12 @@ QuestProjectionHostResult QuestProjectionHost::observe(
         m_initialized = true;
         return QuestProjectionHostResult::Initialized;
     }
-    if (m_records == canonical)
+    if (same_live_record_set(m_records, canonical)) {
+        // Keep the latest counters for a future JIP snapshot without turning
+        // host-only timer progress into per-frame reliable traffic.
+        m_records = std::move(canonical);
         return QuestProjectionHostResult::Unchanged;
+    }
     if (m_revision == (std::numeric_limits<QuestProjectionRevision>::max)())
         return QuestProjectionHostResult::RevisionExhausted;
     QuestProjectionDelta delta;

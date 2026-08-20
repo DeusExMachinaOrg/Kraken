@@ -71,7 +71,8 @@ void write_file(const fs::path& path, const std::string& contents)
 
 ResourceFingerprintPolicy policy()
 {
-    return {{"build", "cache", "log", "save", "exception"}};
+    return {{"build", "cache", "log", "save", "exception"},
+            {"Data/local.cfg"}};
 }
 
 ResourceFingerprintResult fingerprint(const fs::path& root)
@@ -102,6 +103,7 @@ void populate_tree(const fs::path& root)
     write_file(root / "log" / "ignored.log", "ignored log");
     write_file(root / "save" / "ignored.save", "ignored save");
     write_file(root / "exception" / "ignored.dmp", "ignored exception");
+    write_file(root / "Data" / "local.cfg", "local settings");
 }
 
 void test_identical_trees_and_policy()
@@ -119,10 +121,12 @@ void test_identical_trees_and_policy()
     CHECK(first_result.stats.file_count == 2);
     CHECK(first_result.stats.total_bytes == 22);
     CHECK(first_result.stats.ignored_directory_count == 5);
+    CHECK(first_result.stats.ignored_file_count == 1);
     CHECK(printable_hex_digest(first_result.digest));
 
     write_file(first.path / "build" / "ignored.bin", "changed ignored bytes");
     write_file(first.path / "Nested" / "cache" / "new.cache", "ignored");
+    write_file(first.path / "Data" / "local.cfg", "different local settings");
     const ResourceFingerprintResult ignored_change = fingerprint(first.path);
     CHECK(ignored_change.succeeded());
     CHECK(ignored_change.digest == second_result.digest);
@@ -190,6 +194,64 @@ void test_rejected_inputs()
     CHECK(!invalid_policy.succeeded());
     CHECK(invalid_policy.error ==
           ResourceFingerprintErrorCode::InvalidIgnorePolicy);
+
+    const ResourceFingerprintResult invalid_file_policy =
+        kraken::net::fingerprint_resources(ResourceFingerprintRequest{
+            tree.path, {"."}, {{}, {"../local.cfg"}}});
+    CHECK(!invalid_file_policy.succeeded());
+    CHECK(invalid_file_policy.error ==
+          ResourceFingerprintErrorCode::InvalidIgnorePolicy);
+}
+
+void test_personal_state_is_not_a_shared_resource()
+{
+    TemporaryTree first = make_tree("personal-first");
+    TemporaryTree second = make_tree("personal-second");
+    write_file(first.path / "data" / "maps" / "r0m0" / "scene.xml", "map");
+    write_file(second.path / "data" / "maps" / "r0m0" / "scene.xml", "map");
+    write_file(first.path / "data" / "profiles" / "one" / "save.xml", "A");
+    write_file(second.path / "data" / "profiles" / "two" / "save.xml", "B");
+    write_file(first.path / "data" / "config.cfg", "local A");
+    write_file(second.path / "data" / "config.cfg", "local B");
+
+    const ResourceFingerprintPolicy shared_policy{
+        {"data/profiles"}, {"data/config.cfg"}};
+    const auto first_result = kraken::net::fingerprint_resources(
+        {first.path, {"data"}, shared_policy});
+    const auto second_result = kraken::net::fingerprint_resources(
+        {second.path, {"data"}, shared_policy});
+    CHECK(first_result.succeeded());
+    CHECK(second_result.succeeded());
+    CHECK(first_result.digest == second_result.digest);
+}
+
+void test_minimal_non_overlapping_input_coverage()
+{
+    std::vector<fs::path> inputs;
+    CHECK(kraken::net::insert_resource_fingerprint_input_coverage(
+        inputs, "data"));
+    CHECK(kraken::net::insert_resource_fingerprint_input_coverage(
+        inputs, "DATA/maps/r0m0/dynamicscene.xml"));
+    CHECK(inputs.size() == 1);
+    CHECK(inputs.front() == fs::path{"data"});
+
+    CHECK(kraken::net::insert_resource_fingerprint_input_coverage(
+        inputs, "serverdyn/maps/r1m1.xml"));
+    CHECK(inputs.size() == 2);
+    CHECK(kraken::net::insert_resource_fingerprint_input_coverage(
+        inputs, "serverdyn"));
+    CHECK(inputs.size() == 2);
+    CHECK(std::find(inputs.begin(), inputs.end(), fs::path{"serverdyn"}) !=
+          inputs.end());
+    CHECK(std::find(inputs.begin(), inputs.end(),
+                    fs::path{"serverdyn/maps/r1m1.xml"}) == inputs.end());
+
+    const std::vector<fs::path> before = inputs;
+    CHECK(!kraken::net::insert_resource_fingerprint_input_coverage(
+        inputs, "../outside"));
+    CHECK(!kraken::net::insert_resource_fingerprint_input_coverage(
+        inputs, fs::path{"C:/absolute"}));
+    CHECK(inputs == before);
 }
 
 } // namespace
@@ -200,6 +262,8 @@ int main()
         test_identical_trees_and_policy();
         test_order_case_and_path_changes();
         test_rejected_inputs();
+        test_personal_state_is_not_a_shared_resource();
+        test_minimal_non_overlapping_input_coverage();
     } catch (const std::exception& exception) {
         std::cerr << "resource fingerprint test threw: " << exception.what()
                   << '\n';

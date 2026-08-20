@@ -235,10 +235,13 @@ int main(int argc, char** argv)
         }
         if (!is_host && scripted_weapon && local_entity != 0 && !sent_weapon) {
             WeaponCommand command{};
+            command.session_epoch = 1;
             command.entity_id = local_entity;
+            command.entity_generation = 1;
             command.sequence = 1;
             command.client_tick = 1;
-            command.gun_id = 0;
+            command.gun.attachment_id = 0x1001u;
+            command.gun.path_hash = 0x2002u;
             command.trigger_held = false;
             std::array<Byte, kWeaponCommandWireSize> payload{};
             if (encode_weapon_command(command, payload) !=

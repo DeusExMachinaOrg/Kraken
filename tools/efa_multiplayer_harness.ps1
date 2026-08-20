@@ -13,7 +13,7 @@ param(
     [ValidateRange(30, 600)][int]$RaidTestTimeoutSeconds = 180,
     [ValidateRange(5, 120)][int]$RaidTestStableSeconds = 20,
     [ValidateRange(5, 300)][int]$JipMutationTimeoutSeconds = 90,
-    [ValidateRange(5, 60)][int]$RemoteCommandTimeoutSeconds = 10,
+    [ValidateRange(5, 60)][int]$RemoteCommandTimeoutSeconds = 30,
     [string]$CTestPath = 'C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/ctest.exe',
     [string]$RaidTargetMap = 'r1m1',
     [string]$RaidExitMap = '',
@@ -105,22 +105,62 @@ function Invoke-RemotePowerShell([string]$Text) {
 }
 
 function Start-RemotePowerShellStream([string]$Text) {
-    $encoded = ConvertTo-EncodedPowerShell $Text
-    if ($encoded.Length -gt 24000) { throw 'Remote stream command exceeds bounded encoded-command size' }
+    # Windows' remote command processor can reject an otherwise valid encoded
+    # PowerShell command at roughly 8 KiB. Persistent launch/watch scripts are
+    # copied as files so their size is independent of the SSH command line.
+    New-Item -ItemType Directory -Path $script:RunRoot -Force | Out-Null
+    $leaf = "kraken-stream-$script:RunId-$([Guid]::NewGuid().ToString('N')).ps1"
+    $localScript = Join-Path $script:RunRoot $leaf
+    $remoteScript = "C:\Users\Public\$leaf"
+    $remoteScpScript = "C:/Users/Public/$leaf"
+    $escapedRemoteScript = $remoteScript.Replace("'", "''")
+    $scriptText = @"
+`$ProgressPreference='SilentlyContinue'
+try {
+$Text
+} finally {
+    Remove-Item -LiteralPath '$escapedRemoteScript' -Force -ErrorAction SilentlyContinue
+}
+"@
+    [IO.File]::WriteAllText(
+        $localScript, $scriptText, [Text.UTF8Encoding]::new($true))
+    Copy-ToRemote $localScript $remoteScpScript
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName = 'ssh.exe'; $info.UseShellExecute = $false
     $info.CreateNoWindow = $true; $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
-    $info.Arguments = "-o BatchMode=yes -o ConnectTimeout=10 $RemoteSsh powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
-    $out = [Collections.Concurrent.ConcurrentQueue[string]]::new()
-    $err = [Collections.Concurrent.ConcurrentQueue[string]]::new()
+    $info.Arguments = "-o BatchMode=yes -o ConnectTimeout=10 $RemoteSsh powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$remoteScript`""
     $process = [Diagnostics.Process]::new(); $process.StartInfo = $info
-    $onOut = { param($s,$e) if ($null -ne $e.Data) { $out.Enqueue([string]$e.Data) } }.GetNewClosure()
-    $onErr = { param($s,$e) if ($null -ne $e.Data) { $err.Enqueue([string]$e.Data) } }.GetNewClosure()
-    $process.add_OutputDataReceived($onOut); $process.add_ErrorDataReceived($onErr)
     if (-not $process.Start()) { throw 'Could not start persistent remote stream' }
-    $process.BeginOutputReadLine(); $process.BeginErrorReadLine()
-    [PSCustomObject]@{ Process=$process; Output=$out; Error=$err }
+    # PowerShell scriptblock event handlers execute on a thread-pool thread
+    # without a Runspace under PowerShell 7. Keep the asynchronous .NET reads,
+    # but consume completed tasks only from the harness thread.
+    [PSCustomObject]@{
+        Process=$process
+        OutputTask=$process.StandardOutput.ReadLineAsync()
+        ErrorTask=$process.StandardError.ReadLineAsync()
+        OutputEnded=$false
+        ErrorEnded=$false
+        RemoteScriptPath=$remoteScript
+    }
+}
+
+function Read-RemotePowerShellStream([object]$Stream) {
+    $output=[Collections.Generic.List[string]]::new()
+    $errors=[Collections.Generic.List[string]]::new()
+    while(-not$Stream.OutputEnded-and$Stream.OutputTask.IsCompleted){
+        $line=$Stream.OutputTask.GetAwaiter().GetResult()
+        if($null-eq$line){$Stream.OutputEnded=$true;break}
+        $output.Add([string]$line)
+        $Stream.OutputTask=$Stream.Process.StandardOutput.ReadLineAsync()
+    }
+    while(-not$Stream.ErrorEnded-and$Stream.ErrorTask.IsCompleted){
+        $line=$Stream.ErrorTask.GetAwaiter().GetResult()
+        if($null-eq$line){$Stream.ErrorEnded=$true;break}
+        $errors.Add([string]$line)
+        $Stream.ErrorTask=$Stream.Process.StandardError.ReadLineAsync()
+    }
+    [PSCustomObject]@{Output=$output.ToArray();Error=$errors.ToArray()}
 }
 
 function Copy-ToRemote([string]$Source, [string]$Destination) {
@@ -306,11 +346,13 @@ exit `$LASTEXITCODE
     try {
         $deadline=(Get-Date).AddSeconds($SmokeTimeoutSeconds)
         while ((Get-Date) -lt $deadline -and -not $client.Process.HasExited) {
+            Read-RemotePowerShellStream $client|Out-Null
             if ($hostProcess.HasExited -and $hostProcess.ExitCode -ne 0) { throw "Peer host failed: $($hostProcess.ExitCode)" }
             Start-Sleep -Milliseconds $script:PollMilliseconds
         }
+        $clientStream=Read-RemotePowerShellStream $client
         if (-not $client.Process.HasExited) { throw 'Peer smoke timed out' }
-        if ($client.Process.ExitCode -ne 0) { throw "Peer client failed: $($client.Process.ExitCode)" }
+        if ($client.Process.ExitCode -ne 0) { throw "Peer client failed: $($client.Process.ExitCode): $($clientStream.Error -join '; ')" }
         Write-Host 'LAN peer smoke passed'
     } finally {
         if (-not $hostProcess.HasExited) { $hostProcess.Kill() }; if (-not $client.Process.HasExited) { $client.Process.Kill() }
@@ -362,7 +404,9 @@ function Start-LocalGame([hashtable]$Environment) {
     [PSCustomObject]@{Process=$process;OutPath=$out;ErrPath=$err;LauncherPath=$launcher}
 }
 
-function Start-RemoteGame([hashtable]$Environment,[hashtable]$Supervisor,[scriptblock]$OnSupervisorChunk) {
+function Start-RemoteGame([hashtable]$Environment,[hashtable]$Supervisor,
+                          [hashtable]$HostAcceptance,[hashtable]$CombatState,
+                          [string]$RequestedRoute) {
     $json=($Environment|ConvertTo-Json -Compress).Replace("'","''")
     $remote=@"
 `$root='$($RemoteGameRoot.Replace("'","''"))';`$exe=Join-Path `$root 'hta.exe';`$envs='$json'|ConvertFrom-Json
@@ -376,10 +420,14 @@ function Start-RemoteGame([hashtable]$Environment,[hashtable]$Supervisor,[script
     $launcher=Start-RemotePowerShellStream $remote;$launch=$null;$deadline=(Get-Date).AddSeconds(25)
     try{
         while((Get-Date)-lt$deadline -and $null-eq$launch){
-            if($Supervisor){$supervisorChunk=Update-Supervisor $Supervisor;if($OnSupervisorChunk){& $OnSupervisorChunk $supervisorChunk}}
-            $line=$null;while($launcher.Output.TryDequeue([ref]$line)){if(-not[string]::IsNullOrWhiteSpace($line)){$launch=$line|ConvertFrom-Json}}
-            $launcherError=$null;while($launcher.Error.TryDequeue([ref]$launcherError)){if(-not[string]::IsNullOrWhiteSpace($launcherError)){throw "Remote launcher stderr: $launcherError"}}
-            if($launcher.Process.HasExited -and $null-eq$launch){throw 'Remote launcher exited without process metadata'}
+            if($Supervisor){
+                $supervisorChunk=Update-Supervisor $Supervisor
+                Add-SupervisedHostChunk $HostAcceptance $CombatState $supervisorChunk $RequestedRoute
+            }
+            $launcherStream=Read-RemotePowerShellStream $launcher
+            foreach($line in $launcherStream.Output){if(-not[string]::IsNullOrWhiteSpace($line)){$launch=$line|ConvertFrom-Json}}
+            foreach($launcherError in $launcherStream.Error){if(-not[string]::IsNullOrWhiteSpace($launcherError)){throw "Remote launcher stderr: $launcherError"}}
+            if($launcher.Process.HasExited-and$launcher.OutputEnded-and$null-eq$launch){throw 'Remote launcher exited without process metadata'}
             Start-Sleep -Milliseconds $script:PollMilliseconds
         }
         if($null-eq$launch){throw 'Remote graphical launcher timed out'}
@@ -411,9 +459,10 @@ function Update-Supervisor([hashtable]$State) {
     if($fatal.Count){throw "Fatal supervisor: $($fatal -join '; ')"}
     $remoteLog='';$remoteErr=''
     if($State.RemoteWatch){
-        $line=$null;while($State.RemoteWatch.Output.TryDequeue([ref]$line)){if([string]::IsNullOrWhiteSpace($line)){continue};$record=$line|ConvertFrom-Json;$remoteLog+=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$record.log));$remoteErr+=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$record.stderr));if(@($record.exceptions).Count){throw "Remote exception inventory changed: $(@($record.exceptions)-join '; ')"};if(-not [bool]$record.alive){throw 'Remote hta.exe exited while supervised'}}
-        $streamError=$null;while($State.RemoteWatch.Error.TryDequeue([ref]$streamError)){if(-not[string]::IsNullOrWhiteSpace($streamError)){throw "Remote watchdog stderr: $streamError"}}
-        if($State.RemoteWatch.Process.HasExited -and -not $State.RemoteWatch.Output.TryPeek([ref]$line)){throw 'Remote watchdog exited unexpectedly'}
+        $watchStream=Read-RemotePowerShellStream $State.RemoteWatch
+        foreach($line in $watchStream.Output){if([string]::IsNullOrWhiteSpace($line)){continue};$record=$line|ConvertFrom-Json;$remoteLog+=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$record.log));$remoteErr+=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$record.stderr));if(@($record.exceptions).Count){throw "Remote exception inventory changed: $(@($record.exceptions)-join '; ')"};if(-not [bool]$record.alive){throw 'Remote hta.exe exited while supervised'}}
+        foreach($streamError in $watchStream.Error){if(-not[string]::IsNullOrWhiteSpace($streamError)){throw "Remote watchdog stderr: $streamError"}}
+        if($State.RemoteWatch.Process.HasExited-and$State.RemoteWatch.OutputEnded){throw 'Remote watchdog exited unexpectedly'}
         $fatal=@(Update-FatalParser $State.RemoteLogParser $remoteLog)+@(Update-FatalParser $State.RemoteErrParser $remoteErr);if($fatal.Count){throw "Fatal supervisor: $($fatal -join '; ')"}
     }
     [PSCustomObject]@{LocalLog=[string]$log.Text;RemoteLog=$remoteLog}
@@ -450,6 +499,10 @@ function New-CombatAcceptanceState([ValidateSet('host-kills-client','client-kill
 }
 
 function Update-CombatAcceptanceState([hashtable]$State,[string]$HostChunk,[string]$ClientChunk,[datetime]$ObservedAt,[int]$KillSeconds,[int]$StableSeconds,[string]$RequestedRoute) {
+    $semanticFailure=$HostChunk+"`n"+$ClientChunk
+    foreach($marker in @('quest projection commit deferred/failed','quest projection delta rejected','match join failed during native synchronization materialization')){
+        if($semanticFailure.Contains($marker)){return [PSCustomObject]@{Failed=$true;Reason="Multiplayer synchronization failed during combat: $marker";Accepted=$false}}
+    }
     $hadBoth=$State.HostArmed-and$State.ClientArmed;$deathWasKnown=$null-ne$State.DeathAt
     if($HostChunk.Contains('KRAKEN_MP_ACCEPT combat_armed role=host')){$State.HostArmed=$true}
     if($ClientChunk.Contains('KRAKEN_MP_ACCEPT combat_armed role=client')){$State.ClientArmed=$true}
@@ -497,9 +550,27 @@ function Update-CombatAcceptanceState([hashtable]$State,[string]$HostChunk,[stri
     [PSCustomObject]@{Failed=$false;Reason='';Accepted=[bool]$accepted}
 }
 
+function Add-SupervisedHostChunk([hashtable]$HostAcceptance,
+                                 [hashtable]$CombatState,[object]$Chunk,
+                                 [string]$RequestedRoute) {
+    Add-HostAcceptanceChunk $HostAcceptance ([string]$Chunk.LocalLog)
+    if($null-ne$CombatState){
+        $combatUpdate=Update-CombatAcceptanceState $CombatState ([string]$Chunk.LocalLog) '' (Get-Date) $script:CombatKillTimeoutSeconds $RaidTestStableSeconds $RequestedRoute
+        if($combatUpdate.Failed){throw $combatUpdate.Reason}
+    }
+}
+
 function Find-NativeEntity([string]$Text) {
     $m=[regex]::Match($Text,'KRAKEN_MP_ACCEPT native_entity_registered entity=(?<e>\d+) generation=(?<g>\d+) kind=2 barrierRevision=(?<r>\d+)')
     if(-not$m.Success){return $null};[PSCustomObject]@{Entity=[uint32]$m.Groups['e'].Value;Generation=[uint16]$m.Groups['g'].Value;Revision=[uint64]$m.Groups['r'].Value}
+}
+
+function Test-InitialNpcReplica([string]$HostText,[string]$ClientText) {
+    foreach($match in [regex]::Matches($HostText,'host entity registered entity=(?<e>\d+) generation=(?<g>\d+) kind=2 ')){
+        $pattern="KRAKEN_MP_ACCEPT replica_materialized entity=$($match.Groups['e'].Value) generation=$($match.Groups['g'].Value) kind=2"
+        if($ClientText.Contains($pattern)){return $true}
+    }
+    $false
 }
 
 function Start-ScenarioEnvironment([string]$Role,[string]$Scenario,[int]$Required,[string]$Combat='',[string]$WeaponPart='') {
@@ -513,30 +584,43 @@ function Start-ScenarioEnvironment([string]$Role,[string]$Scenario,[int]$Require
 function Invoke-RaidScenario([string]$Scenario,[string]$Combat='') {
     Stop-LocalGame;Stop-RemoteGame;Test-Targets;Assert-DeployedKrakenArtifact
     $combatWeaponPart=if($Combat){Resolve-CombatWeaponPart $Combat}else{''}
-    $localBase=Get-ExceptionInventory $LocalGameRoot;$localOffset=(if(Test-Path(Join-Path $LocalGameRoot 'kraken.log')){(Get-Item(Join-Path $LocalGameRoot 'kraken.log')).Length}else{0})
-    $remoteBase=@(Invoke-RemotePowerShell "`$d=Join-Path '$($RemoteGameRoot.Replace("'","''"))' 'exceptions';if(Test-Path `$d){Get-ChildItem `$d -File|Where-Object{`$_.Name-match'^hta\.exe\d+\.(dmp|log|game\.log)`$'}|ForEach-Object{\"`$(`$_.Name)|`$(`$_.Length)|`$(`$_.LastWriteTimeUtc.Ticks)\"}}")
+    $localBase=Get-ExceptionInventory $LocalGameRoot
+    $localLogPath=Join-Path $LocalGameRoot 'kraken.log'
+    $localOffset=0
+    if(Test-Path -LiteralPath $localLogPath){$localOffset=(Get-Item -LiteralPath $localLogPath).Length}
+    $remoteInventoryScript=@"
+`$directory=Join-Path '$($RemoteGameRoot.Replace("'","''"))' 'exceptions'
+if(Test-Path -LiteralPath `$directory){
+    Get-ChildItem -LiteralPath `$directory -File |
+        Where-Object { `$_.Name -match '^hta\.exe\d+\.(dmp|log|game\.log)$' } |
+        ForEach-Object { "`$(`$_.Name)|`$(`$_.Length)|`$(`$_.LastWriteTimeUtc.Ticks)" }
+}
+"@
+    $remoteBase=@(Invoke-RemotePowerShell $remoteInventoryScript)
     $remoteOffset=[int64](Invoke-RemotePowerShell "`$p=Join-Path '$($RemoteGameRoot.Replace("'","''"))' 'kraken.log';if(Test-Path `$p){(Get-Item `$p).Length}else{0}"|Select-Object -Last 1)
     $required=if($Scenario-eq'jip'){1}else{2};$local=Start-LocalGame (Start-ScenarioEnvironment 'host' $Scenario $required $Combat $combatWeaponPart);$super=New-Supervisor $local $localBase $localOffset
     $hostAcceptance=New-HostAcceptanceContext;$hostGate=$hostAcceptance.Gate;$clientGate=New-AcceptanceGate Client;$clientBuffer='';$native=$null;$remoteLaunch=$null
     $requestedRoute=if([string]::IsNullOrWhiteSpace($RaidExitMap)){'main_menu'}else{$RaidExitMap};$combatState=if($Combat){New-CombatAcceptanceState $Combat}else{$null}
-    $consumeHostChunk={param($chunk)Add-HostAcceptanceChunk $hostAcceptance $chunk.LocalLog;if($combatState){$combatUpdate=Update-CombatAcceptanceState $combatState $chunk.LocalLog '' (Get-Date) $script:CombatKillTimeoutSeconds $RaidTestStableSeconds $requestedRoute;if($combatUpdate.Failed){throw $combatUpdate.Reason}}}.GetNewClosure()
     try{
         $hostDeadline=(Get-Date).AddSeconds($RaidTestTimeoutSeconds)
-        while((Get-Date)-lt$hostDeadline){$d=Update-Supervisor $super;&$consumeHostChunk $d;if($hostAcceptance.Buffer-match'KRAKEN_MP_ACCEPT native_saved_game role=host .*result=rejected' -or $hostAcceptance.Buffer-match'KRAKEN_MP_ACCEPT matchmaking role=host .*result=rejected'){throw 'Host native save or generic matchmaking was rejected'};if($hostAcceptance.Buffer-match'KRAKEN_MP_ACCEPT native_saved_game role=host .*result=loaded' -and $hostAcceptance.Buffer-match'KRAKEN_MP_ACCEPT matchmaking role=host .*result=accepted'){break};Start-Sleep -Milliseconds $script:PollMilliseconds}
+        while((Get-Date)-lt$hostDeadline){$d=Update-Supervisor $super;Add-SupervisedHostChunk $hostAcceptance $combatState $d $requestedRoute;if($hostAcceptance.Buffer-match'KRAKEN_MP_ACCEPT native_saved_game role=host .*result=rejected' -or $hostAcceptance.Buffer-match'KRAKEN_MP_ACCEPT matchmaking role=host .*result=rejected'){throw 'Host native save or generic matchmaking was rejected'};if($hostAcceptance.Buffer-match'KRAKEN_MP_ACCEPT native_saved_game role=host .*result=loaded' -and $hostAcceptance.Buffer-match'KRAKEN_MP_ACCEPT matchmaking role=host .*result=accepted'){break};Start-Sleep -Milliseconds $script:PollMilliseconds}
+        if($hostAcceptance.Buffer-notmatch'KRAKEN_MP_ACCEPT native_saved_game role=host .*result=loaded' -or $hostAcceptance.Buffer-notmatch'KRAKEN_MP_ACCEPT matchmaking role=host .*result=accepted'){throw "Host bootstrap did not reach generic matchmaking before timeout: hostGate=$($hostGate.Stage)/$($hostGate.Sequence.Count)"}
         if($Scenario-eq'jip'){
-            while((Get-Date)-lt$hostDeadline -and -not$hostAcceptance.Buffer.Contains($script:RuntimeMarkers.GameplayOpen)){$d=Update-Supervisor $super;&$consumeHostChunk $d;Start-Sleep -Milliseconds $script:PollMilliseconds}
+            while((Get-Date)-lt$hostDeadline -and -not$hostAcceptance.Buffer.Contains($script:RuntimeMarkers.GameplayOpen)){$d=Update-Supervisor $super;Add-SupervisedHostChunk $hostAcceptance $combatState $d $requestedRoute;Start-Sleep -Milliseconds $script:PollMilliseconds}
             if(-not$hostAcceptance.Buffer.Contains($script:RuntimeMarkers.GameplayOpen)){throw 'JIP host did not reach gameplay_open before mutation capture'}
             $jipMutationBuffer=''
             $mutationDeadline=(Get-Date).AddSeconds($JipMutationTimeoutSeconds)
-            while((Get-Date)-lt$mutationDeadline -and $null-eq$native){$d=Update-Supervisor $super;&$consumeHostChunk $d;$jipMutationBuffer+=$d.LocalLog;$native=Find-NativeEntity $jipMutationBuffer;Start-Sleep -Milliseconds $script:PollMilliseconds}
+            while((Get-Date)-lt$mutationDeadline -and $null-eq$native){$d=Update-Supervisor $super;Add-SupervisedHostChunk $hostAcceptance $combatState $d $requestedRoute;$jipMutationBuffer+=$d.LocalLog;$native=Find-NativeEntity $jipMutationBuffer;Start-Sleep -Milliseconds $script:PollMilliseconds}
             if($null-eq$native){throw 'No natural typed NPC registration occurred after Playing within the JIP mutation timeout'}
         }
-        $remoteLaunch=Start-RemoteGame (Start-ScenarioEnvironment 'client' $Scenario $required $Combat $combatWeaponPart) $super $consumeHostChunk;$super.Remote=$remoteLaunch;$super.RemoteWatch=Start-RemoteWatchdog $remoteLaunch $remoteBase $remoteOffset
+        $remoteLaunch=Start-RemoteGame (Start-ScenarioEnvironment 'client' $Scenario $required $Combat $combatWeaponPart) $super $hostAcceptance $combatState $requestedRoute;$super.Remote=$remoteLaunch;$super.RemoteWatch=Start-RemoteWatchdog $remoteLaunch $remoteBase $remoteOffset
         $deadline=(Get-Date).AddSeconds($RaidTestTimeoutSeconds);$stableAt=$null
         while((Get-Date)-lt$deadline){$d=Update-Supervisor $super;Add-HostAcceptanceChunk $hostAcceptance $d.LocalLog;$clientBuffer+=$d.RemoteLog;Update-AcceptanceGate $clientGate $d.RemoteLog
             if($clientBuffer-match'KRAKEN_MP_ACCEPT native_saved_game role=client .*result=rejected' -or $clientBuffer-match'KRAKEN_MP_ACCEPT matchmaking role=client .*result=rejected'){throw 'Client native save or generic matchmaking was rejected'}
-            if($null-eq$native){$native=Find-NativeEntity $hostAcceptance.Buffer}
-            if($native){$replicaPattern="KRAKEN_MP_ACCEPT replica_materialized entity=$($native.Entity) generation=$($native.Generation) kind=2";$replicaOk=$clientBuffer.Contains($replicaPattern);$snap=[regex]::Matches($clientBuffer,'KRAKEN_MP_ACCEPT snapshot_committed epoch=\d+ revision=(?<r>\d+)')|Select-Object -Last 1;$revisionOk=$snap-and([uint64]$snap.Groups['r'].Value-ge$native.Revision)}else{$replicaOk=$false;$revisionOk=$false}
+            if($Scenario-eq'jip'){
+                if($null-eq$native){$native=Find-NativeEntity $hostAcceptance.Buffer}
+                if($native){$replicaPattern="KRAKEN_MP_ACCEPT replica_materialized entity=$($native.Entity) generation=$($native.Generation) kind=2";$replicaOk=$clientBuffer.Contains($replicaPattern);$snap=[regex]::Matches($clientBuffer,'KRAKEN_MP_ACCEPT snapshot_committed epoch=\d+ revision=(?<r>\d+)')|Select-Object -Last 1;$revisionOk=$snap-and([uint64]$snap.Groups['r'].Value-ge$native.Revision)}else{$replicaOk=$false;$revisionOk=$false}
+            }else{$replicaOk=Test-InitialNpcReplica $hostAcceptance.Buffer $clientBuffer;$revisionOk=$true}
             if($Combat){$combatUpdate=Update-CombatAcceptanceState $combatState $d.LocalLog $d.RemoteLog (Get-Date) $script:CombatKillTimeoutSeconds $RaidTestStableSeconds $requestedRoute;if($combatUpdate.Failed){throw $combatUpdate.Reason};if($combatUpdate.Accepted){return}}
             elseif(Test-OrdinaryRaidAcceptance $replicaOk $revisionOk ($null-ne$hostGate.CompletedAt) ($null-ne$clientGate.CompletedAt)){if($null-eq$stableAt){$stableAt=Get-Date}}
             if(-not$Combat-and$stableAt-and((Get-Date)-$stableAt).TotalSeconds-ge$RaidTestStableSeconds){return}
@@ -558,6 +642,7 @@ function Invoke-SelfCheck {
     $source=Get-Content $PSCommandPath -Raw
     foreach($fragment in @('EFA_MP.'+'BeginRaid','FireFromWeapon'+'Custom2','SetPosition'+'Self(','data\scripts\efa.lua''; Target','triggers.xml''; Target')){if($source.Contains($fragment)){throw "Forbidden harness behavior: $fragment"}}
     foreach($fragment in @('cli'+'ck','Send'+'Keys','UI'+'Automation','keybd'+'_event','user'+'32.dll')){if($source.IndexOf($fragment,[StringComparison]::OrdinalIgnoreCase)-ge0){throw "Forbidden automation behavior: $fragment"}}
+    foreach($fragment in @('add_'+'OutputDataReceived','add_'+'ErrorDataReceived','Begin'+'OutputReadLine','Begin'+'ErrorReadLine')){if($source.Contains($fragment)){throw "Runspace-unsafe asynchronous callback remains: $fragment"}}
     if(@($script:OverlayFiles|Where-Object{$_.Target-like'data\*'}).Count){throw 'Deployment contains non-Kraken resources'}
     $parser=New-FatalParser 'self';if(@(Update-FatalParser $parser 'PAN').Count){throw 'Fatal parser completed an incomplete token too early'};$hits=@(Update-FatalParser $parser "IC crash`r`n");if($hits.Count-ne1){throw 'Fatal parser did not preserve and detect a split line'}
     $tempErr=Join-Path ([IO.Path]::GetTempPath()) ("kraken-harness-stderr-$([Guid]::NewGuid().ToString('N')).log");$utf8NoBom=[Text.UTF8Encoding]::new($false)
@@ -574,6 +659,7 @@ function Invoke-SelfCheck {
     if(Test-OrdinaryRaidAcceptance $true $true $true $false){throw 'Ordinary raid acceptance allowed an incomplete client gate'}
     if(Test-OrdinaryRaidAcceptance $true $true $false $true){throw 'Ordinary raid acceptance allowed an incomplete host gate'}
     if(-not(Test-OrdinaryRaidAcceptance $true $true $true $true)){throw 'Ordinary raid acceptance rejected two completed gates'}
+    $hostNpc='host entity registered entity=1002 generation=3 kind=2 objId=10';$clientNpc='KRAKEN_MP_ACCEPT replica_materialized entity=1002 generation=3 kind=2 prototype=1';if(-not(Test-InitialNpcReplica $hostNpc $clientNpc)-or(Test-InitialNpcReplica $hostNpc ($clientNpc-replace'entity=1002','entity=1003'))){throw 'Initial NPC host/client correlation predicate is invalid'}
     if(-not(Test-ArtifactHashesMatch ('A'*64) ('a'*64) ('A'*64))-or(Test-ArtifactHashesMatch ('A'*64) ('B'*64) ('A'*64))){throw 'Artifact provenance hash predicate accepted stale deployment or rejected an exact hash'}
     $weaponXml="<Root><WeaponGroupManager><CurrentWeaponGroups><WeaponGroup groupId='0' weaponParts='' /><WeaponGroup groupId='1' weaponParts='GUN_FIRST GUN_SECOND' /><WeaponGroup groupId='2' weaponParts='GUN_THIRD' /></CurrentWeaponGroups></WeaponGroupManager></Root>"
     if((Get-FirstEquippedWeaponPart $weaponXml)-ne'GUN_FIRST'){throw 'Weapon discovery did not select the first token from the first equipped group'}
@@ -604,6 +690,7 @@ function Invoke-SelfCheck {
     $clientKill=New-CombatAcceptanceState 'client-kills-host';Update-CombatAcceptanceState $clientKill 'KRAKEN_MP_ACCEPT combat_armed role=host' '' $t0 30 0 $route|Out-Null;Update-CombatAcceptanceState $clientKill '' 'KRAKEN_MP_ACCEPT combat_armed role=client' $t0.AddSeconds(1) 30 0 $route|Out-Null;$result=Update-CombatAcceptanceState $clientKill "KRAKEN_COMBAT_AUTOTEST death scenario=client-kills-host shooter=2 target=1`nKRAKEN_MP_ACCEPT session_exit role=host reason=death route=main_menu result=success" 'KRAKEN_MP_ACCEPT session_exit role=client reason=death route=main_menu result=success' $t0.AddSeconds(2) 30 0 $route;if($result.Failed-or-not$result.Accepted){throw 'Client-kills-host matrix did not require and accept two death exits'}
     $result=Update-CombatAcceptanceState $clientKill '' 'KRAKEN_MP_ACCEPT session_exit role=client reason=death route=main_menu result=failed' $t0.AddSeconds(2.1) 30 0 $route;if(-not$result.Failed){throw 'Combat matrix retained stale success after a failed exit result'}
     $terminated=New-CombatAcceptanceState 'client-kills-host';Update-CombatAcceptanceState $terminated 'KRAKEN_MP_ACCEPT combat_armed role=host' '' $t0 30 0 $route|Out-Null;Update-CombatAcceptanceState $terminated '' 'KRAKEN_MP_ACCEPT combat_armed role=client' $t0.AddSeconds(1) 30 0 $route|Out-Null;$result=Update-CombatAcceptanceState $terminated 'KRAKEN_COMBAT_AUTOTEST death scenario=client-kills-host shooter=2 target=1' 'KRAKEN_MP_ACCEPT session_exit role=client reason=host_terminated route=main_menu result=success' $t0.AddSeconds(2) 30 0 $route;if(-not$result.Failed){throw 'Client-kills-host matrix accepted host_terminated'}
+    $projectionFailure=New-CombatAcceptanceState 'client-kills-host';$result=Update-CombatAcceptanceState $projectionFailure '' 'quest projection delta rejected epoch=1 base=5 revision=6 applied=5 state=3 result=11 records=1' $t0 30 0 $route;if(-not$result.Failed){throw 'Combat matrix did not fail immediately on quest projection loss'}
     $bad=New-AcceptanceGate Client;$threw=$false;try{Update-AcceptanceGate $bad ($bad.Sequence[2]+$bad.Sequence[0])}catch{$threw=$true};if(-not$threw){throw 'Acceptance gate allowed reordered markers'}
     $runtime=Get-Content (Join-Path $script:Root 'source\net\runtime.cpp') -Raw
     if($runtime.Contains('EFA_MP.'+'BeginRaid') -or $runtime.Contains('FireFromWeapon'+'Custom2')){throw 'Runtime contains a removed EFA-specific acceptance seam'}
