@@ -1,11 +1,49 @@
 # Directories
 build
+build-*/
+build_*/
+artifacts/
+out/
 .vscode
+.vs
+__pycache__/
+
+# Local profiling, calibration and diagnostic output
+/*.csv
+/*.err
+/*.etl
+/*.html
+/*.log
+/*.out
+/*.report*.xml
+/*_summary.txt
+/*.stats.txt
+/*.summary.txt
+/*.wpaprofile
+/*_admin.log
+/*_process.txt
+/*_profile*.txt
+/*_stack.txt
+/*export*/
+
+# Local test-driver artifacts
+/calibration_*.json
+/fleet_*.json
+/representative_*.json
+/ural_*.json
+/data/if/strings/uibooksmodes.xml
+/handoff.md
+/opencode.json
+/report.xsl
+/tools/lora/
+/tools/testharness/*.json
 
 # Bindary files
 **/*.obj
+**/*.exe
 **/*.dll
 **/*.exp
 **/*.lib
 **/*.ilk
 **/*.pdb
+*.pyc
