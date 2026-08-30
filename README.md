@@ -280,7 +280,7 @@ Sound in `data\if\frames\uischema2.xml`:
 `mode="scroll"` to allow scrolling through a large volume of text.
 
 - **Bold**, *italic*, and ***bold-italic***: through `*Bold*`, `_italic_` and `*_bold-italic_*`.
-- Text alignment: `#left`, `#right` и `#center`.
+- Text alignment: `#left`, `#right` and `#center`.
 - Inserting Images: `![Logotip](data\if\ico_hd\Splashes\comrem_logo.png)`
 
 Book example (RU):
