@@ -128,8 +128,8 @@ Sound=SOUND_REFUEL
 
 <div align="center">
 	
-<img src="uibooks_screens\uibooks_preview1.png" alt="uibooks_preview1.png" width="250" />
-<img src="uibooks_screens\uibooks_preview2.png" alt="uibooks_preview2.png" width="250" />
+<img src="uibooks_screens\uibooks_preview1.png" alt="uibooks_preview1.png" width="450" />
+<img src="uibooks_screens\uibooks_preview2.png" alt="uibooks_preview2.png" width="450" />
 
 </div>
 
@@ -266,8 +266,8 @@ Sound in `data\if\frames\uischema2.xml`:
 
 <div align="center">
 	
-<img src="uibooks_screens\uibooks_preview1.png" alt="uibooks_preview1.png" width="250" />
-<img src="uibooks_screens\uibooks_preview2.png" alt="uibooks_preview2.png" width="250" />
+<img src="uibooks_screens\uibooks_preview1.png" alt="uibooks_preview1.png" width="450" />
+<img src="uibooks_screens\uibooks_preview2.png" alt="uibooks_preview2.png" width="450" />
 
 </div>
 
