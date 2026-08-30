@@ -52,6 +52,7 @@
 
 - Возможность починки предметами как в Меридиан 113
 - Возможность привязки выполнения Lua-функций к клавишам клавиатуры
+- Возможность форматирования книг в журнале
 - Исправление заторможенного поведения AI ботов
 - Исправление ObjContainer
 - Исправление крутящегося кардана
@@ -190,6 +191,7 @@ Sound=SOUND_REFUEL
 
 - The ability to repair with items, as in Meridian 113
 - The ability to bind the execution of Lua functions to keyboard keys
+- The ability to books formatting in a journal
 - Fixing the sluggish behavior of AI bots
 - Fixing ObjContainer
 - Fixing the rotating gimbal
