@@ -86,6 +86,24 @@ namespace kraken::ext::uibooks::render {
                          hta::PointBase<float>{ position.x - halfOffset, position.y },
                          value, fontId, hta::m3d::TW_NOWRAP, hta::m3d::TF_LEFT);
         }
+
+        void DrawClippedImage(hta::m3d::ui::GfxServer* gfx,
+                              const hta::m3d::ui::DrawInfo& drawInfo,
+                              float x, float y, float width, float height,
+                              float clipTop, float clipBottom,
+                              hta::m3d::rend::TexHandle texture) {
+            const float visibleTop = (std::max)(y, clipTop);
+            const float visibleBottom = (std::min)(y + height, clipBottom);
+            if (!(visibleBottom > visibleTop) || !(width > 0.0f) || !(height > 0.0f))
+                return;
+
+            const float v0 = (visibleTop - y) / height;
+            const float v1 = (visibleBottom - y) / height;
+            gfx->AddImagedRectGeneral(
+                drawInfo,
+                hta::BoundsBase<float>{x, visibleTop, width, visibleBottom - visibleTop},
+                0, texture, 0.0f, v0, 1.0f, v1);
+        }
     }
 
     std::vector<WrappedRow> WrapStyledLine(hta::m3d::ui::GfxServer* gfx,
@@ -203,27 +221,28 @@ namespace kraken::ext::uibooks::render {
             // discard the whole line merely because its last row extends below
             // the viewport: the wrapped rows below are clipped individually,
             // while the custom scroll offset brings the preceding rows into view.
-            if (lineBottom <= state.top0 || y >= contentBottom) {
+            if (!line.isImage && (lineBottom <= state.top0 || y >= contentBottom)) {
                 row += visualRows;
                 ++lineIndex;
                 continue;
             }
 
             if (line.isImage) {
-                // Images occupy the whole logical line area. Keep them out of
-                // the footer even when the scroll position cuts that area at
-                // the viewport edge.
-                if (y < state.top0 || lineBottom > contentBottom) {
-                    row += visualRows;
-                    ++lineIndex;
-                    continue;
-                }
+                // Images occupy the whole logical line area. Crop the source UVs
+                // when scrolling cuts the image at either edge instead of
+                // dropping the whole image. The bottom clip is above the footer.
+                const float captionH = line.imageAlt.empty() ? 0.0f : state.lineH;
                 const uint32_t imageHandle = lineIndex < static_cast<int32_t>(state.imageHandles.size())
                     ? state.imageHandles[(size_t) lineIndex] : 0;
                 const float imageW = lineIndex < static_cast<int32_t>(state.imageWidths.size())
                     ? state.imageWidths[(size_t) lineIndex] : 0.0f;
                 const float imageH = lineIndex < static_cast<int32_t>(state.imageHeights.size())
                     ? state.imageHeights[(size_t) lineIndex] : 0.0f;
+                if (y + imageH <= state.top0 || y >= contentBottom) {
+                    row += visualRows;
+                    ++lineIndex;
+                    continue;
+                }
                 if (imageHandle && imageW > 0.0f && imageH > 0.0f) {
                     float x = state.leftPad;
                     if (line.align == hta::m3d::TF_RIGHT)
@@ -232,18 +251,25 @@ namespace kraken::ext::uibooks::render {
                         x = (state.clientW - imageW) * 0.5f;
                     if (x < 1.0f)
                         x = 1.0f;
-                    gfx->AddImagedRect(drawInfo,
-                                       hta::BoundsBase<float>{x, y, imageW, imageH}, 0,
-                                       hta::m3d::rend::TexHandle((int32_t) imageHandle));
+                    DrawClippedImage(gfx, drawInfo, x, y, imageW, imageH,
+                                     state.top0, contentBottom,
+                                     hta::m3d::rend::TexHandle((int32_t) imageHandle));
                     if (!line.imageAlt.empty()) {
                         std::string caption = colorToken;
                         caption += line.imageAlt;
+                        const float captionY = y + imageH;
+                        if (captionY < state.top0
+                            || captionY + captionH > contentBottom) {
+                            row += visualRows;
+                            ++lineIndex;
+                            continue;
+                        }
                         const float captionX = line.align == hta::m3d::TF_RIGHT
                             ? state.clientW - state.leftPad
                             : line.align == hta::m3d::TF_CENTER
                                 ? state.clientW * 0.5f : state.leftPad;
                         gfx->AddText(drawInfo,
-                                     hta::PointBase<float>{ captionX, y + imageH },
+                                     hta::PointBase<float>{ captionX, captionY },
                                      hta::CStr(caption.c_str()), state.fontId,
                                      hta::m3d::TW_NOWRAP,
                                      static_cast<hta::m3d::TextFormatFlags>(line.align));

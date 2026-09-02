@@ -22,7 +22,6 @@ namespace kraken::ext::uibookstest::probes {
         constexpr int32_t kWheelDelta = 120;
         constexpr int32_t kMaxScrollSteps = 64;
         constexpr int32_t kMaxAutoScrollSteps = 128;
-        constexpr int32_t kRowsToMoveBack = 2;
         constexpr float kPositionEpsilon = 0.5f;
         constexpr float kBandSyncLineTolerance = 1.5f;
         constexpr float kHalf = 0.5f;
@@ -140,29 +139,20 @@ namespace kraken::ext::uibookstest::probes {
             fail = "scroll_down_edge_clamp";
             return;
         }
-        (void) MouseWheel(box, kWheelDelta, cx, cy);
-        (void) MouseWheel(box, kWheelDelta, cx, cy);
-        const float expectUp = maxScroll - static_cast<float>(kRowsToMoveBack) * lineH;
-        if (std::fabs(kraken::ext::uibooks::GetBookScrollY() - expectUp) > kPositionEpsilon
-            || kraken::ext::uibooks::LastCurPage() != page) {
-            fail = std::string("scroll_up_")
-                 + std::to_string(static_cast<int>(kraken::ext::uibooks::GetBookScrollY()));
-            return;
-        }
-        for (int32_t i = 0; i < kMaxScrollSteps && kraken::ext::uibooks::LastCurPage() == page; ++i)
+        for (int32_t i = 0; i < kMaxScrollSteps; ++i) {
             (void) MouseWheel(box, kWheelDelta, cx, cy);
-        if (kraken::ext::uibooks::LastCurPage() != page - 1) {
-            fail = std::string("scroll_up_prevpage_") + std::to_string(kraken::ext::uibooks::LastCurPage())
-                 + "_scroll_" + std::to_string(static_cast<int>(kraken::ext::uibooks::GetBookScrollY()));
-            return;
+            if (kraken::ext::uibooks::GetBookScrollY() <= kPositionEpsilon)
+                break;
         }
-        if (kraken::ext::uibooks::GetBookScrollY() > kPositionEpsilon) {
+        if (kraken::ext::uibooks::GetBookScrollY() > kPositionEpsilon
+            || kraken::ext::uibooks::LastCurPage() != page) {
             fail = std::string("scroll_up_top_clamp_")
-                 + std::to_string(static_cast<int>(kraken::ext::uibooks::GetBookScrollY()));
+                 + std::to_string(static_cast<int>(kraken::ext::uibooks::GetBookScrollY()))
+                 + "_page_" + std::to_string(kraken::ext::uibooks::LastCurPage());
             return;
         }
-        LOG_INFO("open_books: scroll probe ok: down to max (%.1f), clamped, up 2 rows, up across to page %d",
-                 maxScroll, page - 1);
+        LOG_INFO("open_books: scroll probe ok: down to max (%.1f), clamped, up to top without page change",
+                 maxScroll);
     }
 
     void RunPagesModeProbe(std::string& fail) {

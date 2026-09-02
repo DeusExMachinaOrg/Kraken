@@ -2,6 +2,7 @@
 
 #include "ext/uibooks/uibooks_scroll.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include "ext/uibooks/uibooks_pagination.hpp"
@@ -78,7 +79,14 @@ namespace kraken::ext::uibooks::scroll {
         if (maximum > 0.0f) {
             vertical->EnableWindow(true);
             vertical->ShowWindow(true);
-            vertical->SetScrollRect(state.clientW, PageContentHeight(state, state.curPage));
+            // The engine scroll window still uses the full textbox height, while
+            // books reserve a footer for page navigation. Add the top inset and
+            // footer back to the virtual content height so its native range is
+            // exactly the custom drawable range; otherwise dragging the thumb
+            // cannot reach the last text rows.
+            const float reserved = (std::max)(0.0f, state.clientH - state.visibleH);
+            vertical->SetScrollRect(state.clientW,
+                                    PageContentHeight(state, state.curPage) + reserved);
             vertical->SetCurPos(state.scrollY);
             state.lastPushedPx = CurrentPositionPx(vertical);
         }
@@ -93,11 +101,11 @@ namespace kraken::ext::uibooks::scroll {
         const float target = state.scrollY + static_cast<float>(lines) * state.lineH;
         if (target <= 0.0f) {
             state.scrollY = 0.0f;
-            return lines < 0 ? -1 : 0;
+            return 0;
         }
         if (target >= maximum) {
             state.scrollY = maximum;
-            return lines > 0 ? 1 : 0;
+            return 0;
         }
         state.scrollY = target;
         return 0;

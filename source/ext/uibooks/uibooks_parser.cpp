@@ -1,6 +1,9 @@
 #include "ext/uibooks/uibooks_parser.hpp"
 
+#include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <optional>
 #include <utility>
@@ -19,8 +22,100 @@ namespace kraken::ext::uibooks {
             return true;
         }
 
-        bool ParseImageMarker(const std::string& line, std::string* alt, std::string* path) {
-            if (!alt || !path || line.size() < 6 || line[0] != '!' || line[1] != '[')
+        bool ParseImageDimension(const std::string& value, ImageDimension* dimension,
+                                 bool allowFill) {
+            if (!dimension || value.empty())
+                return false;
+
+            std::string normalized;
+            normalized.reserve(value.size());
+            for (const char ch : value)
+                normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+
+            if (allowFill
+                && (normalized == "fill" || normalized == "full" || normalized == "100%")) {
+                dimension->specified = true;
+                dimension->fill = true;
+                dimension->pixels = 0.0f;
+                return true;
+            }
+            char* end = nullptr;
+            const float pixels = std::strtof(value.c_str(), &end);
+            if (end == value.c_str() || *end != '\0' || !std::isfinite(pixels) || pixels <= 0.0f)
+                return false;
+            dimension->specified = true;
+            dimension->fill = false;
+            dimension->pixels = pixels;
+            return true;
+        }
+
+        bool ParseImageOptions(const std::string& options, ImageDimension* width,
+                               ImageDimension* height) {
+            if (!width || !height || options.size() < 2
+                || options.front() != '{' || options.back() != '}')
+                return false;
+
+            size_t pos = 1;
+            const size_t end = options.size() - 1;
+            bool widthSeen = false;
+            bool heightSeen = false;
+            while (pos < end) {
+                while (pos < end && (std::isspace(static_cast<unsigned char>(options[pos]))
+                                     || options[pos] == ','))
+                    ++pos;
+                if (pos >= end)
+                    break;
+
+                const size_t keyStart = pos;
+                while (pos < end && options[pos] != '='
+                       && !std::isspace(static_cast<unsigned char>(options[pos])))
+                    ++pos;
+                if (pos == keyStart || pos >= end || options[pos] != '=')
+                    return false;
+                const std::string key = options.substr(keyStart, pos - keyStart);
+                ++pos;
+                const size_t valueStart = pos;
+                while (pos < end && !std::isspace(static_cast<unsigned char>(options[pos]))
+                       && options[pos] != ',')
+                    ++pos;
+                if (pos == valueStart)
+                    return false;
+                const std::string value = options.substr(valueStart, pos - valueStart);
+
+                ImageDimension* target = nullptr;
+                bool* seen = nullptr;
+                if (key.size() == 5
+                    && std::equal(key.begin(), key.end(), "width",
+                                  [](char lhs, char rhs) {
+                                      return std::tolower(static_cast<unsigned char>(lhs))
+                                          == rhs;
+                                  })) {
+                    target = width;
+                    seen = &widthSeen;
+                }
+                else if (key.size() == 6
+                    && std::equal(key.begin(), key.end(), "height",
+                                  [](char lhs, char rhs) {
+                                      return std::tolower(static_cast<unsigned char>(lhs))
+                                          == rhs;
+                                  })) {
+                    target = height;
+                    seen = &heightSeen;
+                }
+                else {
+                    return false;
+                }
+                if (*seen || !ParseImageDimension(value, target, target == width))
+                    return false;
+                *seen = true;
+            }
+            return widthSeen || heightSeen;
+        }
+
+        bool ParseImageMarker(const std::string& line, std::string* alt, std::string* path,
+                              ImageDimension* width, ImageDimension* height) {
+            if (!alt || !path || !width || !height || line.size() < 6
+                || line[0] != '!' || line[1] != '[')
                 return false;
 
             const size_t separator = line.find("](", 2);
@@ -29,9 +124,13 @@ namespace kraken::ext::uibooks {
             const size_t close = line.rfind(')');
             if (close == std::string::npos || close <= separator + 2)
                 return false;
-            for (size_t i = close + 1; i < line.size(); ++i)
-                if (!std::isspace((unsigned char) line[i]))
-                    return false;
+            size_t suffixStart = close + 1;
+            while (suffixStart < line.size()
+                   && std::isspace(static_cast<unsigned char>(line[suffixStart])))
+                ++suffixStart;
+            if (suffixStart < line.size()
+                && !ParseImageOptions(line.substr(suffixStart), width, height))
+                return false;
 
             const std::string imagePath = line.substr(separator + 2, close - separator - 2);
             if (imagePath.empty() || imagePath.find("..") != std::string::npos
@@ -152,12 +251,16 @@ namespace kraken::ext::uibooks {
 
             std::string imageAlt;
             std::string imagePath;
-            if (ParseImageMarker(core, &imageAlt, &imagePath)) {
+            ImageDimension imageWidth;
+            ImageDimension imageHeight;
+            if (ParseImageMarker(core, &imageAlt, &imagePath, &imageWidth, &imageHeight)) {
                 ParsedLine pl;
                 pl.align = currentAlign;
                 pl.isImage = true;
                 pl.imageAlt = std::move(imageAlt);
                 pl.imagePath = std::move(imagePath);
+                pl.imageWidth = imageWidth;
+                pl.imageHeight = imageHeight;
                 res.lines.push_back(std::move(pl));
                 res.lineBreak.push_back(false);
                 ++res.imageCount;

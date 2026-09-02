@@ -113,6 +113,52 @@ namespace kraken::ext::uibooks {
             return FindBookState(g_activeBookBox);
         }
 
+        struct ResolvedImageSize {
+            float width = 0.0f;
+            float height = 0.0f;
+        };
+
+        ResolvedImageSize ResolveImageSize(const ParsedLine& line, float sourceW, float sourceH,
+                                           float maxW, float maxH, bool allowUpscale) {
+            const float aspect = sourceW / sourceH;
+            const bool widthSet = line.imageWidth.specified;
+            const bool heightSet = line.imageHeight.specified;
+            const bool widthFill = line.imageWidth.fill;
+
+            float width = widthSet ? (widthFill ? maxW : line.imageWidth.pixels) : sourceW;
+            float height = heightSet ? line.imageHeight.pixels : sourceH;
+
+            if (widthSet && !heightSet)
+                height = width / aspect;
+            else if (!widthSet && heightSet)
+                width = height * aspect;
+            else if (!widthSet && !heightSet) {
+                const float scale = allowUpscale
+                    ? (std::min)(maxW / sourceW, maxH / sourceH)
+                    : (std::min)(1.0f,
+                        (std::min)(maxW / sourceW, maxH / sourceH));
+                width = sourceW * scale;
+                height = sourceH * scale;
+            }
+
+            // Explicit dimensions may stretch the bitmap, but never let it
+            // escape the text container. A one-dimensional request keeps the
+            // source aspect ratio and is clamped again after deriving the other side.
+            width = (std::min)(width, maxW);
+            height = (std::min)(height, maxH);
+            if (widthSet != heightSet) {
+                if (widthSet)
+                    height = (std::min)(maxH, width / aspect);
+                else
+                    width = (std::min)(maxW, height * aspect);
+            }
+
+            if (!(width > 0.0f) || !(height > 0.0f)
+                || !std::isfinite(width) || !std::isfinite(height))
+                return {};
+            return { width, height };
+        }
+
         bool RegisteredModeForSelection(hta::BooksWnd* books, detail::Wnd* src, BookMode* out) {
             if (!books || !src || !out)
                 return false;
@@ -194,9 +240,8 @@ namespace kraken::ext::uibooks {
             // A one-page auto-scroll book has no arrows/counter, so it still keeps the
             // full height available.
             const bool reserveFooter = breaks > 0 || st.mode == BookMode::Pages;
-            float contentH = ch - top0 - (reserveFooter ? navigation::FooterHeight() : 0.0f);
-            if (contentH < lineH)
-                contentH = lineH;
+            const float footerH = reserveFooter ? navigation::FooterHeight() : 0.0f;
+            const float contentH = (std::max)(1.0f, ch - top0 - footerH);
             int32_t rows = (int32_t) std::floorf(contentH / lineH);
             if (rows < 1)
                 rows = 1;
@@ -212,8 +257,7 @@ namespace kraken::ext::uibooks {
             st.imageWidths.assign((size_t) n, 0.0f);
             st.imageHeights.assign((size_t) n, 0.0f);
             const float wrapWidth = (std::max)(1.0f, cw - 2.0f * leftPad);
-            const float imageMaxWidth = (std::min)(constants::MaxImageWidth, (std::max)(lineH, wrapWidth));
-            const float imageMaxHeight = (std::max)(lineH, (std::min)(constants::MaxImageHeight, contentH - lineH));
+            const bool imageOnly = n == 1 && st.lines[0].isImage;
             for (int32_t li = 0; li < n; ++li) {
                 const ParsedLine& line = st.lines[(size_t) li];
                 if (!line.isImage)
@@ -222,23 +266,25 @@ namespace kraken::ext::uibooks {
                 float sourceW = constants::DefaultImageWidth;
                 float sourceH = constants::DefaultImageHeight;
                 (void) resources::ReadImageDimensions(line.imagePath.c_str(), &sourceW, &sourceH);
-                float imageW = (std::min)(imageMaxWidth, sourceW);
-                float imageH = imageW * sourceH / sourceW;
-                if (imageH > imageMaxHeight) {
-                    imageH = imageMaxHeight;
-                    imageW = imageH * sourceW / sourceH;
+                if (!(sourceW > 0.0f) || !(sourceH > 0.0f)
+                    || !std::isfinite(sourceW) || !std::isfinite(sourceH)) {
+                    sourceW = constants::FallbackImageWidth;
+                    sourceH = constants::FallbackImageHeight;
                 }
-                if (!(imageW > 0.0f) || !(imageH > 0.0f)
-                    || !std::isfinite(imageW) || !std::isfinite(imageH)) {
-                    imageW = (std::min)(imageMaxWidth, constants::FallbackImageWidth);
-                    imageH = (std::min)(imageMaxHeight, constants::FallbackImageHeight);
+                const float captionH = line.imageAlt.empty() ? 0.0f : lineH;
+                const float imageMaxW = wrapWidth;
+                const float imageMaxH = (std::max)(1.0f, contentH - captionH);
+                ResolvedImageSize image = ResolveImageSize(
+                    line, sourceW, sourceH, imageMaxW, imageMaxH, imageOnly);
+                if (!(image.width > 0.0f) || !(image.height > 0.0f)) {
+                    image.width = (std::min)(imageMaxW, constants::FallbackImageWidth);
+                    image.height = (std::min)(imageMaxH, constants::FallbackImageHeight);
                 }
                 st.imageHandles[(size_t) li] = resources::LoadTexture(line.imagePath.c_str());
-                st.imageWidths[(size_t) li] = imageW;
-                st.imageHeights[(size_t) li] = imageH;
-                const float captionH = line.imageAlt.empty() ? 0.0f : lineH;
+                st.imageWidths[(size_t) li] = image.width;
+                st.imageHeights[(size_t) li] = image.height;
                 st.lineRows[(size_t) li] = std::max<int32_t>(
-                    1, (int32_t) std::ceil((imageH + captionH) / lineH));
+                    1, (int32_t) std::ceil((image.height + captionH) / lineH));
                 if (!st.imageHandles[(size_t) li])
                     LOG_WARNING("book image line %d: resource '%s' could not be loaded (alt text will be shown)",
                                 li, line.imagePath.c_str());
@@ -276,6 +322,12 @@ namespace kraken::ext::uibooks {
             if (p != st.curPage) {
                 st.curPage = p;
                 st.scrollY = 0.0f; // a new page is always entered at its top
+                // Do not let the old page's native scrollbar position overwrite
+                // the new page's top offset during the next paint pass.
+                st.lastPushedPx = 0.0f;
+                st.scrollSynced = false;
+                if (st.vscroll)
+                    st.vscroll->SetCurPos(0.0f);
             }
         };
 
@@ -519,10 +571,10 @@ namespace kraken::ext::uibooks {
         if (g_enabled && state && state->ready && !state->pageStart.empty() && delta != 0) {
             BookState& st = *state;
             const int32_t dir = (delta > 0) ? -1 : 1; // up = back, down = forward;
-            // one line of scroll per event, whichever page the box shows
-            const int32_t edge = scroll::ScrollPageLines(st, dir);
-            if (edge != 0)
-                GoToPageShifted(st, dir); // at the edge: cross to the neighboring page
+            // One line of scroll per event. Wheel input is deliberately scoped
+            // to the current page; reaching an edge clamps the offset and never
+            // changes the page. Pages are changed only by the footer buttons.
+            scroll::ScrollPageLines(st, dir);
             return 1;
         }
         auto* items = static_cast<detail::ItemsWnd*>(self);

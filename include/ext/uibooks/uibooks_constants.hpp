@@ -14,8 +14,6 @@ namespace kraken::ext::uibooks::constants {
     // Defensive parser limit for image dimensions in book markup.
     inline constexpr uint32_t ImageDimensionLimit = 16384u;
 
-    inline constexpr float MaxImageWidth = 480.0f;
-    inline constexpr float MaxImageHeight = 220.0f;
     inline constexpr float DefaultImageWidth = 16.0f;
     inline constexpr float DefaultImageHeight = 9.0f;
     inline constexpr float FallbackImageWidth = 320.0f;

@@ -7,6 +7,12 @@
 #include "hta/m3d/Enums.hpp"
 
 namespace kraken::ext::uibooks {
+    struct ImageDimension {
+        float pixels = 0.0f;
+        bool specified = false;
+        bool fill = false;
+    };
+
     struct Seg {
         std::string text;
         uint32_t style = 0;
@@ -20,6 +26,8 @@ namespace kraken::ext::uibooks {
         bool isImage = false;
         std::string imageAlt;
         std::string imagePath;
+        ImageDimension imageWidth;
+        ImageDimension imageHeight;
     };
 
     struct ParseResult {
