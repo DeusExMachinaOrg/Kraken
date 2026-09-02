@@ -112,9 +112,15 @@ namespace kraken::ext::uibooks {
             return widthSeen || heightSeen;
         }
 
+        bool IsGameResourceId(const std::string& reference) {
+            return !reference.empty()
+                && reference.find_first_of("\\/:.") == std::string::npos;
+        }
+
         bool ParseImageMarker(const std::string& line, std::string* alt, std::string* path,
-                              ImageDimension* width, ImageDimension* height) {
-            if (!alt || !path || !width || !height || line.size() < 6
+                              ImageSource* source, ImageDimension* width,
+                              ImageDimension* height) {
+            if (!alt || !path || !source || !width || !height || line.size() < 6
                 || line[0] != '!' || line[1] != '[')
                 return false;
 
@@ -140,6 +146,8 @@ namespace kraken::ext::uibooks {
 
             *alt = line.substr(2, separator - 2);
             *path = imagePath;
+            *source = IsGameResourceId(imagePath) ? ImageSource::GameResource
+                                                  : ImageSource::Path;
             return true;
         }
 
@@ -251,14 +259,17 @@ namespace kraken::ext::uibooks {
 
             std::string imageAlt;
             std::string imagePath;
+            ImageSource imageSource = ImageSource::Path;
             ImageDimension imageWidth;
             ImageDimension imageHeight;
-            if (ParseImageMarker(core, &imageAlt, &imagePath, &imageWidth, &imageHeight)) {
+            if (ParseImageMarker(core, &imageAlt, &imagePath, &imageSource,
+                                 &imageWidth, &imageHeight)) {
                 ParsedLine pl;
                 pl.align = currentAlign;
                 pl.isImage = true;
                 pl.imageAlt = std::move(imageAlt);
-                pl.imagePath = std::move(imagePath);
+                pl.imageReference = std::move(imagePath);
+                pl.imageSource = imageSource;
                 pl.imageWidth = imageWidth;
                 pl.imageHeight = imageHeight;
                 res.lines.push_back(std::move(pl));

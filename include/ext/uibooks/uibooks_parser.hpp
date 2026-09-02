@@ -13,6 +13,11 @@ namespace kraken::ext::uibooks {
         bool fill = false;
     };
 
+    enum class ImageSource : uint8_t {
+        Path,
+        GameResource,
+    };
+
     struct Seg {
         std::string text;
         uint32_t style = 0;
@@ -25,7 +30,8 @@ namespace kraken::ext::uibooks {
         std::vector<Seg> segs;
         bool isImage = false;
         std::string imageAlt;
-        std::string imagePath;
+        std::string imageReference;
+        ImageSource imageSource = ImageSource::Path;
         ImageDimension imageWidth;
         ImageDimension imageHeight;
     };

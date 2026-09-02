@@ -28,8 +28,14 @@ namespace kraken::ext::uibooks {
         BookState& operator=(BookState&&) = delete;
 
         void ReleaseImageTextures() noexcept {
-            for (uint32_t& handle : imageHandles)
-                resources::ReleaseTexture(&handle);
+            for (size_t i = 0; i < imageHandles.size(); ++i) {
+                uint32_t& handle = imageHandles[i];
+                const bool owned = i >= imageTextureOwned.size() || imageTextureOwned[i];
+                if (owned)
+                    resources::ReleaseTexture(&handle);
+                else
+                    handle = 0;
+            }
         }
 
         // Engine resources must be released while the owning UI/renderer is
@@ -71,6 +77,7 @@ namespace kraken::ext::uibooks {
         int32_t rowsPerPage = 0;
         std::vector<int32_t> lineRows;
         std::vector<uint32_t> imageHandles;
+        std::vector<bool> imageTextureOwned;
         std::vector<float> imageWidths;
         std::vector<float> imageHeights;
         std::vector<int32_t> pageStart;

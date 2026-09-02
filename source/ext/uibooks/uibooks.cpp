@@ -254,6 +254,7 @@ namespace kraken::ext::uibooks {
             st.ReleaseImageTextures();
             st.lineRows.assign((size_t) n, 1);
             st.imageHandles.assign((size_t) n, 0);
+            st.imageTextureOwned.assign((size_t) n, false);
             st.imageWidths.assign((size_t) n, 0.0f);
             st.imageHeights.assign((size_t) n, 0.0f);
             const float wrapWidth = (std::max)(1.0f, cw - 2.0f * leftPad);
@@ -265,7 +266,18 @@ namespace kraken::ext::uibooks {
 
                 float sourceW = constants::DefaultImageWidth;
                 float sourceH = constants::DefaultImageHeight;
-                (void) resources::ReadImageDimensions(line.imagePath.c_str(), &sourceW, &sourceH);
+                uint32_t imageHandle = 0;
+                bool imageTextureOwned = false;
+                if (line.imageSource == ImageSource::GameResource) {
+                    imageHandle = resources::LoadTextureByResourceId(line.imageReference.c_str());
+                    if (imageHandle)
+                        (void) resources::ReadTextureDimensions(imageHandle, &sourceW, &sourceH);
+                }
+                else {
+                    (void) resources::ReadImageDimensions(line.imageReference.c_str(), &sourceW, &sourceH);
+                    imageHandle = resources::LoadTexture(line.imageReference.c_str());
+                    imageTextureOwned = imageHandle != 0;
+                }
                 if (!(sourceW > 0.0f) || !(sourceH > 0.0f)
                     || !std::isfinite(sourceW) || !std::isfinite(sourceH)) {
                     sourceW = constants::FallbackImageWidth;
@@ -280,14 +292,15 @@ namespace kraken::ext::uibooks {
                     image.width = (std::min)(imageMaxW, constants::FallbackImageWidth);
                     image.height = (std::min)(imageMaxH, constants::FallbackImageHeight);
                 }
-                st.imageHandles[(size_t) li] = resources::LoadTexture(line.imagePath.c_str());
+                st.imageHandles[(size_t) li] = imageHandle;
+                st.imageTextureOwned[(size_t) li] = imageTextureOwned;
                 st.imageWidths[(size_t) li] = image.width;
                 st.imageHeights[(size_t) li] = image.height;
                 st.lineRows[(size_t) li] = std::max<int32_t>(
                     1, (int32_t) std::ceil((image.height + captionH) / lineH));
                 if (!st.imageHandles[(size_t) li])
                     LOG_WARNING("book image line %d: resource '%s' could not be loaded (alt text will be shown)",
-                                li, line.imagePath.c_str());
+                                li, line.imageReference.c_str());
             }
             if (wrapWidth > 1.0f) {
                 for (int32_t li = 0; li < n; ++li) {
@@ -448,6 +461,7 @@ namespace kraken::ext::uibooks {
         st.colors = std::move(pr.colors);
         st.ReleaseImageTextures();
         st.imageHandles.clear();
+        st.imageTextureOwned.clear();
         st.imageWidths.clear();
         st.imageHeights.clear();
         st.cleanText = pr.clean;

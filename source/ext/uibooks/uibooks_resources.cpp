@@ -60,6 +60,8 @@ namespace kraken::ext::uibooks::resources {
     }
 
     uint32_t LoadTexture(const char* path) {
+        if (!path || !*path)
+            return 0;
         const hta::CMiracle3d* app = hta::CMiracle3d::Instance();
         hta::m3d::rend::IRenderer* renderer = app ? app->m_renderer : nullptr;
         if (!renderer)
@@ -70,6 +72,40 @@ namespace kraken::ext::uibooks::resources {
         if (handle.m_handle <= 0)
             return 0;
         return static_cast<uint32_t>(handle.m_handle);
+    }
+
+    uint32_t LoadTextureByResourceId(const char* id) {
+        if (!id || !*id)
+            return 0;
+        const hta::CMiracle3d* app = hta::CMiracle3d::Instance();
+        if (!app || !app->m_pInterfaceManager)
+            return 0;
+
+        // The UI manager owns the icon registry populated from uiicons.xml and
+        // the referenced miscicons.xml/ui resource files. The returned handle
+        // is borrowed from that registry and must not be released by books.
+        const hta::m3d::rend::TexHandle handle =
+            app->m_pInterfaceManager->GetIcoByName(hta::CStr(id), 0);
+        return handle.m_handle > 0 ? static_cast<uint32_t>(handle.m_handle) : 0;
+    }
+
+    bool ReadTextureDimensions(uint32_t rawHandle, float* width, float* height) {
+        if (!rawHandle || !width || !height)
+            return false;
+        const hta::CMiracle3d* app = hta::CMiracle3d::Instance();
+        hta::m3d::rend::IRenderer* renderer = app ? app->m_renderer : nullptr;
+        if (!renderer)
+            return false;
+
+        const hta::m3d::rend::TexHandle handle(static_cast<int32_t>(rawHandle));
+        int32_t pixelWidth = 0;
+        int32_t pixelHeight = 0;
+        renderer->GetDims(handle, pixelWidth, pixelHeight);
+        if (pixelWidth <= 0 || pixelHeight <= 0)
+            return false;
+        *width = static_cast<float>(pixelWidth);
+        *height = static_cast<float>(pixelHeight);
+        return true;
     }
 
     void ReleaseTexture(uint32_t* rawHandle) {
