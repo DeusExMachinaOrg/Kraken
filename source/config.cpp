@@ -38,12 +38,15 @@ namespace kraken {
         this->posteffectreload                  = { "constants", "posteffectreload",                0,     true,  0,     1           };
         this->ultrawide                         = { "constants", "ultrawide",                       0,     true,  0,     1           };
         this->objcontupgrade                    = { "constants", "obj_cont_upgrade",                1,     true,  0,     1           };
-        this->show_load_every                   = { "constants", "show_load_every",                 100,   true,  0,     UINT32_MAX  };
         this->cardan_fix                        = { "constants", "cardan_fix",                      1,     true,  0,     1           };
         this->wares                             = { "constants", "wares",                           0,     true,  0,     1           };
         this->cctl_leak_fix                     = { "constants", "cctl_leak_fix",                   1,     true,  0,     1           };
         this->mortarvolleylauncherfix           = { "constants", "mortarvolleylauncherfix",         1,     true,  0,     1           };
         this->gunlights                         = { "constants", "gunlights",                       1,     true,  0,     1           };
+        this->uibooks_enabled                   = { "uibooks",   "enabled",                         1,     true,  0,     1           };
+#if defined(KRAKEN_UIBOOKS_TESTS)
+        this->uibookstest_enabled               = { "uibookstest", "enabled",                       0,     true,  0,     1           };
+#endif
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -87,7 +90,6 @@ namespace kraken {
         this->LoadValue(&this->ware_units);
         this->LoadValue(&this->ultrawide);
         this->LoadValue(&this->objcontupgrade);
-        this->LoadValue(&this->show_load_every);
         this->LoadValue(&this->cardan_fix);
         this->LoadValue(&this->contact_surface_layer);
         this->LoadValue(&this->cfm);
@@ -105,6 +107,10 @@ namespace kraken {
         this->LoadValue(&this->cctl_leak_fix);
         this->LoadValue(&this->mortarvolleylauncherfix);
         this->LoadValue(&this->gunlights);
+        this->LoadValue(&this->uibooks_enabled);
+#if defined(KRAKEN_UIBOOKS_TESTS)
+        this->LoadValue(&this->uibookstest_enabled);
+#endif
     };
 
     void Config::Dump() {
@@ -126,7 +132,6 @@ namespace kraken {
         this->DumpValue(&this->ware_units);
         this->DumpValue(&this->ultrawide);
         this->DumpValue(&this->objcontupgrade);
-        this->DumpValue(&this->show_load_every);
         this->DumpValue(&this->cardan_fix);
         this->DumpValue(&this->contact_surface_layer);
         this->DumpValue(&this->cfm);
@@ -144,6 +149,10 @@ namespace kraken {
         this->DumpValue(&this->cctl_leak_fix);
         this->DumpValue(&this->mortarvolleylauncherfix);
         this->DumpValue(&this->gunlights);
+        this->DumpValue(&this->uibooks_enabled);
+#if defined(KRAKEN_UIBOOKS_TESTS)
+        this->DumpValue(&this->uibookstest_enabled);
+#endif
     };
 
     template<typename T>
