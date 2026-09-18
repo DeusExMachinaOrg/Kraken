@@ -142,14 +142,18 @@ namespace kraken::ext::uibooks {
                 height = sourceH * scale;
             }
 
-            // Explicit dimensions may stretch the bitmap, but never let it
-            // escape the text container. A one-dimensional request keeps the
-            // source aspect ratio and is clamped again after deriving the other side.
+            // Width stays inside the page so an image never runs off the left/right
+            // edges, so it is clamped to maxW. Height is the opposite: an explicit
+            // height is honored even when it is taller than one page, and the
+            // pagination + in-page scroll then reveal the rest. A tall image becomes
+            // a page whose content exceeds the viewport, so it scrolls (or scrolls
+            // inline in Scroll mode) instead of being cut to the page height. A
+            // one-dimensional request re-derives the aspect side from the (possibly
+            // clamped) value; the width side stays capped at maxW.
             width = (std::min)(width, maxW);
-            height = (std::min)(height, maxH);
             if (widthSet != heightSet) {
                 if (widthSet)
-                    height = (std::min)(maxH, width / aspect);
+                    height = width / aspect;
                 else
                     width = (std::min)(maxW, height * aspect);
             }
