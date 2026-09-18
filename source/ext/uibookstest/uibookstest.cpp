@@ -1069,16 +1069,20 @@ namespace kraken::ext::uibookstest {
                     cur = kraken::ext::uibooks::LastCurPage();
                 }
                 if (cur != total - 2) {
-                    // a SetText re-issue may have reset the reading position mid-probe:
-                    // walk forward with the next arrow until the expected page.
+                    // The earlier nav-button probe sequence can leave the box on
+                    // either side of the expected page (it ends on the last page
+                    // when exercising the next/clamp arrows), and a SetText
+                    // re-issue may also have reset it. Walk with the real arrows
+                    // to the expected page - backward if ahead, forward if behind.
                     void* recoveryNext = kraken::ext::uibooks::GetBookNavButton(true);
-                    if (!recoveryNext) {
+                    void* recoveryPrev = kraken::ext::uibooks::GetBookNavButton(false);
+                    if (!recoveryNext || !recoveryPrev) {
                         g_probe.active = false;
-                        Finish(token, "nav_btn_missing_recovery_next");
+                        Finish(token, "nav_btn_missing_recovery");
                         return;
                     }
                     for (int32_t i = 0; i < total + 2 && cur != total - 2; ++i) {
-                        (void) probes::NotifyButton(box, recoveryNext, 1u);
+                        (void) probes::NotifyButton(box, cur > total - 2 ? recoveryPrev : recoveryNext, 1u);
                         cur = kraken::ext::uibooks::LastCurPage();
                     }
                     if (cur != total - 2) {

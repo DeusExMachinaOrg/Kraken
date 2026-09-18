@@ -20,6 +20,22 @@ namespace kraken::ext::uibooks {
         hta::m3d::ui::TextBoxWnd* parentBox = nullptr;
     };
 
+    // One styled run of text and its measured width, as produced by the wrap
+    // pass. A WrappedRow is a single visual line after wrapping; several
+    // segments of the same style/color are merged into one run.
+    struct WrappedSegment {
+        std::string text;
+        uint32_t style = 0;
+        uint32_t color = 0;
+        bool hasColor = false;
+        float width = 0.0f;
+    };
+
+    struct WrappedRow {
+        std::vector<WrappedSegment> segments;
+        float width = 0.0f;
+    };
+
     struct BookState {
         BookState() = default;
         BookState(const BookState&) = delete;
@@ -76,6 +92,10 @@ namespace kraken::ext::uibooks {
 
         int32_t rowsPerPage = 0;
         std::vector<int32_t> lineRows;
+        // Full wrapped layout per line, computed once in TryLayout (gated on
+        // geometry change). DrawBook blits these rows directly, so it does not
+        // re-measure segment/token widths every frame.
+        std::vector<std::vector<WrappedRow>> wrappedRows;
         std::vector<uint32_t> imageHandles;
         std::vector<bool> imageTextureOwned;
         std::vector<float> imageWidths;
@@ -87,6 +107,10 @@ namespace kraken::ext::uibooks {
         int32_t curPage = 0;
         float scrollY = 0.0f;
         float footerCaptionW = 0.0f;
+        // Footer "<" / ">" glyph widths: font-only, measured once in TryLayout
+        // (not every frame) since a no-wrap single glyph never depends on width.
+        float prevGlyphW = 0.0f;
+        float nextGlyphW = 0.0f;
 
         // The engine's own ScrollWnd is synchronized with the custom page offset
         // after the original TextBoxWnd paint has rebuilt its layout.

@@ -59,7 +59,7 @@ def _u32():
     return _user32
 
 
-def find_game_hwnd(pid):
+def _game_windows(pid):
     found = []
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -71,7 +71,35 @@ def find_game_hwnd(pid):
         return True
 
     _u32().EnumWindows(_cb, 0)
-    return found[0] if found else None
+    return found
+
+
+def _window_area(hwnd):
+    """On-screen pixel area of a window; 0 when minimized or unreadable.
+
+    A minimized window's GetWindowRect is the tiny taskbar-icon rect, so it is
+    scored 0 and never wins the pick below.
+    """
+    if _u32().IsIconic(hwnd):
+        return 0
+    r = wintypes.RECT()
+    if not _u32().GetWindowRect(hwnd, ctypes.byref(r)):
+        return 0
+    return max(0, r.right - r.left) * max(0, r.bottom - r.top)
+
+
+def find_game_hwnd(pid):
+    """Return the game's largest visible top-level window for a pid.
+
+    The ExMachina engine owns more than one top-level window (a small
+    splash/status window plus the real borderless render window). The first
+    window in EnumWindows order is unreliable, so pick the largest by screen
+    area - that is the render window the book is painted into.
+    """
+    wins = _game_windows(pid)
+    if not wins:
+        return None
+    return max(wins, key=_window_area)
 
 
 def wake_game(hwnd):
@@ -86,6 +114,237 @@ def wake_game(hwnd):
     """
     if hwnd:
         _u32().PostMessageW(hwnd, 0x0000, 0, 0)
+
+
+def _gdi32():
+    global _gdi32_dll
+    if _gdi32_dll is None:
+        _gdi32_dll = ctypes.WinDLL("gdi32", use_last_error=True)
+    return _gdi32_dll
+
+
+_gdi32_dll = None
+
+
+def capture_window_screenshot(hwnd, path):
+    """Grab the game window's on-screen pixels into a 24-bit BMP.
+
+    The game is borderless and D3D-backed: D3D renders to the screen, not to a
+    GDI device context, so PrintWindow yields a black frame. A screen BitBlt of
+    the window's rectangle (clamped to the desktop) instead grabs the real
+    composited frame. The window is borderless/full-screen, so its rect is
+    effectively the whole screen. No image library is needed - the BMP is
+    written by hand.
+    """
+    u32 = _u32()
+    gdi = _gdi32_dll if _gdi32_dll is not None else _gdi32()
+
+    rect = wintypes.RECT()
+    if not u32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise OSError("GetWindowRect failed")
+    sw = u32.GetSystemMetrics(0)  # SM_CXSCREEN
+    sh = u32.GetSystemMetrics(1)  # SM_CYSCREEN
+    sx = max(0, rect.left)
+    sy = max(0, rect.top)
+    ex = min(sw, rect.right)
+    ey = min(sh, rect.bottom)
+    w = ex - sx
+    h = ey - sy
+    if w <= 0 or h <= 0:
+        raise OSError("empty window rectangle %s" % path)
+
+    SRCCOPY = 0x00CC0020
+    CAPTUREBLT = 0x40000000
+    screen_dc = u32.GetDC(None)
+    if not screen_dc:
+        raise OSError("GetDC(screen) failed")
+    mem_dc = gdi.CreateCompatibleDC(screen_dc)
+    try:
+        # top-down 32bpp DIB (negative biHeight) so the buffer is stored
+        # top-to-bottom and the BMP writer can flip the header to match.
+        class _BmiInfo(ctypes.Structure):
+            _fields_ = [
+                ("biSize", wintypes.DWORD),
+                ("biWidth", wintypes.LONG),
+                ("biHeight", wintypes.LONG),
+                ("biPlanes", wintypes.WORD),
+                ("biBitCount", wintypes.WORD),
+                ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD),
+                ("biXPelsPerMeter", wintypes.LONG),
+                ("biYPelsPerMeter", wintypes.LONG),
+                ("biClrUsed", wintypes.DWORD),
+                ("biClrImportant", wintypes.DWORD),
+            ]
+        bmi = _BmiInfo(40, w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+        ptr = ctypes.c_void_p()
+        dib = gdi.CreateDIBSection(mem_dc, bmi, 0, ctypes.byref(ptr), 0, 0)
+        if not dib:
+            raise OSError("CreateDIBSection failed")
+        try:
+            gdi.SelectObject(mem_dc, dib)
+            ok = gdi.BitBlt(mem_dc, 0, 0, w, h, screen_dc, sx, sy,
+                            SRCCOPY | CAPTUREBLT)
+            if not ok:
+                raise OSError("BitBlt(screen) failed")
+            stride = w * 4
+            buf = (ctypes.c_ubyte * (stride * h)).from_address(ptr.value)
+            _write_24b_bmp(path, w, h, buf, stride)
+            print("  shot     : captured %dx%d -> %s" % (w, h, path), flush=True)
+        finally:
+            gdi.DeleteObject(dib)
+    finally:
+        gdi.DeleteDC(mem_dc)
+        u32.ReleaseDC(None, screen_dc)
+
+
+PW_RENDERFULLCONTENT = 0x00000002
+
+
+def _mostly_black(buf, stride, w, h, sample=4096):
+    """True when the frame is essentially all black (PrintWindow failed on D3D)."""
+    import random
+    rng = random.Random(0)
+    n = min(sample, w * h)
+    total = 0
+    for _ in range(n):
+        y = rng.randrange(h)
+        x = rng.randrange(w)
+        o = y * stride + x * 4
+        total += buf[o] + buf[o + 1] + buf[o + 2]
+    return (total / (n * 3.0)) < 8.0
+
+
+def capture_print_window(hwnd, path):
+    """Grab the window via PrintWindow(PW_RENDERFULLCONTENT) into a 24-bit BMP.
+
+    Unlike the screen-DC BitBlt (which returns a horizontally-mirrored frame
+    for DWM/D3D content), PrintWindow asks the window to render itself into a
+    DC, so the result is correctly oriented. It returns True on a usable frame
+    and False when the content came back black (some D3D paths ignore it), so
+    the caller can fall back to the BitBlt path.
+    """
+    u32 = _u32()
+    gdi = _gdi32_dll if _gdi32_dll is not None else _gdi32()
+    rect = wintypes.RECT()
+    if not u32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return False
+    w = rect.right - rect.left
+    h = rect.bottom - rect.top
+    if w <= 0 or h <= 0:
+        return False
+
+    screen_dc = u32.GetDC(None)
+    mem_dc = gdi.CreateCompatibleDC(screen_dc)
+    try:
+        class _BmiInfo(ctypes.Structure):
+            _fields_ = [
+                ("biSize", wintypes.DWORD),
+                ("biWidth", wintypes.LONG),
+                ("biHeight", wintypes.LONG),
+                ("biPlanes", wintypes.WORD),
+                ("biBitCount", wintypes.WORD),
+                ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD),
+                ("biXPelsPerMeter", wintypes.LONG),
+                ("biYPelsPerMeter", wintypes.LONG),
+                ("biClrUsed", wintypes.DWORD),
+                ("biClrImportant", wintypes.DWORD),
+            ]
+        bmi = _BmiInfo(40, w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+        ptr = ctypes.c_void_p()
+        dib = gdi.CreateDIBSection(mem_dc, bmi, 0, ctypes.byref(ptr), 0, 0)
+        if not dib:
+            return False
+        try:
+            gdi.SelectObject(mem_dc, dib)
+            ok = u32.PrintWindow(hwnd, mem_dc, PW_RENDERFULLCONTENT)
+            if not ok:
+                return False
+            stride = w * 4
+            buf = (ctypes.c_ubyte * (stride * h)).from_address(ptr.value)
+            if _mostly_black(buf, stride, w, h):
+                return False
+            _write_24b_bmp(path, w, h, buf, stride)
+            print("  shot     : captured %dx%d via PrintWindow -> %s" % (w, h, path),
+                  flush=True)
+            return True
+        finally:
+            gdi.DeleteObject(dib)
+    finally:
+        gdi.DeleteDC(mem_dc)
+        u32.ReleaseDC(None, screen_dc)
+
+
+SW_RESTORE = 0x0009
+
+
+def prepare_capture_window(pid, fallback_hwnd):
+    """Re-pick the game's render window at capture time and un-minimize it.
+
+    The keepalive hwnd is found at boot, before the render window exists, so it
+    can point at the wrong (or a since-minimized) window. Re-enumerate by pid,
+    pick the largest visible one, and if that is minimized restore it and wait
+    a beat for the restored frame to land. Returns the hwnd to capture.
+    """
+    u32 = _u32()
+    wins = _game_windows(pid)
+    best = fallback_hwnd
+    if wins:
+        # largest by raw rect area ignoring minimized state, so we can still
+        # recover a real window when the whole game is minimized.
+        best = max(wins, key=lambda h: (0 if u32.IsIconic(h) else 1)
+                   * max(1, _window_area(h)))
+        if best is not fallback_hwnd:
+            print("  shot     : capture window re-picked to 0x%08X" % best,
+                  flush=True)
+    if best and u32.IsIconic(best):
+        print("  shot     : window 0x%08X is minimized - restoring" % best,
+              flush=True)
+        u32.ShowWindow(best, SW_RESTORE)
+        time.sleep(1.0)
+        # a few inert wakes so the game repaints the restored frame
+        for _ in range(5):
+            wake_game(best)
+            time.sleep(0.2)
+    return best
+
+
+def _write_24b_bmp(path, w, h, buf, stride):
+    """Write a 24-bit BMP from a top-down 32bpp buffer (bgra) with `stride`."""
+    row = w * 3
+    if row % 4:
+        row += 4 - (row % 4)
+    pixels = bytearray(row * h)
+    for y in range(h):
+        src = (h - 1 - y) * stride  # BMP is bottom-up
+        dst = y * row
+        for x in range(w):
+            si = src + x * 4
+            pixels[dst + x * 3 + 0] = buf[si + 2]  # R
+            pixels[dst + x * 3 + 1] = buf[si + 1]  # G
+            pixels[dst + x * 3 + 2] = buf[si + 0]  # B
+        # remaining pad bytes are zero (already in the bytearray)
+    data_size = len(pixels)
+    out = bytearray()
+    # BITMAPFILEHEADER
+    out += b"BM"
+    out += int(54 + data_size).to_bytes(4, "little")
+    out += (0).to_bytes(4, "little")
+    out += (54).to_bytes(4, "little")
+    # BITMAPINFOHEADER (top-down)
+    out += (40).to_bytes(4, "little")
+    out += w.to_bytes(4, "little", signed=True)
+    out += (-h).to_bytes(4, "little", signed=True)
+    out += (1).to_bytes(2, "little")
+    out += (24).to_bytes(2, "little")
+    out += (0).to_bytes(4, "little")
+    out += (0).to_bytes(4, "little")
+    out += (0).to_bytes(4, "little")
+    out += (0).to_bytes(4, "little")
+    out += pixels
+    with open(path, "wb") as f:
+        f.write(bytes(out))
 
 
 def kill_game():
@@ -340,6 +599,8 @@ def main():
                     help="seconds of total log silence before a live process counts as crashed (the exceptions/ writer misses some faults)")
     ap.add_argument("--keep", action="store_true",
                     help="leave the game running after a PASS so the results can be inspected manually")
+    ap.add_argument("--shot", metavar="PATH",
+                    help="capture a BMP screenshot of the game window (the open book) to PATH")
     ap.add_argument("--trigger", choices=("open1", "openpages", "openauto", "openpages2"), default="open1",
                     help="book test variant: open1 = scroll mode, openpages = per-book pages mode, openauto = one long scroll page, openpages2 = second auto-pages book")
     args = ap.parse_args()
@@ -517,6 +778,24 @@ def _execute(args, save, exception_baseline):
     if exc is not None:
         bad = "new exception report after trigger: %s" % exc
     alive = process.poll() is None
+
+    # ---- optional screenshot -------------------------------------------------------------
+    if args.shot and alive and process.pid:
+        try:
+            shot_hwnd = prepare_capture_window(process.pid, hwnd)
+            if shot_hwnd:
+                # a few more wakes so the book's paint frames settle, then grab.
+                # Prefer PrintWindow (correctly oriented for D3D); if that comes
+                # back black, fall back to the screen BitBlt.
+                for _ in range(6):
+                    wake_game(shot_hwnd)
+                    time.sleep(0.3)
+                if not capture_print_window(shot_hwnd, args.shot):
+                    capture_window_screenshot(shot_hwnd, args.shot)
+            else:
+                print("  shot     : no game window to capture", flush=True)
+        except Exception as e:  # a shot failure must not fail the run itself
+            print("  shot     : FAILED to capture screenshot: %s" % e, flush=True)
 
     # ---- evidence ---------------------------------------------------------------------------
     evidence = [l for l in log_since(run_since)

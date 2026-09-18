@@ -22,10 +22,28 @@
 
 namespace kraken::ext::uibooks::render {
     namespace {
+        const std::vector<WrappedRow> kEmptyRows;
+
         std::string ColorToken(uint32_t color) {
             char buffer[16];
             std::snprintf(buffer, sizeof(buffer), "@%08x", color);
             return buffer;
+        }
+
+        // Book content is painted with the color the engine configured on the box.
+        // We mirror TextBoxWnd::RecalcLayout (textbox.cpp line 144): the effective
+        // per-line color is m_textColor, or m_textColorDisabled when the box carries
+        // a disabled style flag. Reading the window's own fields (not a fixed literal)
+        // keeps the mod's shade matched to whatever the book's GUI definition set,
+        // exactly as vanilla paints it.
+        std::string BookTextColorToken(const hta::m3d::ui::Wnd* box) {
+            const uint32_t style = box->m_style;
+            const bool disabledStyle = (style & hta::m3d::ui::WndStyle::WND_STYLE_DISABLED)
+                || (style & hta::m3d::ui::WndStyle::WND_STYLE_DISABLED_COLOR);
+            const uint32_t color = disabledStyle
+                ? box->m_textColorDisabled
+                : box->m_textColor;
+            return ColorToken(color);
         }
 
         void DrawFooter(BookState& state, hta::m3d::ui::GfxServer* gfx,
@@ -52,12 +70,7 @@ namespace kraken::ext::uibooks::render {
             if (navigation::IsActive(state.navBtns, state.box))
                 return;
 
-            const auto glyphWidth = [&](const char* glyph) {
-                const hta::PointBase<float> measured = gfx->MeasureText(
-                    hta::CStr(glyph), state.fontId, hta::m3d::TW_NOWRAP, state.clientW);
-                return (std::isfinite(measured.x) && measured.x > 0.0f) ? measured.x : 0.0f;
-            };
-            const float prevGlyphWidth = glyphWidth("<");
+            const float prevGlyphWidth = state.prevGlyphW;
             float glyphX = layout.prevX + (layout.buttonW - prevGlyphWidth) * 0.5f;
             std::string glyph = colorToken;
             glyph += "<";
@@ -65,7 +78,7 @@ namespace kraken::ext::uibooks::render {
                          state.fontId, hta::m3d::TW_NOWRAP, hta::m3d::TF_LEFT);
             glyph = colorToken;
             glyph += ">";
-            const float nextGlyphWidth = glyphWidth(">");
+            const float nextGlyphWidth = state.nextGlyphW;
             glyphX = layout.nextX + (layout.buttonW - nextGlyphWidth) * 0.5f;
             gfx->AddText(drawInfo, hta::PointBase<float>{ glyphX, y }, hta::CStr(glyph.c_str()),
                          state.fontId, hta::m3d::TW_NOWRAP, hta::m3d::TF_LEFT);
@@ -195,12 +208,11 @@ namespace kraken::ext::uibooks::render {
         if (state.curPage > pageCount - 1)
             state.curPage = pageCount - 1;
 
-        char colorToken[16];
-        const uint32_t textColor = state.box ? state.box->m_textColor : 0;
-        std::snprintf(colorToken, sizeof(colorToken), "@%08x",
-                      textColor != 0 ? textColor : constants::OpaqueWhiteTextColor);
+        // Book content renders in the box's configured color (read from the window,
+        // see BookTextColorToken). Per-segment markup colors (inline color samples)
+        // still override this below.
+        const std::string colorToken = BookTextColorToken(state.box);
 
-        const float wrapWidth = (std::max)(1.0f, state.clientW - 2.0f * state.leftPad);
         const int32_t first = state.pageStart[state.curPage];
         const int32_t last = state.pageEnd[state.curPage];
         const float contentBottom = state.top0 + state.visibleH;
@@ -291,71 +303,38 @@ namespace kraken::ext::uibooks::render {
                 continue;
             }
 
-            std::vector<float> widths(line.segs.size());
-            float total = 0.0f;
-            for (size_t segmentIndex = 0; segmentIndex < line.segs.size(); ++segmentIndex) {
-                const int32_t fontId = fonts::EnsureStyleFont(state, line.segs[segmentIndex].style);
-                const hta::PointBase<float> measured = gfx->MeasureText(
-                    hta::CStr(line.segs[segmentIndex].text.c_str()), fontId,
-                    hta::m3d::TW_NOWRAP, wrapWidth);
-                widths[segmentIndex] = (std::isfinite(measured.x) && measured.x > 0.0f)
-                    ? measured.x : 0.0f;
-                total += widths[segmentIndex];
-            }
-
-            if (total > wrapWidth) {
-                const std::vector<WrappedRow> wrapped = WrapStyledLine(gfx, state, line, wrapWidth);
-                for (size_t rowIndex = 0; rowIndex < wrapped.size(); ++rowIndex) {
-                    const float rowY = y + static_cast<float>(rowIndex) * state.lineH;
-                    if (rowY < state.top0 || rowY + state.lineH > contentBottom)
-                        continue;
-                    const WrappedRow& wrappedRow = wrapped[rowIndex];
-                    float x = line.align == hta::m3d::TF_RIGHT
-                        ? state.clientW - state.leftPad - wrappedRow.width
-                        : line.align == hta::m3d::TF_CENTER
-                            ? (state.clientW - wrappedRow.width) * 0.5f : state.leftPad;
-                    if (x < 1.0f)
-                        x = 1.0f;
-                    for (const WrappedSegment& segment : wrappedRow.segments) {
-                        std::string text = segment.hasColor
-                            ? ColorToken(segment.color) : colorToken;
-                        text += segment.text;
-                        DrawTextRun(state, gfx, drawInfo,
-                                     hta::PointBase<float>{ x, rowY }, text, segment.style,
-                                     fonts::EnsureStyleFont(state, segment.style));
-                        x += segment.width;
-                    }
+            // Blit the rows the (gated) layout pass already wrapped and measured.
+            // No per-segment/per-token MeasureText here: the geometry is a pure
+            // function of content + font + wrap width, all of which retrigger
+            // TryLayout, so the cached rows are always current.
+            const std::vector<WrappedRow>& rows = lineIndex < (int32_t) state.wrappedRows.size()
+                ? state.wrappedRows[(size_t) lineIndex] : kEmptyRows;
+            for (size_t rowIndex = 0; rowIndex < rows.size(); ++rowIndex) {
+                const float rowY = y + static_cast<float>(rowIndex) * state.lineH;
+                if (rowY < state.top0 || rowY + state.lineH > contentBottom)
+                    continue;
+                const WrappedRow& wrappedRow = rows[rowIndex];
+                float x = line.align == hta::m3d::TF_RIGHT
+                    ? state.clientW - state.leftPad - wrappedRow.width
+                    : line.align == hta::m3d::TF_CENTER
+                        ? (state.clientW - wrappedRow.width) * 0.5f : state.leftPad;
+                if (x < 1.0f)
+                    x = 1.0f;
+                for (const WrappedSegment& segment : wrappedRow.segments) {
+                    std::string text = segment.hasColor
+                        ? ColorToken(segment.color) : colorToken;
+                    text += segment.text;
+                    DrawTextRun(state, gfx, drawInfo,
+                                 hta::PointBase<float>{ x, rowY }, text, segment.style,
+                                 fonts::EnsureStyleFont(state, segment.style));
+                    x += segment.width;
                 }
-                row += visualRows;
-                ++lineIndex;
-                continue;
-            }
-
-            if (lineBottom > contentBottom) {
-                row += visualRows;
-                ++lineIndex;
-                continue;
-            }
-
-            float x = line.align == hta::m3d::TF_RIGHT
-                ? state.clientW - total - state.leftPad
-                : line.align == hta::m3d::TF_CENTER ? (state.clientW - total) * 0.5f : state.leftPad;
-            if (x < 1.0f)
-                x = 1.0f;
-            for (size_t segmentIndex = 0; segmentIndex < line.segs.size(); ++segmentIndex) {
-                const int32_t fontId = fonts::EnsureStyleFont(state, line.segs[segmentIndex].style);
-                std::string text = line.segs[segmentIndex].hasColor
-                    ? ColorToken(line.segs[segmentIndex].color) : colorToken;
-                text += line.segs[segmentIndex].text;
-                DrawTextRun(state, gfx, drawInfo, hta::PointBase<float>{ x, y }, text,
-                            line.segs[segmentIndex].style, fontId);
-                x += widths[segmentIndex];
             }
             row += visualRows;
             ++lineIndex;
         }
 
         if (pageCount >= 2)
-            DrawFooter(state, gfx, drawInfo, colorToken);
+            DrawFooter(state, gfx, drawInfo, colorToken.c_str());
     }
 }

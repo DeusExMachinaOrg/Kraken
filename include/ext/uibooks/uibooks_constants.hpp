@@ -8,9 +8,6 @@ namespace kraken::ext::uibooks::constants {
         BOOK_TEXT_CODE_PAGE_WINDOWS_1251 = 1251u,
     };
 
-    // Engine UI text uses opaque ARGB; this is the canonical opaque white.
-    inline constexpr uint32_t OpaqueWhiteTextColor = 0xFFFFFFFFu;
-
     // Defensive parser limit for image dimensions in book markup.
     inline constexpr uint32_t ImageDimensionLimit = 16384u;
 

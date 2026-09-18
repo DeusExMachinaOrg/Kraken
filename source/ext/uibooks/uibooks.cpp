@@ -32,6 +32,7 @@
 #include "hta/BooksWnd.hpp"
 #include "hta/m3d/ui/ButtonWnd.hpp"
 #include "hta/m3d/ui/DrawInfo.hpp"
+#include "hta/m3d/ui/Font.hpp"
 #include "hta/m3d/ui/FormattedLine.hpp"
 #include "hta/m3d/ui/GfxServer.hpp"
 #include "hta/m3d/ui/ListBoxWnd.hpp"
@@ -211,7 +212,35 @@ namespace kraken::ext::uibooks {
                 return false;
             }
 
-            const float lineH = begin->m_rect.height;
+            hta::m3d::ui::GfxServer* gfx = hta::m3d::ui::Wnd::GetGfxServer();
+            if (!gfx)
+                return false;
+            // The blank " " anchor item's measured height is only the space
+            // glyph's height (MeasureText -> GetTextExtent -> GetGlyphSz), which
+            // is shorter than a real text line. Using it as the row pitch makes
+            // successive rows drift upward and overlap. Prefer the font's scaled
+            // line height (the engine's own line box); keep the anchor height as
+            // a sanity fallback when the font is unavailable.
+            float lineH = begin->m_rect.height;
+            const hta::m3d::ui::Font* font = gfx->GetFontById((uint32_t) self->m_defFont);
+            if (font) {
+                const float fontLineH = font->m_heightScaled;
+                if (std::isfinite(fontLineH) && fontLineH > 1.0f && fontLineH < ch)
+                    lineH = fontLineH;
+            }
+            // The engine sizes each line from its tallest glyph (GetTextExtent takes
+            // the max GetGlyphSz().y over the line's chars), and m_heightScaled can
+            // sit below the real rendered line box, so a fixed pitch from it overlaps
+            // on descenders/ascenders. Measure the true line pitch as the tallest
+            // glyph in the whole font (the single-byte symbol table) - the max any
+            // book line can need. Take the max so it only ever adds space.
+            const size_t glyphCount = font->m_symbols.size();
+            for (size_t c = 0; c < glyphCount; ++c) {
+                const hta::PointBase<float> glyph =
+                    font->GetGlyphSz(static_cast<unsigned char>(c));
+                if (std::isfinite(glyph.y) && glyph.y > lineH && glyph.y < ch)
+                    lineH = glyph.y;
+            }
             if (!std::isfinite(lineH) || lineH <= 1.0f || lineH >= ch)
                 return false;
             float top0 = begin->m_rect.y0;
@@ -248,11 +277,9 @@ namespace kraken::ext::uibooks {
             st.rowsPerPage = rows;
             st.visibleH = contentH;
 
-            hta::m3d::ui::GfxServer* gfx = hta::m3d::ui::Wnd::GetGfxServer();
-            if (!gfx)
-                return false;
             st.ReleaseImageTextures();
             st.lineRows.assign((size_t) n, 1);
+            st.wrappedRows.assign((size_t) n, {});
             st.imageHandles.assign((size_t) n, 0);
             st.imageTextureOwned.assign((size_t) n, false);
             st.imageWidths.assign((size_t) n, 0.0f);
@@ -302,14 +329,15 @@ namespace kraken::ext::uibooks {
                     LOG_WARNING("book image line %d: resource '%s' could not be loaded (alt text will be shown)",
                                 li, line.imageReference.c_str());
             }
-            if (wrapWidth > 1.0f) {
-                for (int32_t li = 0; li < n; ++li) {
-                    const ParsedLine& line = st.lines[(size_t) li];
-                    if (line.isImage)
-                        continue;
-                    st.lineRows[(size_t) li] = (int32_t) render::WrapStyledLine(
-                        gfx, st, line, wrapWidth).size();
-                }
+            // Wrap every text line once in this (gated) pass and cache the full
+            // result; DrawBook blits these rows directly, so the per-token
+            // MeasureText work happens once per layout, not every frame.
+            for (int32_t li = 0; li < n; ++li) {
+                const ParsedLine& line = st.lines[(size_t) li];
+                if (line.isImage)
+                    continue;
+                st.wrappedRows[(size_t) li] = render::WrapStyledLine(gfx, st, line, wrapWidth);
+                st.lineRows[(size_t) li] = (int32_t) st.wrappedRows[(size_t) li].size();
             }
 
             const pagination::PagePlan pagePlan = pagination::Build(
@@ -319,6 +347,15 @@ namespace kraken::ext::uibooks {
 
             st.curPage = 0;
             st.scrollY = 0.0f;
+            // Footer "<" / ">" widths are font-only (no-wrap single glyph), so
+            // measure them once per layout instead of every frame in DrawFooter.
+            const auto glyphWidth = [&](const char* glyph) {
+                const hta::PointBase<float> m = gfx->MeasureText(
+                    hta::CStr(glyph), st.fontId, hta::m3d::TW_NOWRAP, st.clientW);
+                return (std::isfinite(m.x) && m.x > 0.0f) ? m.x : 0.0f;
+            };
+            st.prevGlyphW = glyphWidth("<");
+            st.nextGlyphW = glyphWidth(">");
             st.ready = true;
             return true;
         };
@@ -464,6 +501,7 @@ namespace kraken::ext::uibooks {
         st.imageTextureOwned.clear();
         st.imageWidths.clear();
         st.imageHeights.clear();
+        st.wrappedRows.clear();
         st.cleanText = pr.clean;
         st.pageStart.clear();
         st.pageEnd.clear();
