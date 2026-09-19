@@ -71,7 +71,8 @@ namespace kraken {
         ConfigValue<uint32_t>                 mortarvolleylauncherfix;
         ConfigValue<uint32_t>                 gunlights;
         ConfigValue<uint32_t>                 uibooks_enabled;
-#if defined(KRAKEN_UIBOOKS_TESTS)
+        ConfigValue<uint32_t>                 warescroll_enabled;
+#if defined(KRAKEN_TESTS)
         ConfigValue<uint32_t>                 uibookstest_enabled;
 #endif
 

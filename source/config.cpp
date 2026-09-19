@@ -44,7 +44,8 @@ namespace kraken {
         this->mortarvolleylauncherfix           = { "constants", "mortarvolleylauncherfix",         1,     true,  0,     1           };
         this->gunlights                         = { "constants", "gunlights",                       1,     true,  0,     1           };
         this->uibooks_enabled                   = { "uibooks",   "enabled",                         1,     true,  0,     1           };
-#if defined(KRAKEN_UIBOOKS_TESTS)
+        this->warescroll_enabled                = { "warescroll","enabled",                         1,     true,  0,     1           };
+#if defined(KRAKEN_TESTS)
         this->uibookstest_enabled               = { "uibookstest", "enabled",                       0,     true,  0,     1           };
 #endif
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
@@ -108,7 +109,8 @@ namespace kraken {
         this->LoadValue(&this->mortarvolleylauncherfix);
         this->LoadValue(&this->gunlights);
         this->LoadValue(&this->uibooks_enabled);
-#if defined(KRAKEN_UIBOOKS_TESTS)
+        this->LoadValue(&this->warescroll_enabled);
+#if defined(KRAKEN_TESTS)
         this->LoadValue(&this->uibookstest_enabled);
 #endif
     };
@@ -150,7 +152,8 @@ namespace kraken {
         this->DumpValue(&this->mortarvolleylauncherfix);
         this->DumpValue(&this->gunlights);
         this->DumpValue(&this->uibooks_enabled);
-#if defined(KRAKEN_UIBOOKS_TESTS)
+        this->DumpValue(&this->warescroll_enabled);
+#if defined(KRAKEN_TESTS)
         this->DumpValue(&this->uibookstest_enabled);
 #endif
     };

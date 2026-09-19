@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(kraken VERSION 0.1.1 LANGUAGES CXX)
 
-option(KRAKEN_UIBOOKS_TESTS "Build the UI books test driver and diagnostics" OFF)
+option(KRAKEN_TESTS "Build the automated test drivers and diagnostics (uibookstest, warescroll test API)" OFF)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
@@ -41,6 +41,7 @@ add_library(kraken SHARED
     source/fix/difficultywndescapefix.cpp
     source/fix/mortarvolleylauncherfix.cpp
     source/fix/gunlights.cpp
+    source/fix/warescroll.cpp
     source/ext/uibooks/uibooks.cpp
     source/ext/uibooks/uibooks_config.cpp
     source/ext/uibooks/uibooks_fonts.cpp
@@ -56,13 +57,14 @@ add_library(kraken SHARED
     source/ext/scriptexports.cpp
 )
 
-if(KRAKEN_UIBOOKS_TESTS)
+if(KRAKEN_TESTS)
     target_sources(kraken PRIVATE
+        source/fix/warescroll_test.cpp
         source/ext/uibookstest/uibookstest.cpp
         source/ext/uibookstest/uibookstest_game.cpp
         source/ext/uibookstest/uibookstest_probes.cpp
     )
-    target_compile_definitions(kraken PRIVATE KRAKEN_UIBOOKS_TESTS=1)
+    target_compile_definitions(kraken PRIVATE KRAKEN_TESTS=1)
 endif()
 
 # Include directories

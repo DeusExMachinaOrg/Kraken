@@ -59,6 +59,28 @@ def _u32():
     return _user32
 
 
+def ensure_dpi_aware():
+    """Make the process DPI-aware so all window/DC sizes are physical pixels.
+
+    At a non-100% display scale an unaware process reads DPI-virtualized sizes
+    (e.g. a ~1600x900 game window at 125% reports as 1280x720). The capture
+    would then render the real D3D frame into a too-small DIB, clipping the
+    bottom-right and color-shifting it. Call once, before any GetWindowRect /
+    DC work, so GetWindowRect/GetClientRect/GetSystemMetrics return physical
+    pixels and PrintWindow/BitBlt render 1:1.
+    """
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+        return "system(shcore)"
+    except Exception:
+        pass
+    try:
+        _u32().SetProcessDPIAware()
+        return "system(user32)"
+    except Exception as e:
+        return "none (%s)" % e
+
+
 def _game_windows(pid):
     found = []
 
@@ -190,7 +212,8 @@ def capture_window_screenshot(hwnd, path):
             stride = w * 4
             buf = (ctypes.c_ubyte * (stride * h)).from_address(ptr.value)
             _write_24b_bmp(path, w, h, buf, stride)
-            print("  shot     : captured %dx%d -> %s" % (w, h, path), flush=True)
+            print("  shot     : captured %dx%d (screen BitBlt) -> %s"
+                  % (w, h, path), flush=True)
         finally:
             gdi.DeleteObject(dib)
     finally:
@@ -218,11 +241,11 @@ def _mostly_black(buf, stride, w, h, sample=4096):
 def capture_print_window(hwnd, path):
     """Grab the window via PrintWindow(PW_RENDERFULLCONTENT) into a 24-bit BMP.
 
-    Unlike the screen-DC BitBlt (which returns a horizontally-mirrored frame
-    for DWM/D3D content), PrintWindow asks the window to render itself into a
-    DC, so the result is correctly oriented. It returns True on a usable frame
-    and False when the content came back black (some D3D paths ignore it), so
-    the caller can fall back to the BitBlt path.
+    PrintWindow asks the window to render itself into a DC. It returns True on
+    a usable frame and False when the content came back black (some D3D paths
+    ignore it), so the caller can fall back to the screen-DC BitBlt path. Both
+    paths yield a top-down frame that _write_24b_bmp emits in the correct
+    left-right orientation.
     """
     u32 = _u32()
     gdi = _gdi32_dll if _gdi32_dll is not None else _gdi32()
@@ -266,8 +289,8 @@ def capture_print_window(hwnd, path):
             if _mostly_black(buf, stride, w, h):
                 return False
             _write_24b_bmp(path, w, h, buf, stride)
-            print("  shot     : captured %dx%d via PrintWindow -> %s" % (w, h, path),
-                  flush=True)
+            print("  shot     : captured %dx%d via PrintWindow -> %s"
+                  % (w, h, path), flush=True)
             return True
         finally:
             gdi.DeleteObject(dib)
@@ -311,13 +334,20 @@ def prepare_capture_window(pid, fallback_hwnd):
 
 
 def _write_24b_bmp(path, w, h, buf, stride):
-    """Write a 24-bit BMP from a top-down 32bpp buffer (bgra) with `stride`."""
+    """Write a 24-bit BMP from a top-down 32bpp buffer (bgra) with `stride`.
+
+    Both the capture DIB and the BMP header are top-down (biHeight=-h), so
+    source row 0 (top of the frame) maps straight to output row 0: `src = y`.
+    No row reorder and no horizontal mirror - the frame's text ("ExMachina -
+    Community Remaster...", "Бутылки") already reads upright and left-to-right.
+    A vertical flip here was the old bug (it left the image upside down).
+    """
     row = w * 3
     if row % 4:
         row += 4 - (row % 4)
     pixels = bytearray(row * h)
     for y in range(h):
-        src = (h - 1 - y) * stride  # BMP is bottom-up
+        src = y * stride
         dst = y * row
         for x in range(w):
             si = src + x * 4
@@ -583,6 +613,9 @@ def main():
     # the game's log carries non-UTF8 codepage chars; keep the driver alive on any console
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(errors="replace")
+    # capture must read physical pixels, not DPI-virtualized ones (see
+    # ensure_dpi_aware) - otherwise PrintWindow clips/color-shifts the frame.
+    dpi = ensure_dpi_aware()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--save", default="latest", help="save directory name, or 'latest'")
     ap.add_argument("--list-saves", action="store_true")
@@ -601,8 +634,8 @@ def main():
                     help="leave the game running after a PASS so the results can be inspected manually")
     ap.add_argument("--shot", metavar="PATH",
                     help="capture a BMP screenshot of the game window (the open book) to PATH")
-    ap.add_argument("--trigger", choices=("open1", "openpages", "openauto", "openpages2"), default="open1",
-                    help="book test variant: open1 = scroll mode, openpages = per-book pages mode, openauto = one long scroll page, openpages2 = second auto-pages book")
+    ap.add_argument("--trigger", choices=("open1", "openpages", "openauto", "openpages2", "ware"), default="open1",
+                    help="book test variant: open1 = scroll mode, openpages = per-book pages mode, openauto = one long scroll page, openpages2 = second auto-pages book, ware = open the trade panel and verify the goods window scroll feature")
     args = ap.parse_args()
 
     saves = gamedir.list_saves()
@@ -623,6 +656,7 @@ def main():
 
     print("game dir : %s" % gamedir.GAME_DIR, flush=True)
     print("save     : %s" % save, flush=True)
+    print("dpi      : %s" % dpi, flush=True)
 
     if args.deploy:
         print("deploy   : %s" % gamedir.deploy_dll(), flush=True)
@@ -784,9 +818,14 @@ def _execute(args, save, exception_baseline):
         try:
             shot_hwnd = prepare_capture_window(process.pid, hwnd)
             if shot_hwnd:
+                u32 = _u32()
+                r = wintypes.RECT(); u32.GetWindowRect(shot_hwnd, ctypes.byref(r))
+                print("  shot     : window %dx%d at (%d,%d) hwnd=0x%08X"
+                      % (r.right - r.left, r.bottom - r.top, r.left, r.top,
+                         shot_hwnd), flush=True)
                 # a few more wakes so the book's paint frames settle, then grab.
-                # Prefer PrintWindow (correctly oriented for D3D); if that comes
-                # back black, fall back to the screen BitBlt.
+                # Prefer PrintWindow (now 1:1 at physical size, since we are
+                # DPI-aware); if it comes back black, fall back to screen BitBlt.
                 for _ in range(6):
                     wake_game(shot_hwnd)
                     time.sleep(0.3)
@@ -801,7 +840,8 @@ def _execute(args, save, exception_baseline):
     evidence = [l for l in log_since(run_since)
                 if ("book parsed:" in l or "book layout ready:" in l
                     or "open_books:" in l or "hook installed" in l
-                    or "load_save:" in l)]
+                    or "load_save:" in l
+                    or "ware:" in l or "OnPaint enter" in l)]
 
     print("")
     print("  status     : %s%s" % (status, "" if status else " (no done file)"))
@@ -811,7 +851,12 @@ def _execute(args, save, exception_baseline):
     for l in evidence[-25:]:
         print("    %s" % l)
 
-    ok = (status == "ok" and alive and exc is None)
+    # A trigger may report a detailed success ("ok count=10 max=235 shift=235" for the ware
+    # scroll test); treat a leading "ok" as success. Every failure status uses a distinct
+    # prefix (count_, no_scroll_max_, down_not_clamped_at_, exception, ...), so no failure
+    # string starts with "ok".
+    status_ok = status is not None and (status == "ok" or status.startswith("ok "))
+    ok = (status_ok and alive and exc is None)
     if not ok:
         crash_evidence("final state")
     if ok and args.keep:
@@ -820,7 +865,7 @@ def _execute(args, save, exception_baseline):
     else:
         kill_game()
     print("RESULT: %s" % ("PASS" if ok else "FAIL"))
-    if not ok and status == "ok" and not alive:
+    if not ok and status_ok and not alive:
         print("  (status was ok but the process died shortly after - treat as crash)")
     return 0 if ok else 1
 

@@ -29,8 +29,9 @@
 #include "fix/difficultywndescapefix.hpp"
 #include "fix/mortarvolleylauncherfix.hpp"
 #include "fix/gunlights.hpp"
+#include "fix/warescroll.hpp"
 #include "ext/uibooks/uibooks.hpp"
-#if defined(KRAKEN_UIBOOKS_TESTS)
+#if defined(KRAKEN_TESTS)
 #include "ext/uibookstest/uibookstest.hpp"
 #endif
 namespace kraken {
@@ -89,8 +90,9 @@ namespace kraken {
         fix::difficultywndescapefix::Apply();
         fix::mortarvolleylauncherfix::Apply();
         fix::gunlights::Apply();
+        fix::warescroll::Apply(G_CONFIG);
         ext::uibooks::Apply(G_CONFIG);
-#if defined(KRAKEN_UIBOOKS_TESTS)
+#if defined(KRAKEN_TESTS)
         ext::uibookstest::Apply(G_CONFIG);
 #endif
     };

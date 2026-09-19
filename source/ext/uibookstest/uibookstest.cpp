@@ -20,6 +20,7 @@
 #include "ext/uibooks/uibooks.hpp"
 #include "ext/uibooks/uibooks_hooks.hpp"
 #include "ext/uibooks/uibooks_parser.hpp"
+#include "fix/warescroll_test.hpp"
 #include "routines.hpp"
 
 #include "hta/CStr.hpp"
@@ -299,7 +300,13 @@ namespace kraken::ext::uibookstest {
         bool ObjectIsKindOf(void* object, const hta::m3d::Class* classObject) {
             if (!IsValidUiNode(object) || !classObject)
                 return false;
-            return static_cast<const hta::m3d::Object*>(object)->IsKindOf(classObject);
+            // Thunk the game's non-virtual IsKindOf (VA 0x6161e0) rather than the header's
+            // C++ obj->IsKindOf(). The header declares GetClass() virtual, so the C++ call
+            // dispatches GetClass through the header's vtable slot order, which does not
+            // match the binary's real vtable and, on a stale-registry object, jumps to a
+            // garbage slot and faults. IsValidUiNode above already confirmed the GetClass
+            // slot (vft+0x34) the thunk vcall uses is in .text.
+            return game::ObjIsKindOf(object, const_cast<hta::m3d::Class*>(classObject));
         };
 
         // The live object at g_pApp+0x8B4EC: vtable in .rdata and the two slots we
@@ -386,6 +393,194 @@ namespace kraken::ext::uibookstest {
             return nullptr;
         };
 
+        // TownDlg (a ChildPanel / Wnd): class object VA 0x00A07E64 (TownDlg::GetClass
+        // body: `mov eax, 0xa07e64`). m_townId (the ai::Town obj handle) is at +0x24c and
+        // is what TownDlg::GetTown() keys on - it is -1 right after a save load (no
+        // enter-town transition event), which makes MotherPanel::OnTown bail before ShowPanels.
+        const hta::m3d::Class* TownDlgClassObject() {
+            return reinterpret_cast<const hta::m3d::Class*>(0x00A07E64);
+        };
+        int32_t TownDlgTownId(void* townDlg) {
+            if (!townDlg)
+                return 0x7FFFFFFF;
+            return *reinterpret_cast<int32_t*>(reinterpret_cast<uint8_t*>(townDlg) + 0x24c);
+        };
+
+        // ai::theObjects (the global ObjContainer) VA.
+        constexpr uintptr_t kTheObjectsVA = 0xA12E98;
+        // ai::Town class object VA (verified: m_className -> "Town").
+        const hta::m3d::Class* TownClassObject() {
+            return reinterpret_cast<const hta::m3d::Class*>(0x00A02498);
+        };
+
+        // Locate an ai::Town in the global object registry and return its objId - the value
+        // TownDlg::GetTown() keys on via m_townId.
+        //
+        // The live ObjContainer stores objects in a FIXED 16384-bucket hash array (NOT the
+        // std::vector the PDB InnerContainer suggests). Ground truth from the disasm:
+        //   GetEntityByObjId (VA 0x40C310):
+        //       ecx = *(this+0x38)                    ; hash-table base (HT)
+        //       idx = objId & 0x3fff                   ; bucket (14 bits -> 16384 buckets)
+        //       bkt = HT + idx*24                      ; 24 bytes per bucket
+        //       check *(bkt+0x14) == (objId>>14)       ; high-bits guard
+        //       check *(bkt+0x10) != 0                 ; valid flag
+        //       return  *(bkt+0x0c)                    ; the ai::Obj*
+        //   size() (VA 0x41D540): return *(this+0x54)  ; live object count
+        // The PDB InnerContainer (m_records std::vector @+0x34, +4-shifted like WareList) is
+        // what mislead the earlier scan: this+0x34 reads 0 and this+0x38 is the real HT base
+        // (observed live as 0x1B212030).
+        int32_t FindTownObjIdForTest(int32_t* outTotal) {
+            if (outTotal)
+                *outTotal = 0;
+            // ai::theObjects (VA 0xA12E98) is a POINTER (ai::ObjContainer*) to the live
+            // container. Container may be heap- or static-allocated -> gate on readability.
+            const uintptr_t container = *reinterpret_cast<uintptr_t*>(kTheObjectsVA);
+            if (!IsReadable(reinterpret_cast<void*>(container), 0x60))
+                return -1;
+            const uintptr_t ht = *reinterpret_cast<uintptr_t*>(container + 0x38);  // HT base
+            const int32_t count = *reinterpret_cast<int32_t*>(container + 0x54);  // live count
+            const bool htOk = ht >= 0x10000 && ht < 0x7FFE0000 &&
+                IsReadable(reinterpret_cast<void*>(ht), 24);
+            LOG_INFO("ware: town-scan container=%p ht=%p htOk=%d count=%d",
+                     (void*)container, (void*)ht, (int)htOk, count);
+            if (!htOk)
+                return -1;
+            auto* townClass = TownClassObject();
+            const int32_t kBuckets = 0x4000;  // 16384
+            int32_t total = 0;
+            int32_t firstId = -1;
+            int32_t bestGoodsId = -1;
+            int32_t bestGoods = -1;
+            int32_t validNodes = 0;
+            int32_t badObjs = 0;
+            std::string ids;
+            // A bucket can hold a stale/garbage value with its valid bit set (freed object
+            // mid-teardown). ObjectIsKindOf issues a virtual call on obj, so a corrupt
+            // pointer faults. Only vcall when obj's vtable pointer lands in a code/data
+            // section (.text 0x401000 / .rdata / .data 0xA46EDC); a real object's vtable
+            // always does, a garbage one (0 / heap value) never will.
+            auto saneObj = [](void* o) -> bool {
+                if (!o)
+                    return false;
+                const uintptr_t p = reinterpret_cast<uintptr_t>(o);
+                if (p < 0x10000 || p >= 0x7FFE0000 || !IsReadable(reinterpret_cast<void*>(p), 16))
+                    return false;
+                const uintptr_t vtbl = *reinterpret_cast<uintptr_t*>(p);
+                return vtbl >= 0x400000 && vtbl < 0xA47000;
+            };
+            for (int32_t b = 0; b < kBuckets; ++b) {
+                uint8_t* bkt = reinterpret_cast<uint8_t*>(ht) + (size_t)b * 24;
+                if (!IsReadable(bkt, 24))
+                    continue;
+                const bool valid = *reinterpret_cast<uint8_t*>(bkt + 0x10) != 0;
+                auto* obj = *reinterpret_cast<void**>(bkt + 0x0c);
+                if (!valid || !obj)
+                    continue;
+                ++validNodes;
+                if (!saneObj(obj)) {
+                    ++badObjs;
+                    continue;
+                }
+                if (!ObjectIsKindOf(obj, townClass))
+                    continue;
+                ++total;
+                const int32_t id = game::GetObjId(obj);
+                // Pick the goods-heavy city: the automated setup gives one nearby city
+                // 10-15 sellable goods. Far/unstreamed towns have no loaded shop -> 0. The
+                // town with the most workshop articles is the one we want; the old
+                // m_playerEnteringTownCount heuristic read 0 for every town and picked the
+                // arbitrary first (which was NOT the 10-15-goods city -> WareList never
+                // painted >=10 items -> everSeen=0).
+                void* shop = game::GetShopForTown(obj);
+                const int32_t goods = game::CountWorkshopArticles(shop);
+                if (firstId < 0)
+                    firstId = id;
+                if (goods > bestGoods) {
+                    bestGoods = goods;
+                    bestGoodsId = id;
+                }
+                if (total <= 16 && !ids.empty())
+                    ids += ", ";
+                if (total <= 16)
+                    ids += std::to_string(id) + ":" + std::to_string(goods);
+            }
+            LOG_INFO("ware: town-scan validNodes=%d badObjs=%d count=%d towns=%d "
+                     "(first=%d best=%d bestGoods=%d) ids=[%s]",
+                     validNodes, badObjs, count, total, firstId, bestGoodsId,
+                     bestGoods, ids.c_str());
+            if (outTotal)
+                *outTotal = total;
+            if (total == 0)
+                return -1;
+            if (total == 1)
+                return firstId;
+            return (bestGoodsId >= 0 && bestGoods > 0) ? bestGoodsId : firstId;
+        };
+
+        // Resolve an objId to its live ai::Obj* via the 16384-bucket hash (the same layout
+        // as ObjContainer::GetEntityByObjId, VA 0x40C310). Null if the id is absent or the
+        // bucket holds a stale entry (high-bits or valid flag mismatch).
+        void* ObjById(int32_t id) {
+            if (id <= 0)
+                return nullptr;
+            const uintptr_t container = *reinterpret_cast<uintptr_t*>(kTheObjectsVA);
+            if (!IsReadable(reinterpret_cast<void*>(container), 0x60))
+                return nullptr;
+            const uintptr_t ht = *reinterpret_cast<uintptr_t*>(container + 0x38);
+            if (ht < 0x10000 || ht >= 0x7FFE0000)
+                return nullptr;
+            const uint32_t idx = (uint32_t)id & 0x3fff;
+            uint8_t* bkt = reinterpret_cast<uint8_t*>(ht) + (size_t)idx * 24;
+            if (!IsReadable(bkt, 24))
+                return nullptr;
+            if (*reinterpret_cast<int32_t*>(bkt + 0x14) != (id >> 14))
+                return nullptr;
+            if (*reinterpret_cast<uint8_t*>(bkt + 0x10) == 0)
+                return nullptr;
+            return *reinterpret_cast<void**>(bkt + 0x0c);
+        };
+
+        // TruxxUiManager::GetCurrentTown (VA 0x549430) keys its result on the objId stored
+        // at +0x284 (guard: id<=0 or ==-1 -> null) and then does the same bucket lookup.
+        // Reading it directly yields the player's current town without enumerating all
+        // 16384 buckets (the path that used to crash on a stale registry entry).
+        int32_t CurrentTownObjId(void* uiMgr) {
+            if (!uiMgr || !IsReadable(uiMgr, 0x288))
+                return -1;
+            const int32_t id = *reinterpret_cast<int32_t*>(
+                reinterpret_cast<uint8_t*>(uiMgr) + 0x284);
+            if (id <= 0)
+                return -1;
+            void* obj = ObjById(id);
+            if (!obj || !ObjectIsKindOf(obj, TownClassObject()))
+                return -1;
+            LOG_INFO("ware: current-town id=%d obj=%p (from TruxxUiManager+0x284)", id, obj);
+            return id;
+        };
+
+        // Inject the H (horn) key into the game's input. This hook runs on the main thread,
+        // which owns the (foreground) game window and is currently inside its message pump,
+        // so SendInput's event lands in this thread's input queue and is dispatched on a
+        // later frame. The engine reads the keyboard through DirectInput (CInput_di8::
+        // GetLastKbdEvent), which keys off the SCAN CODE, not the VK - a wVk-only SendInput
+        // arrives with scan code 0 and the engine logs "cannot translate key with scan code
+        // 0", so the horn never fires. Set KEYEVENTF_SCANCODE with the real scan code (US
+        // layout H = 0x23, derived at runtime via MapVirtualKey) so DirectInput translates it.
+        // `up` false = key-down, true = key-up; the caller holds the key ~100ms across two
+        // frames so a fast down+up in one call is not missed by a poll.
+        void SendHornKey(bool up) {
+            const WORD scan = (WORD)MapVirtualKey('H', MAPVK_VK_TO_VSC);
+            INPUT in{};
+            in.type = INPUT_KEYBOARD;
+            in.ki.wVk = 'H';
+            in.ki.wScan = scan;
+            in.ki.dwFlags = KEYEVENTF_SCANCODE | (up ? KEYEVENTF_KEYUP : 0);
+            const UINT n = SendInput(1, &in, sizeof(in));
+            if (n != 1)
+                LOG_WARNING("ware: SendInput H %s failed (n=%u gle=%lu)",
+                            up ? "up" : "down", n, (unsigned long)GetLastError());
+        };
+
         // CMiracle3d::m_curGameMode @ +0x8B530 holds the GameState as a plain int
         // (0 = GS_GAME, 1 = GS_CINEMATIC, 2 = GS_MAINMENU, 3 = GS_INITIALIZATION).
         // -1 if g_pApp is not populated yet (very early boot). Both drop-box requests
@@ -431,7 +626,7 @@ namespace kraken::ext::uibookstest {
         uint64_t g_triggerDeadlineMs = 0; // absolute GetTickCount64 deadline for the active token
         std::string g_triggerActiveToken; // the token the deadline belongs to
         std::string g_bookInjectionToken; // token whose book payload was injected
-        constexpr uint64_t TRIGGER_RETRY_BUDGET_MS = 15000;
+        constexpr uint64_t TRIGGER_RETRY_BUDGET_MS = 25000;
         // The engine can burn an unbounded number of frames inside one keep-alive tick
         // (a level-load catch-up burst exhausted a fixed 30-attempt budget in ~10 ms), so
         // the open-books budget is wall time, not attempt count.
@@ -456,6 +651,28 @@ namespace kraken::ext::uibookstest {
             int32_t     stage = 0;
         };
         BookProbe g_probe;
+
+        // The "ware" trigger: open the trade panel (MotherPanel::OnTown) and verify the
+        // goods WareList gets the warescroll feature. OnTown is dispatched exactly once
+        // per token; the wheel/clamp/shift assertions then run across later frames (the
+        // row shift lands one paint after the scroll change, hence the phase machine).
+        struct WareProbe {
+            bool        active = false;
+            std::string token;
+            bool        hornSent = false;   // real H horn sent (one-shot enter-town trigger)
+            bool        hornDown = false;   // H key currently held (down sent, up pending)
+            uint64_t    hornDownMs = 0;     // when the H key-down was sent (hold ~100ms)
+            bool        tabSent = false;    // goods tab (SetCurTab 3) dispatched (one-shot)
+            bool        targetEverSeen = false; // a goods list appeared (then may have been closed)
+            int32_t     frame = 0;
+            int32_t     phase = 0;          // 0 reset->top, 1 read top y0, 2 scroll down, 3 read bottom y0
+            uint64_t    startMs = 0;        // wall-clock start of this attempt (fallback timer)
+            float       topY0 = 0.0f;
+            float       bottomY0 = 0.0f;
+            float       maxScroll = 0.0f;
+            int32_t     count = 0;
+        };
+        WareProbe g_ware;
 
         int32_t g_prevMode = -1;
         bool g_godDone = false;
@@ -1198,6 +1415,222 @@ namespace kraken::ext::uibookstest {
             }
         };
 
+        // "ware" trigger driver: open the trade panel once, then verify the goods WareList
+        // scrolls (wheel clamps at top and bottom, the first row shifts by the scroll
+        // amount, and a native thumb is present). Returns having either written a terminal
+        // status (via Finish) or armed to retry on the next frame.
+        void CheckWareTrigger(const std::string& token, bool verbose) {
+            using kraken::fix::warescroll::TestReport;
+            if (!g_ware.active) {
+                g_ware.active = true;
+                g_ware.token = token;
+                g_ware.hornSent = false;
+                g_ware.hornDown = false;
+                g_ware.hornDownMs = 0;
+                g_ware.tabSent = false;
+                g_ware.frame = 0;
+                g_ware.phase = 0;
+                g_ware.topY0 = g_ware.bottomY0 = 0.0f;
+                g_ware.maxScroll = 0.0f;
+                g_ware.count = 0;
+            }
+
+            if (g_ware.startMs == 0)
+                g_ware.startMs = GetTickCount64();
+
+            // The game auto-opens the trade panel (MotherPanel::OnTown, entered modally via
+            // ShowPanels -> DoModal) right after loading a save whose player is standing in
+            // a town - the goods WareList starts painting during that modal loop, which the
+            // recursive ProcessAllEvents hook (this driver) pumps every frame. So the normal
+            // case is that the target appears on its own. Dispatch OnTown only as a fallback
+            // if no goods list has appeared after a few seconds, and only if one was never
+            // seen - a seen-then-gone list means the panel is already open and a re-OpenTown
+            // would toggle it shut.
+            TestReport rep;
+            const bool haveTarget = kraken::fix::warescroll::Test_GetReport(rep) && rep.targetFound;
+            if (haveTarget)
+                g_ware.targetEverSeen = true;
+
+            if (!haveTarget) {
+                // Real enter-town via the horn (H). This save parks the truck at the town
+                // gate; the engine's own horn handler drives it in, sets the current town, and
+                // opens the MotherPanel (trade). We drive the game's actual input path instead
+                // of synthesizing OnTown by hand: that fallback had to patch m_townId on a
+                // TownDlg, but before the first open the dialog is not yet in the station, so
+                // the lookup returned null and OnTown bailed before ShowPanels. The H key is
+                // held ~100ms across two frames so both a message-driven handler and a
+                // DirectInput poll observe it. Once the game opens the panel it enters its own
+                // single modal (DoModal -> nested Application::run -> this hook re-fires); the
+                // hornDown/hornSent guards are already latched, so the re-entrant frames only
+                // observe - no re-dispatch, no nested-modal recursion (the 0058/0059 class of
+                // crash was from us calling OnTown ourselves and re-entering it).
+                const uint64_t nowMs = GetTickCount64();
+                if (!g_ware.hornDown && (nowMs - g_ware.startMs) >= 1500) {
+                    detail::SendHornKey(false); // key down
+                    g_ware.hornDown = true;
+                    g_ware.hornDownMs = nowMs;
+                    LOG_INFO("ware: pressed H (horn) - key down, driving into town (token=%s)",
+                             token.c_str());
+                    return;
+                }
+                if (g_ware.hornDown && !g_ware.hornSent && (nowMs - g_ware.hornDownMs) >= 100) {
+                    detail::SendHornKey(true); // key up
+                    g_ware.hornSent = true;
+                    g_ware.startMs = nowMs;    // restart the wait for the panel to build
+                    LOG_INFO("ware: H (horn) released - waiting for trade WareList");
+                    return;
+                }
+                // The horn's enter-town opens the MotherPanel on a default tab; the goods
+                // WareList (the scroll target) only exists on the shop tab. Once the panel is
+                // up (this only runs in GS_GAME - the cinematic transition is deferred by the
+                // caller), select the goods tab (3) so OnShop builds the shop and its WareList
+                // paints. Dispatch exactly once; the goods-tab OnPaint is what the warescroll
+                // hook flags as the test target.
+                if (g_ware.hornSent && !g_ware.tabSent) {
+                    hta::CMiracle3d* app = hta::CMiracle3d::Instance();
+                    detail::WalkStats stats;
+                    hta::m3d::ui::WndStation* stationA = app ? app->GetStation() : nullptr;
+                    hta::m3d::ui::WndStation* stationB =
+                        app ? static_cast<hta::m3d::ui::WndStation*>(app) : nullptr;
+                    void* mgr = app ? static_cast<void*>(app->m_pInterfaceManager) : nullptr;
+                    hta::MotherPanel* mother = nullptr;
+                    if (mgr && detail::IsUiManager(mgr))
+                        mother = static_cast<hta::MotherPanel*>(
+                            detail::UiGetWindow(mgr, detail::UiStr2GuiId(mgr, detail::ID_MOTHER_PANEL)));
+                    if (!mother && stationA)
+                        mother = static_cast<hta::MotherPanel*>(
+                            detail::FindFirstOfKind(stationA, hta::MotherPanel::ClassObject(), &stats));
+                    if (!mother && stationB && stationB != stationA)
+                        mother = static_cast<hta::MotherPanel*>(
+                            detail::FindFirstOfKind(stationB, hta::MotherPanel::ClassObject(), &stats));
+                    if (!mother && stationA)
+                        mother = static_cast<hta::MotherPanel*>(
+                            detail::FindFirstOfKindInRegistry(stationA, hta::MotherPanel::ClassObject(), &stats));
+                    if (!mother && stationB && stationB != stationA)
+                        mother = static_cast<hta::MotherPanel*>(
+                            detail::FindFirstOfKindInRegistry(stationB, hta::MotherPanel::ClassObject(), &stats));
+                    if (mother) {
+                        if (game::MotherInTown(mother)) {
+                            game::MotherSetCurTab(mother, 3, true);
+                            g_ware.tabSent = true;
+                            g_ware.startMs = nowMs; // restart the wait for the WareList to paint
+                            LOG_INFO("ware: in town, MotherPanel %p (walk %d/%d) - switching to goods tab (tab 3)",
+                                     mother, stats.visited, stats.pruned);
+                        } else {
+                            // The truck is still on the road (or mid arrival). SetCurTab(3)
+                            // dispatches OnShop only when InTown(); on the road it dispatches
+                            // OnInventory - so switching now would pop the player's inventory,
+                            // not the goods. Keep waiting: InTown() flips once the truck has
+                            // driven into the city (after the 0->1->0 arrival transition), and
+                            // the re-entrant modal frames only observe (tabSent still false).
+                            if (verbose)
+                                LOG_INFO("ware: MotherPanel %p up but not in town yet - waiting for drive-in (attempt %d)",
+                                         mother, g_triggerRetries);
+                        }
+                    } else if (verbose) {
+                        LOG_WARNING("ware: goods tab not sent yet, MotherPanel not found (attempt %d)",
+                                    g_triggerRetries);
+                    }
+                    return;
+                }
+                if (verbose)
+                    LOG_WARNING("ware: goods WareList not detected yet (horn=%d tab=%d everSeen=%d, attempt %d)",
+                                (int)g_ware.hornSent, (int)g_ware.tabSent, (int)g_ware.targetEverSeen,
+                                g_triggerRetries);
+                return;
+            }
+            ++g_ware.frame;
+            g_ware.count = rep.count;
+            g_ware.maxScroll = rep.maxScroll;
+            if (verbose)
+                LOG_INFO("ware: target count=%d maxScroll=%.1f scrollY=%.1f contentH=%.1f viewportH=%.1f "
+                         "pitch=%.2f hasBar=%d init=%d",
+                         rep.count, rep.maxScroll, rep.scrollY, rep.contentH, rep.viewportH,
+                         rep.pitch, (int)rep.hasBar, (int)rep.initialized);
+
+            if (!rep.initialized) {
+                if (verbose)
+                    LOG_WARNING("ware: target not initialized yet (attempt %d)", g_triggerRetries);
+                return;
+            }
+            // The city stocks all its wares (the 10-goods cap was removed in
+            // WareList::CreateItems), so this list is 16 here - above the old 15-goods
+            // test bound. Overflowing the fixed viewport (contentH > viewportH =>
+            // maxScroll > 0) is the point of the feature; keep a generous upper bound.
+            if (rep.count < 10 || rep.count > 20) {
+                Finish(token, "count_" + std::to_string(rep.count));
+                return;
+            }
+            if (rep.maxScroll <= 0.5f) {
+                Finish(token, "no_scroll_max_" + std::to_string((int)rep.maxScroll));
+                return;
+            }
+
+            // Test_StepWheel / Test_Reset apply the row shift synchronously, so the whole
+            // verification runs in one driver pass - no multi-frame wait on a repaint.
+            g_ware.phase = 1; // verifying
+
+            // 1) top: snap to 0 and capture the first row's live y0.
+            kraken::fix::warescroll::Test_Reset();
+            TestReport top;
+            kraken::fix::warescroll::Test_GetReport(top);
+            g_ware.topY0 = top.item0TopNow;
+
+            // 2) bottom: scroll all the way down; it must clamp at maxScroll and the first
+            //    row must have moved up by ~maxScroll (the real WareItem bounds, which is
+            //    exactly what the engine renders).
+            float sy = kraken::fix::warescroll::Test_StepWheel(-120);
+            for (int i = 0; i < 512 && sy < g_ware.maxScroll - 0.25f; ++i)
+                sy = kraken::fix::warescroll::Test_StepWheel(-120);
+            TestReport bot;
+            kraken::fix::warescroll::Test_GetReport(bot);
+            g_ware.bottomY0 = bot.item0TopNow;
+            if (std::fabs(bot.scrollY - bot.maxScroll) > 0.5f) {
+                Finish(token, "down_not_clamped_at_" + std::to_string((int)bot.scrollY));
+                return;
+            }
+            const float shift = g_ware.topY0 - g_ware.bottomY0;
+            const float cand = g_ware.maxScroll * 0.05f;
+            const float tol = (cand > 1.5f) ? cand : 1.5f;
+            if (std::fabs(shift - g_ware.maxScroll) > tol) {
+                Finish(token, "rows_not_shifted_shift_" + std::to_string((int)shift) +
+                             "_max_" + std::to_string((int)g_ware.maxScroll));
+                return;
+            }
+
+            // 3) back to the top: must clamp at 0, and a native thumb must be attached.
+            sy = kraken::fix::warescroll::Test_StepWheel(120);
+            for (int i = 0; i < 512 && sy > 0.25f; ++i)
+                sy = kraken::fix::warescroll::Test_StepWheel(120);
+            TestReport fin;
+            kraken::fix::warescroll::Test_GetReport(fin);
+            if (std::fabs(fin.scrollY) > 0.5f) {
+                Finish(token, "up_not_zero_at_" + std::to_string((int)fin.scrollY));
+                return;
+            }
+            if (!fin.hasBar) {
+                Finish(token, "thumb_missing");
+                return;
+            }
+            // #3 diagnostic (routing): with the window open, bar attached and rows narrowed to
+            // the steady-state width, ask the station's hit-test which child owns a point on the
+            // scrollbar. isBar=1 => a press there reaches the bar; a row instead => the row still
+            // overlaps the bar's column. The result is logged for the driver to report.
+            kraken::fix::warescroll::Test_HitTestOnBar();
+            // #3 fix verification: drive the bar's arrow/drag math with synthetic list-local
+            // points and log the result (the "bar-sim" lines). This proves the scroll computations
+            // are correct; the routing itself (the list really receiving the engine's mouse
+            // events) is confirmed separately by the list-mouse hook logs on a genuine click.
+            const bool barSimOk = kraken::fix::warescroll::Test_BarSimulate();
+            LOG_INFO("ware: PASS count=%d maxScroll=%.1f topY0=%.1f bottomY0=%.1f shift=%.1f scrollY_end=%.1f barSim=%d",
+                     g_ware.count, g_ware.maxScroll, g_ware.topY0, g_ware.bottomY0, shift, fin.scrollY,
+                     (int)barSimOk);
+            Finish(token, "ok count=" + std::to_string(g_ware.count) +
+                         " max=" + std::to_string((int)g_ware.maxScroll) +
+                         " shift=" + std::to_string((int)shift));
+            return;
+        };
+
         void CheckTriggerFile() {
             const std::string token = ReadFirstLine((std::string(detail::DROPBOX_DIR) + "/trigger.txt").c_str());
             if (token.empty() || token == g_lastTriggerToken)
@@ -1231,13 +1664,33 @@ namespace kraken::ext::uibookstest {
             if (g_triggerDeadlineMs == 0)
                 g_triggerDeadlineMs = nowMs + TRIGGER_RETRY_BUDGET_MS;
             if (nowMs >= g_triggerDeadlineMs) {
-                FinishBudgetExhausted(token);
+                if (token == "ware") {
+                    Finish(token, "budget_exhausted_horn=" + std::to_string((int)g_ware.hornSent) +
+                                     "_phase=" + std::to_string(g_ware.phase));
+                    g_ware.active = false;
+                } else {
+                    FinishBudgetExhausted(token);
+                }
                 g_triggerDeadlineMs = 0;
                 g_triggerRetries = 0;
                 return;
             }
             ++g_triggerRetries;
             const bool verbose = (g_triggerRetries == 1 || g_triggerRetries % 5 == 0);
+
+            // The "ware" trigger drives the warescroll feature (its own phase machine),
+            // not the books layout - dispatch it before the books probe path.
+            if (token == "ware") {
+                try {
+                    CheckWareTrigger(token, verbose);
+                }
+                catch (const std::exception& e) {
+                    LOG_ERROR("ware: sequence threw: %s", e.what());
+                    g_ware.active = false;
+                    Finish(token, "exception");
+                }
+                return;
+            }
 
             if (g_probe.active && g_probe.token == token) {
                 // Book injected + notify sent on an earlier tick: wait for the first

@@ -14,7 +14,7 @@ namespace kraken::ext::uibooks {
     // Test and extensions may register an override through this API.
     void RegisterBookMode(const char* nameId, BookMode mode);
 
-#if defined(KRAKEN_UIBOOKS_TESTS)
+#if defined(KRAKEN_TESTS)
     // Diagnostics for the uibookstest driver.
     int32_t LastParseLines();     // logical lines of the last parsed book SetText (0 = not yet)
     int32_t LastPageTotal();      // pages of the last ready OnPaint layout (0 = not yet)

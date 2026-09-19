@@ -82,7 +82,7 @@ namespace kraken::ext::uibooks {
 
     namespace {
         uint32_t  g_enabled = 0;
-#if defined(KRAKEN_UIBOOKS_TESTS)
+#if defined(KRAKEN_TESTS)
         int32_t   g_lastParseLines = 0;
 #endif
         std::unordered_map<hta::m3d::ui::TextBoxWnd*, BookState> g_bookStates;
@@ -536,7 +536,7 @@ namespace kraken::ext::uibooks {
         // The visible content is rendered by DrawBook; the engine keeps only a
         // single blank anchor item used for the row geometry.
         const int32_t result = self->TextBoxWnd::SetText(hta::CStr(" "));
-#if defined(KRAKEN_UIBOOKS_TESTS)
+#if defined(KRAKEN_TESTS)
         g_lastParseLines = static_cast<int32_t>(st.lines.size());
 #endif
         return result;
@@ -672,7 +672,7 @@ namespace kraken::ext::uibooks {
         LOG_INFO("Feature enabled (unregistered books use scroll mode)");
     };
 
-#if defined(KRAKEN_UIBOOKS_TESTS)
+#if defined(KRAKEN_TESTS)
     int32_t LastParseLines() {
         return g_lastParseLines;
     };
