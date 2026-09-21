@@ -41,8 +41,8 @@ PATCHES: list[Patch] = [
     ),
 ]
 
-EXE = pathlib.Path(r".\\hta.exe")
-BAK = pathlib.Path(r".\\hta.dat")
+EXE = pathlib.Path("./hta.exe")
+BAK = pathlib.Path("./hta.dat")
 
 with open(EXE, 'rb+') as stream:
     patch: Patch
