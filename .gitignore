@@ -37,6 +37,7 @@ __pycache__/
 /report.xsl
 /tools/lora/
 /tools/testharness/*.json
+.vs
 
 # Bindary files
 **/*.obj
@@ -47,3 +48,8 @@ __pycache__/
 **/*.ilk
 **/*.pdb
 *.pyc
+
+
+.claude
+provider
+.mcp.json

@@ -9,7 +9,7 @@
 #include <windows.h>
 
 namespace kraken::logger {
-    static struct {
+    struct LoggerState {
         const char*   path          { "./kraken.log" };
         char          message[2048] { 0              };
         char          stamp[32]     { 0              };
@@ -19,9 +19,16 @@ namespace kraken::logger {
         bool          is_ready      { false          };
         std::ofstream handle        {                };
         size_t        log_debug     { 0              };
-    } self;
+    };
+
+    static LoggerState& State() {
+        // Function-local static avoids global initialization order issues between translation units.
+        static LoggerState self;
+        return self;
+    }
 
     bool _InitFile() {
+        LoggerState& self = State();
         self.handle.open(self.path, std::ofstream::out | std::ofstream::trunc);
         if (!self.handle.is_open())
             return false;
@@ -29,6 +36,7 @@ namespace kraken::logger {
     };
 
     bool _InitStream() {
+        LoggerState& self = State();
         if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
             DWORD error = GetLastError();
             if (error == ERROR_ACCESS_DENIED) {
@@ -97,18 +105,19 @@ namespace kraken::logger {
     };
 
     void Init(void) {
-        if (self.is_ready)
-            return;
+        LoggerState& self = State();
+        if (!self.is_ready) {
+            self.is_file   = _InitFile();
+            self.is_stream = _InitStream();
+            self.is_ready  = self.is_file || self.is_stream;
+        }
 
         const kraken::Config& config = kraken::Config::Instance();
-
-        self.is_file   = _InitFile();
-        self.is_stream = _InitStream();
-        self.is_ready  = self.is_file || self.is_stream;
         self.log_debug = config.log_debug.value;
     };
 
     void Print(Log level, const char* alias, const char* fmt, ...) {
+        LoggerState& self = State();
         if (!self.is_ready)
             return;
 
@@ -147,6 +156,7 @@ namespace kraken::logger {
     };
 
     void Flush(void) {
+        LoggerState& self = State();
         if (self.is_file)
             self.handle.flush();
     };
