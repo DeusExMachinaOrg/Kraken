@@ -13,6 +13,7 @@
 #include "fix/autobrakefix.hpp"
 #include "fix/objcontupgrade.hpp"
 #include "fix/luabinds.hpp"
+#include "fix/exports.hpp"
 #include "fix/posteffectreload.hpp"
 #include "fix/wareuse.hpp"
 #include "fix/recollectionfix.hpp"
@@ -28,6 +29,10 @@
 #include "fix/difficultywndescapefix.hpp"
 #include "fix/mortarvolleylauncherfix.hpp"
 #include "fix/gunlights.hpp"
+#include "ext/uibooks/uibooks.hpp"
+#if defined(KRAKEN_UIBOOKS_TESTS)
+#include "ext/uibookstest/uibookstest.hpp"
+#endif
 namespace kraken {
     HANDLE  G_MODULE = nullptr;
     Config* G_CONFIG = new Config();
@@ -67,6 +72,7 @@ namespace kraken {
         fix::physic::Apply();
         fix::autobrakefix::Apply();
         fix::objcontupgrade::Apply();
+        fix::exports::Apply();
         fix::luabinds::Apply(G_CONFIG);
         fix::posteffectreload::Apply(G_CONFIG);
         fix::wareuse::Apply();
@@ -83,5 +89,9 @@ namespace kraken {
         fix::difficultywndescapefix::Apply();
         fix::mortarvolleylauncherfix::Apply();
         fix::gunlights::Apply();
+        ext::uibooks::Apply(G_CONFIG);
+#if defined(KRAKEN_UIBOOKS_TESTS)
+        ext::uibookstest::Apply(G_CONFIG);
+#endif
     };
 };
