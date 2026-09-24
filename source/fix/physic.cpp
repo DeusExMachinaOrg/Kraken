@@ -9,6 +9,7 @@
 #include "ext/logger.hpp"
 #include "routines.hpp"
 #include "fix/physic.hpp"
+#include "fix/cinematicmover.hpp"
 
 namespace kraken::fix::physic {
     #define RIGHT_SHIFT(T, base, offset) ((T*)(reinterpret_cast<char*>(base) + offset))
@@ -187,7 +188,7 @@ namespace kraken::fix::physic {
                 sum += bb[4]*cc[4];
                 sum += bb[5]*cc[5];
                 sum += bb[6]*cc[6];
-                *(A++) = sum; 
+                *(A++) = sum;
                 cc += 8;
             }
             A += Askip - r;
@@ -477,8 +478,10 @@ namespace kraken::fix::physic {
         int i, j, k;
         float stepsize1 = 1.0f / stepsize;
 
-        for (i = 0; i < nb; i++)
+        for (i = 0; i < nb; i++) {
+            kraken::fix::cinematicmover::OnBodyBeforeStep(static_cast<void*>(body[i]), stepsize);
             body[i]->tag = i;
+        }
 
         HeapArray<float>    I     (3*nb*4);
         HeapArray<float>    invI  (3*nb*4);
@@ -690,9 +693,9 @@ namespace kraken::fix::physic {
 
                 for (j=0; j<3; j++)
                     tmp1.ptr[i*8+j] = body[i]->facc[j] * body_invMass + body[i]->lvel[j] * stepsize1;
-                
+
                 dMULTIPLY0_331(tmp1.ptr + i * 8 + 4, body_invI ,body[i]->tacc);
-                
+
                 for (j=0; j<3; j++)
                     tmp1.ptr[i * 8 + 4 + j] += body[i]->avel[j] * stepsize1;
             }
@@ -1456,7 +1459,7 @@ namespace kraken::fix::physic {
             for (i=0; i<n; i++) {
                 for (j=0; j<n; j++) x.ptr[j] = 0;
                     x.ptr[i] = 1;
-                
+
                 dSolveCholesky (L.ptr,x.ptr,n);
 
                 for (j=0; j<n; j++)
@@ -1572,7 +1575,7 @@ namespace kraken::fix::physic {
 
             for (i=0; i<(n2-r); i++)
                 a.ptr[i] = dDot(L+(r+i)*nskip,t.ptr,r) - GETA(p[r+i],p[r]);
-            
+
             a.ptr[0] += 1.0f;
             dLDLTAddTL (L + r*nskip+r, d+r, a.ptr, n2-r, nskip);
         }
@@ -1900,7 +1903,7 @@ namespace kraken::fix::physic {
         C[nC] = nC;
         nC++;
     }
-    
+
 
     void dSolveL1_1 (const float *L, float *B, int n, int lskip1) {
         /* declare variables - Z matrix, p and q vectors, etc */
@@ -1963,7 +1966,7 @@ namespace kraken::fix::physic {
         }
     }
 
-    void _dSolveL1_2 (float *L, float *B, uint32_t n, int lskip1) {  
+    void _dSolveL1_2 (float *L, float *B, uint32_t n, int lskip1) {
         for (size_t j = 0; j < n * lskip1; j+= lskip1) {
             float* p = B;
             float* q = B + n;
@@ -1975,7 +1978,7 @@ namespace kraken::fix::physic {
         };
     };
 
-    void dSolveL1_2 (const float *L, float *B, int n, int lskip1) {  
+    void dSolveL1_2 (const float *L, float *B, int n, int lskip1) {
         /* declare variables - Z matrix, p and q vectors, etc */
         float Z11,m11,Z12,m12,Z21,m21,Z22,m22,p1,q1,p2,q2,*ex;
         const float *ell;
@@ -2061,7 +2064,7 @@ namespace kraken::fix::physic {
         int i,j;
         float sum,*ell,*dee,dd,p1,p2,q1,q2,Z11,m11,Z21,m21,Z22,m22;
         if (n < 1) return;
-        
+
         for (i=0; i<=n-2; i += 2) {
             /* solve L*(D*l)=a, l is scaled elements in 2 x i block at A(i,0) */
             dSolveL1_2 (A,A+i*nskip1,i,nskip1);
@@ -2195,7 +2198,7 @@ namespace kraken::fix::physic {
         switch (n-i) {
             case 0:
             break;
-            
+
             case 1:
             dSolveL1_1 (A,A+i*nskip1,i,nskip1);
             /* scale the elements in a 1 x i block at A(i,0), and also */
@@ -2263,7 +2266,7 @@ namespace kraken::fix::physic {
             dee[0] = 1.0f / Z11;
             /* done factorizing 1 x 1 block */
             break;
-            
+
             default: *((char*)0)=0;  /* this should never happen! */
         }
     }
@@ -2322,7 +2325,7 @@ namespace kraken::fix::physic {
             i1 = dRandInt(n-nub)+nub;
             i2 = dRandInt(n-nub)+nub;
             }
-            while (i1 > i2); 
+            while (i1 > i2);
             //printf ("--> %d %d\n",i1,i2);
             swapProblem (A,x,b,w,lo,hi,p,state,findex,n,i1,i2,nskip,0);
             }
@@ -2434,7 +2437,7 @@ namespace kraken::fix::physic {
             // if we've hit the first friction index, we have to compute the lo and
             // hi values based on the values of x already computed. we have been
             // permuting the indexes, so the values stored in the findex vector are
-            // no longer valid. thus we have to temporarily unpermute the x vector. 
+            // no longer valid. thus we have to temporarily unpermute the x vector.
             // for the purposes of this computation, 0*infinity = 0 ... so if the
             // contact constraint's normal force is 0, there should be no tangential
             // force applied.

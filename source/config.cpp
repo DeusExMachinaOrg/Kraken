@@ -3,6 +3,8 @@
 #include <assert.h>
 #include <string>
 
+#define LOGGER "config"
+
 using kraken::logger::eLogDebug;
 using kraken::logger::eLogPanic;
 
@@ -38,12 +40,29 @@ namespace kraken {
         this->posteffectreload                  = { "constants", "posteffectreload",                0,     true,  0,     1           };
         this->ultrawide                         = { "constants", "ultrawide",                       0,     true,  0,     1           };
         this->objcontupgrade                    = { "constants", "obj_cont_upgrade",                1,     true,  0,     1           };
-        this->show_load_every                   = { "constants", "show_load_every",                 100,   true,  0,     UINT32_MAX  };
         this->cardan_fix                        = { "constants", "cardan_fix",                      1,     true,  0,     1           };
         this->wares                             = { "constants", "wares",                           0,     true,  0,     1           };
         this->cctl_leak_fix                     = { "constants", "cctl_leak_fix",                   1,     true,  0,     1           };
         this->mortarvolleylauncherfix           = { "constants", "mortarvolleylauncherfix",         1,     true,  0,     1           };
         this->gunlights                         = { "constants", "gunlights",                       1,     true,  0,     1           };
+        this->radio_manager_fix                 = { "constants", "radio_manager_fix",               1,     true,  0,     1           };
+        this->appendix                          = { "constants", "appendix",                        1,     true,  0,     1           };
+        this->ram_speed_threshold               = { "thorncollide", "speed_threshold",              5.0f,    true,  0.0f,  1000.0f   };
+        this->ram_damage_coeff                  = { "thorncollide", "damage_coeff",                 2.7f,    true,  0.0f,  100000.0f };
+        this->ram_speed_exponent                = { "thorncollide", "speed_exponent",               1.0f,    true,  0.1f,  4.0f      };
+        this->ram_max_damage                    = { "thorncollide", "max_damage",                   100000.0f,true, 0.0f,  1e9f      };
+        this->ram_armor_front                   = { "thorncollide", "armor_front",                  0.8f,    true,  0.01f, 100.0f    };
+        this->ram_armor_side                    = { "thorncollide", "armor_side",                   1.25f,   true,  0.01f, 100.0f    };
+        this->ram_armor_rear                    = { "thorncollide", "armor_rear",                   1.0f,    true,  0.01f, 100.0f    };
+        this->ram_landscape_offense             = { "thorncollide", "landscape_offense",            0.5f,    true,  0.0f,  100.0f    };
+        this->ram_thorn_scale                   = { "thorncollide", "thorn_scale",                  0.02f,   true,  0.0f,  100.0f    };
+        this->ram_wheel_damage                  = { "thorncollide", "wheel_damage",                 1,       true,  0,     1         };
+        this->ram_log                           = { "thorncollide", "log",                          0,       true,  0,     1         };
+        this->uibooks_enabled                   = { "uibooks",   "enabled",                         1,     true,  0,     1           };
+        this->warescroll_enabled                = { "warescroll","enabled",                         1,     true,  0,     1           };
+#if defined(KRAKEN_TESTS)
+        this->uibookstest_enabled               = { "uibookstest", "enabled",                       0,     true,  0,     1           };
+#endif
         this->tactics                           = { "tactics",   "enabled",                         1,     true,  0,     1           };
         this->tactics_lock                      = { "tactics",   "lock_on_player",                  1,     true,  0,     1           };
         this->contact_surface_layer             = { "glob_phys", "contact_surface_layer",           0.01,  true,  0,     1.0         };
@@ -57,6 +76,8 @@ namespace kraken {
         this->common_gadgets_max_schwarz_part   = { "schwarz",   "common_gadgets_max_schwarz_part", 0.0,   true,  0.0,   10.0        };
         this->wares_max_schwarz_part            = { "schwarz",    "wares_max_schwarz_part",         0.0,   true,  0.0,   10.0        };
         Config::INSTANCE = this;
+
+        logger::Init();
 
         this->Load();
         this->Dump();
@@ -87,7 +108,6 @@ namespace kraken {
         this->LoadValue(&this->ware_units);
         this->LoadValue(&this->ultrawide);
         this->LoadValue(&this->objcontupgrade);
-        this->LoadValue(&this->show_load_every);
         this->LoadValue(&this->cardan_fix);
         this->LoadValue(&this->contact_surface_layer);
         this->LoadValue(&this->cfm);
@@ -105,6 +125,24 @@ namespace kraken {
         this->LoadValue(&this->cctl_leak_fix);
         this->LoadValue(&this->mortarvolleylauncherfix);
         this->LoadValue(&this->gunlights);
+        this->LoadValue(&this->radio_manager_fix);
+        this->LoadValue(&this->appendix);
+        this->LoadValue(&this->ram_speed_threshold);
+        this->LoadValue(&this->ram_damage_coeff);
+        this->LoadValue(&this->ram_speed_exponent);
+        this->LoadValue(&this->ram_max_damage);
+        this->LoadValue(&this->ram_armor_front);
+        this->LoadValue(&this->ram_armor_side);
+        this->LoadValue(&this->ram_armor_rear);
+        this->LoadValue(&this->ram_landscape_offense);
+        this->LoadValue(&this->ram_thorn_scale);
+        this->LoadValue(&this->ram_wheel_damage);
+        this->LoadValue(&this->ram_log);
+        this->LoadValue(&this->uibooks_enabled);
+        this->LoadValue(&this->warescroll_enabled);
+#if defined(KRAKEN_TESTS)
+        this->LoadValue(&this->uibookstest_enabled);
+#endif
     };
 
     void Config::Dump() {
@@ -126,7 +164,6 @@ namespace kraken {
         this->DumpValue(&this->ware_units);
         this->DumpValue(&this->ultrawide);
         this->DumpValue(&this->objcontupgrade);
-        this->DumpValue(&this->show_load_every);
         this->DumpValue(&this->cardan_fix);
         this->DumpValue(&this->contact_surface_layer);
         this->DumpValue(&this->cfm);
@@ -144,6 +181,24 @@ namespace kraken {
         this->DumpValue(&this->cctl_leak_fix);
         this->DumpValue(&this->mortarvolleylauncherfix);
         this->DumpValue(&this->gunlights);
+        this->DumpValue(&this->radio_manager_fix);
+        this->DumpValue(&this->appendix);
+        this->DumpValue(&this->ram_speed_threshold);
+        this->DumpValue(&this->ram_damage_coeff);
+        this->DumpValue(&this->ram_speed_exponent);
+        this->DumpValue(&this->ram_max_damage);
+        this->DumpValue(&this->ram_armor_front);
+        this->DumpValue(&this->ram_armor_side);
+        this->DumpValue(&this->ram_armor_rear);
+        this->DumpValue(&this->ram_landscape_offense);
+        this->DumpValue(&this->ram_thorn_scale);
+        this->DumpValue(&this->ram_wheel_damage);
+        this->DumpValue(&this->ram_log);
+        this->DumpValue(&this->uibooks_enabled);
+        this->DumpValue(&this->warescroll_enabled);
+#if defined(KRAKEN_TESTS)
+        this->DumpValue(&this->uibookstest_enabled);
+#endif
     };
 
     template<typename T>
@@ -255,9 +310,23 @@ namespace kraken {
                         continue;
                     std::string ware = buffer;
 
+                    GetPrivateProfileStringA(key, "Sound", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    std::string sound = buffer;
+
+                    GetPrivateProfileStringA(key, "Script", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    std::string script = buffer;
+
+                    // Consume defaults to true (legacy behaviour: a used ware is always spent).
+                    bool consume = true;
+                    GetPrivateProfileStringA(key, "Consume", "", buffer, sizeof(buffer), CONFIG_PATH);
+                    if (strnlen_s(buffer, sizeof(buffer)) != 0)
+                        consume = (buffer[0] == '1' || buffer[0] == 't' || buffer[0] == 'T' || buffer[0] == 'y' || buffer[0] == 'Y');
+
                     configstructs::WareType type = (strcmp(prefix, configstructs::REPAIR) == 0) ? configstructs::WareType::REPAIR : configstructs::WareType::REFUEL;
 
-                    value->value.emplace_back(units, armor, ware, type);
+                    LOG_INFO("Loaded ware unit: Type=%s, Units=%.03f, Armor=%.03f, Ware=%s, Sound=%s, Script=%s, Consume=%s", (type == configstructs::WareType::REPAIR) ? "REPAIR" : "REFUEL", units, armor, ware.c_str(), sound.c_str(), script.c_str(), consume ? "true" : "false");
+
+                    value->value.emplace_back(units, armor, ware, type, sound, script, consume);
                 }
             }
         }
@@ -331,6 +400,15 @@ namespace kraken {
 
                 // Ware
                 WritePrivateProfileStringA(key, "Ware", wareUnit.Ware.c_str(), CONFIG_PATH);
+
+                // Sound
+                WritePrivateProfileStringA(key, "Sound", wareUnit.Sound.c_str(), CONFIG_PATH);
+
+                // Script
+                WritePrivateProfileStringA(key, "Script", wareUnit.Script.c_str(), CONFIG_PATH);
+
+                // Consume
+                WritePrivateProfileStringA(key, "Consume", wareUnit.Consume ? "1" : "0", CONFIG_PATH);
             }
         }
         else {
