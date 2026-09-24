@@ -476,9 +476,10 @@ namespace kraken::fix::warescroll {
 
     // WareList::CreateItems (warewnd.cpp:1374) hard-caps the goods list to the first 10
     // prototypes: `if (ids.size() > 10) ids.resize(10)`. The guard is `cmp eax,0xa; jbe skip`
-    // (byte 0x76) at VA 0x47FD8D; turning the conditional jump into an unconditional `jmp`
-    // (0xEB) removes the cap. rel8 (0x10) is untouched. The loop then shows every ware the
-    // shop actually stocks (the per-warehouse GetArticle/IsSellable check still filters).
+    // (bytes 0x76,0x10) at VA 0x47FD8D. wareuse::Apply may NOP the whole surrounding block
+    // before this patch runs, including the rel8 byte, so rewrite the complete short jump
+    // (EB 10) to keep its target valid while making it unconditional. The loop then shows every
+    // ware the shop actually stocks (the per-warehouse GetArticle/IsSellable check still filters).
     // This is the same path vanilla takes for <=10 goods, so it is well-exercised.
     void Apply(const Config* config) {
         if (!config->warescroll_enabled.value) {
@@ -491,7 +492,9 @@ namespace kraken::fix::warescroll {
                                 &WareList_Hooked::OnMouseWheel);
         routines::OverrideValue(reinterpret_cast<void*>(kWareItemWheelSlot),
                                 &WareItem_Hooked::OnMouseWheel);
-        routines::OverrideValue(reinterpret_cast<void*>(0x0047FD8D), (uint8_t)0xEB);
+        constexpr uint8_t kRemoveWareCountCapJump[] = { 0xEB, 0x10 };
+        routines::Patch(reinterpret_cast<void*>(0x0047FD8D), kRemoveWareCountCapJump,
+                        sizeof(kRemoveWareCountCapJump));
         LOG_INFO("patched 3 vtable slots (WareList OnPaint/OnMouseWheel, WareItem OnMouseWheel)");
         LOG_INFO("patched WareList::CreateItems cap: jbe->jmp @ 0x47FD8D (goods list no longer capped at 10)");
     }
