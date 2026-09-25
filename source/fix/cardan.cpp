@@ -3,23 +3,41 @@
 #include "ext/logger.hpp"
 #include "routines.hpp"
 #include "config.hpp"
+#include <new>
 
 #include "hta/CVector.hpp"
 #include "hta/ai/Vehicle.hpp"
+#include "hta/ai/Wheel.hpp"
 #include "hta/ActionType.hpp"
 #include "hta/ai/Cabin.hpp"
 #include "hta/ai/Basket.hpp"
 #include "hta/m3d/AnimInfo.hpp"
+#include "hta/m3d/Object.hpp"
 #include "hta/Shared.hpp"
+#include "ode/ode.hpp"
 
 #include "fix/cardan.hpp"
+#include "fix/thorncollide.hpp"
+
+#include <cstring>
+#include <cstdint>
+#include <Windows.h>
 
 namespace kraken::fix::cardan {
+    static std::unordered_map<hta::ai::Vehicle*, hta::CVector> surfaceVelocities;
+    static std::unordered_map<hta::ai::Vehicle*, int32_t> surfaceWheelsTouchingCount;
+
+    static bool cardan_fix_enabled = false;
+
     void SetChassisAnimationStopped(hta::ai::Vehicle* vehicle, bool stopped) {
         // ----------------------------------------------
         // Cardan fix
         // stopped = true -> stop chassis animation
         // ----------------------------------------------
+
+        if (!cardan_fix_enabled)
+            return;
+
         hta::ai::Chassis* chassis = vehicle->GetChassis();
         if (chassis) {
             hta::m3d::AnimInfo* info;
@@ -72,6 +90,12 @@ namespace kraken::fix::cardan {
 
         wheelRpm = fabs(vehicle->m_averageWheelAVel) * 9.5492964;
         hta::CVector velocity = vehicle->GetLinearVelocity();
+
+        const int32_t surfaceWheelCount = surfaceWheelsTouchingCount[vehicle];
+        if (surfaceWheelCount > 0) {
+            hta::CVector surfaceVel = surfaceVelocities[vehicle] * (float)(1.0 / surfaceWheelCount);
+            velocity = velocity - surfaceVel;
+        }
 
         vel = velocity.x;
         v29 = velocity.y;
@@ -190,13 +214,115 @@ namespace kraken::fix::cardan {
         }
     }
 
+    struct CollideVelocityInfo {
+        hta::CVector velocity;
+        bool bWheelsCollided;
+
+        CollideVelocityInfo() : velocity(), bWheelsCollided(false) {}
+    };
+
+    void __fastcall HookVehicleDtor(hta::ai::Vehicle* self, void*, bool bHorn)
+    {
+        if (!self) return;
+
+        surfaceVelocities.erase(self);
+        surfaceWheelsTouchingCount.erase(self);
+
+        if (self->m_bIsControlledByPlayer) {
+            self->SetHorn(bHorn);
+        }
+    }
+
+    hta::ai::Vehicle* __fastcall VehiclePrototypeInfo_CreateTargetObject(hta::ai::VehiclePrototypeInfo* self, void*)
+    {
+        hta::ai::Vehicle* vehicle = (hta::ai::Vehicle*)hta::m3d::Kernel::Instance()->g_mar.AllocMem(sizeof(hta::ai::Vehicle), nullptr, 0);
+        if (vehicle) {
+            ::new (vehicle) hta::ai::Vehicle(*self);
+
+            surfaceVelocities[vehicle] = hta::CVector();
+            surfaceWheelsTouchingCount[vehicle] = 0;
+        }
+        return vehicle;
+    }
+
+    void AddSurfaceVelocity(hta::ai::Vehicle* vehicle, hta::ai::PhysicObj* surface)
+    {
+        hta::CVector velocity = surface->GetLinearVelocity();
+        if (velocity.Length() > 0.1f) {
+            surfaceVelocities[vehicle] += velocity;
+            surfaceWheelsTouchingCount[vehicle] += 1;
+        }
+    }
+
+    void __stdcall HandleWheelSurfaceTouch(hta::ai::Wheel* wheel, hta::m3d::Object* surface)
+    {
+        hta::ai::Vehicle* vehicle = wheel->GetVehicle();
+
+        if (vehicle) {
+            // Engine resets m_numWheelsTouchingGround each update cycle.
+            // First contact in cycle must reset our moving-surface accumulators.
+            if (!vehicle->m_numWheelsTouchingGround) {
+                surfaceVelocities[vehicle] = hta::CVector();
+                surfaceWheelsTouchingCount[vehicle] = 0;
+            }
+
+            vehicle->IncNumWheelsTouchingGround();
+
+            if (surface) {
+                if (hta::ai::PhysicObj* obj = surface->cast<hta::ai::PhysicObj>()) {
+                    AddSurfaceVelocity(vehicle, obj);
+                }
+            }
+        }
+    }
+
+    // Trampoline holding ai::CollideWheelDefault's original 5-byte prologue
+    // (83 EC 24 53 55 = sub esp,0x24; push ebx; push ebp) + a jmp back to 0x00891435,
+    // so the wrapper below can run the stock tyre logic and still execute code afterwards.
+    using WheelCollideFn = int(__fastcall*)(hta::ai::Wheel*, void*, dContact*, unsigned int*, bool);
+    static uint8_t s_wheelCollideTramp[16];
+
+    // Shared hook for ai::CollideWheelDefault (0x00891430). Two features need this entry:
+    //   1) cardan — moving-surface velocity bookkeeping (HandleWheelSurfaceTouch);
+    //   2) thorncollide — ram damage when a wheel is hit by another vehicle.
+    // cardan owns the single redirect (it installs unconditionally; thorncollide only when
+    // [constants] appendix is set) and forwards to thorncollide::OnWheelCollision.
+    // self=ecx (Wheel), surface=edx (the struck object) — the engine's dispatch convention.
+    int __fastcall Hook_CollideWheelDefault(hta::ai::Wheel* self, void* surface,
+                                            dContact* contacts, unsigned int* numContacts, bool reverse) {
+        auto* surfaceObj = reinterpret_cast<hta::m3d::Object*>(surface);
+        HandleWheelSurfaceTouch(self, surfaceObj);
+
+        const int result = reinterpret_cast<WheelCollideFn>(static_cast<void*>(s_wheelCollideTramp))(
+            self, surface, contacts, numContacts, reverse);
+
+        kraken::fix::thorncollide::OnWheelCollision(self, surfaceObj, contacts, numContacts);
+        return result;
+    }
+
     void Apply()
     {
-        LOG_INFO("Feature enabled");
         const kraken::Config& config = kraken::Config::Instance();
-        if (config.cardan_fix.value == 0)
-            return;
+        if (config.cardan_fix.value == true) {
+            LOG_INFO("Feature enabled");
+            cardan_fix_enabled = true;
+        }
 
         kraken::routines::ChangeCall((void*) 0x005EC7AD, KeepThrottle);
+        kraken::routines::Nop((void*)0x005ECCD3, 2);
+        kraken::routines::ChangeCall((void*) 0x005ECCD6, HookVehicleDtor);
+        kraken::routines::Redirect(0x26, (void*) 0x005EDD60, VehiclePrototypeInfo_CreateTargetObject);
+
+        // Build the trampoline from the original prologue BEFORE redirecting (otherwise we
+        // would copy our own jmp), then point 0x00891430 at the C wrapper.
+        void* const origWheelCollide = reinterpret_cast<void*>(0x00891430);
+        DWORD oldProt;
+        VirtualProtect(s_wheelCollideTramp, sizeof(s_wheelCollideTramp), PAGE_EXECUTE_READWRITE, &oldProt);
+        std::memcpy(s_wheelCollideTramp, origWheelCollide, 5);
+        s_wheelCollideTramp[5] = 0xE9;
+        *reinterpret_cast<int32_t*>(s_wheelCollideTramp + 6) = static_cast<int32_t>(
+            reinterpret_cast<uintptr_t>(origWheelCollide) + 5
+            - (reinterpret_cast<uintptr_t>(s_wheelCollideTramp) + 10));
+        kraken::routines::Redirect(5, origWheelCollide, reinterpret_cast<void*>(&Hook_CollideWheelDefault));
     }
 }

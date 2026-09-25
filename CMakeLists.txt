@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
 project(kraken VERSION 0.1.1 LANGUAGES CXX)
 
+option(KRAKEN_TESTS "Build the automated test drivers and diagnostics (uibookstest, warescroll test API)" OFF)
+
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,6 +23,7 @@ add_library(kraken SHARED
     source/fix/autobrakefix.cpp
     source/fix/objcontupgrade.cpp
     source/fix/luabinds.cpp
+    source/fix/exports.cpp
     source/fix/posteffectreload.cpp
     source/fix/fileserver.cpp
     source/fix/luabinds.cpp
@@ -38,11 +41,39 @@ add_library(kraken SHARED
     source/fix/difficultywndescapefix.cpp
     source/fix/mortarvolleylauncherfix.cpp
     source/fix/gunlights.cpp
-
+    source/fix/cinematicmover.cpp
+    source/fix/watercollidefix.cpp
+    source/fix/thorncollide.cpp
+    source/fix/firingtype.cpp
+    source/fix/radiomanagerfix.cpp
+    source/fix/warescroll.cpp
+    source/ext/uibooks/uibooks.cpp
+    source/ext/uibooks/uibooks_config.cpp
+    source/ext/uibooks/uibooks_fonts.cpp
+    source/ext/uibooks/uibooks_parser.cpp
+    source/ext/uibooks/uibooks_pagination.cpp
+    source/ext/uibooks/uibooks_navigation.cpp
+    source/ext/uibooks/uibooks_render.cpp
+    source/ext/uibooks/uibooks_resources.cpp
+    source/ext/uibooks/uibooks_scroll.cpp
+    source/ext/memory.cpp
     source/ext/logger.cpp
     source/ext/impulse.cpp
     source/ext/runtime.cpp
+    source/ext/meta.cpp
+    source/ext/ai/Appendix.cpp
+    source/ext/scriptexports.cpp
 )
+
+if(KRAKEN_TESTS)
+    target_sources(kraken PRIVATE
+        source/fix/warescroll_test.cpp
+        source/ext/uibookstest/uibookstest.cpp
+        source/ext/uibookstest/uibookstest_game.cpp
+        source/ext/uibookstest/uibookstest_probes.cpp
+    )
+    target_compile_definitions(kraken PRIVATE KRAKEN_TESTS=1)
+endif()
 
 # Include directories
 target_include_directories(kraken PRIVATE include)
